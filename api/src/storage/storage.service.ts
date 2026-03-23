@@ -1,0 +1,190 @@
+import {
+  BadRequestException,
+  Injectable,
+  InternalServerErrorException,
+  OnModuleInit,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import {
+  CreateBucketCommand,
+  GetObjectCommand,
+  HeadBucketCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { randomUUID } from 'crypto';
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateSignedUploadDto } from './dto/create-signed-upload.dto';
+import { AuditService } from '../audit/audit.service';
+
+@Injectable()
+export class StorageService implements OnModuleInit {
+  private readonly s3: S3Client;
+  private readonly bucket: string;
+
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
+    private readonly auditService: AuditService,
+  ) {
+    const endpoint = this.configService.get<string>('S3_ENDPOINT');
+    const region = this.configService.get<string>('S3_REGION') || 'us-east-1';
+    const accessKeyId = this.configService.get<string>('S3_ACCESS_KEY');
+    const secretAccessKey = this.configService.get<string>('S3_SECRET_KEY');
+
+    if (!endpoint || !accessKeyId || !secretAccessKey) {
+      throw new Error('S3 config is incomplete. Set S3_ENDPOINT, S3_ACCESS_KEY, and S3_SECRET_KEY.');
+    }
+
+    this.bucket = this.configService.get<string>('S3_BUCKET') || 'tarasense-files';
+
+    this.s3 = new S3Client({
+      endpoint,
+      region,
+      credentials: {
+        accessKeyId,
+        secretAccessKey,
+      },
+      forcePathStyle: String(this.configService.get<string>('S3_FORCE_PATH_STYLE') || 'true') === 'true',
+    });
+  }
+
+  async onModuleInit() {
+    try {
+      await this.s3.send(new HeadBucketCommand({ Bucket: this.bucket }));
+    } catch {
+      try {
+        await this.s3.send(new CreateBucketCommand({ Bucket: this.bucket }));
+      } catch (error) {
+        throw new InternalServerErrorException(`Unable to initialize bucket ${this.bucket}: ${String(error)}`);
+      }
+    }
+  }
+
+  async uploadFile(
+    file: Express.Multer.File,
+    uploaderId?: string,
+    meta?: { ip?: string; ua?: string | string[] },
+  ) {
+    if (!file?.buffer?.length) {
+      throw new BadRequestException('File is required');
+    }
+
+    const objectKey = this.buildObjectKey(file.originalname);
+
+    const putResult = await this.s3.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: objectKey,
+        Body: file.buffer,
+        ContentType: file.mimetype || 'application/octet-stream',
+      }),
+    );
+
+    const created = await this.prisma.storedFile.create({
+      data: {
+        uploaderId,
+        bucket: this.bucket,
+        objectKey,
+        originalName: file.originalname,
+        contentType: file.mimetype || 'application/octet-stream',
+        size: file.size,
+        etag: putResult.ETag?.replaceAll('"', '') || null,
+      },
+    });
+
+    await this.auditService.log({
+      action: 'FILE_UPLOAD',
+      resource: 'stored_file',
+      actorId: uploaderId,
+      metadata: { fileId: created.id, objectKey: created.objectKey, size: created.size },
+      ipAddress: meta?.ip,
+      userAgent: meta?.ua,
+    });
+
+    return created;
+  }
+
+  async createSignedUpload(
+    dto: CreateSignedUploadDto,
+    uploaderId?: string,
+    meta?: { ip?: string; ua?: string | string[] },
+  ) {
+    const objectKey = this.buildObjectKey(dto.originalName);
+    const command = new PutObjectCommand({
+      Bucket: this.bucket,
+      Key: objectKey,
+      ContentType: dto.contentType,
+    });
+
+    const uploadUrl = await getSignedUrl(this.s3, command, { expiresIn: 60 * 10 });
+
+    const created = await this.prisma.storedFile.create({
+      data: {
+        uploaderId,
+        bucket: this.bucket,
+        objectKey,
+        originalName: dto.originalName,
+        contentType: dto.contentType,
+        size: dto.size || 0,
+      },
+    });
+
+    await this.auditService.log({
+      action: 'FILE_SIGNED_UPLOAD',
+      resource: 'stored_file',
+      actorId: uploaderId,
+      metadata: { fileId: created.id, objectKey: created.objectKey },
+      ipAddress: meta?.ip,
+      userAgent: meta?.ua,
+    });
+
+    return {
+      file: created,
+      uploadUrl,
+      method: 'PUT',
+      headers: {
+        'Content-Type': dto.contentType,
+      },
+    };
+  }
+
+  async getSignedDownloadUrl(fileId: string) {
+    const file = await this.prisma.storedFile.findUnique({
+      where: { id: fileId },
+    });
+
+    if (!file) {
+      throw new BadRequestException('File not found');
+    }
+
+    const command = new GetObjectCommand({
+      Bucket: file.bucket,
+      Key: file.objectKey,
+      ResponseContentType: file.contentType,
+      ResponseContentDisposition: `inline; filename=\"${encodeURIComponent(file.originalName)}\"`,
+    });
+
+    const downloadUrl = await getSignedUrl(this.s3, command, { expiresIn: 60 * 10 });
+
+    return {
+      file,
+      downloadUrl,
+    };
+  }
+
+  async listFiles(limit = 50, uploaderId?: string) {
+    return this.prisma.storedFile.findMany({
+      where: uploaderId ? { uploaderId } : undefined,
+      orderBy: { createdAt: 'desc' },
+      take: Math.min(Math.max(limit, 1), 200),
+    });
+  }
+
+  private buildObjectKey(originalName: string) {
+    const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const date = new Date().toISOString().slice(0, 10);
+    return `uploads/${date}/${randomUUID()}-${safeName}`;
+  }
+}

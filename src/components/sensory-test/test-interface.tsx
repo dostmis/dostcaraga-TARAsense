@@ -1,0 +1,234 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Beaker, Check, Star } from "lucide-react";
+import { submitResponse } from "@/app/actions/response-actions";
+
+type AttributeType = "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+
+interface SensoryAttribute {
+  id: string;
+  name: string;
+  type: AttributeType;
+  jarOptions?: { low?: string; mid?: string; high?: string } | null;
+}
+
+interface TestInterfaceProps {
+  studyId: string;
+  participantId: string;
+  attributes: SensoryAttribute[];
+  productName: string;
+}
+
+export function SensoryTestInterface({
+  studyId,
+  participantId,
+  attributes,
+  productName,
+}: TestInterfaceProps) {
+  const [currentStep, setCurrentStep] = useState(0);
+  const [responses, setResponses] = useState<Record<string, unknown>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const router = useRouter();
+
+  const currentAttr = attributes[currentStep];
+  const isLastStep = currentStep === attributes.length - 1;
+
+  const handleValueChange = (value: unknown) => {
+    if (!currentAttr) return;
+
+    setResponses((prev) => ({
+      ...prev,
+      [currentAttr.name]: value,
+    }));
+  };
+
+  const handleNext = () => {
+    if (isLastStep) {
+      void handleSubmit();
+      return;
+    }
+
+    setCurrentStep((prev) => prev + 1);
+  };
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true);
+    setError(null);
+
+    const overallLikingEntry = attributes.find((attribute) => attribute.type === "OVERALL_LIKING");
+    const overallLikingValue = overallLikingEntry ? responses[overallLikingEntry.name] : responses.overallLiking;
+
+    const result = await submitResponse(studyId, participantId, {
+      overallLiking: overallLikingValue,
+      attributes: responses,
+      submittedAt: new Date().toISOString(),
+    });
+
+    setIsSubmitting(false);
+
+    if (!result.success) {
+      if ((result.error ?? "").toLowerCase().includes("already submitted")) {
+        router.push(`/test/completed?studyId=${studyId}`);
+        return;
+      }
+      setError(result.error ?? "Submission failed.");
+      return;
+    }
+
+    router.push(`/test/completed?studyId=${studyId}`);
+  };
+
+  const renderScale = () => {
+    if (!currentAttr) return null;
+
+    if (currentAttr.type === "OVERALL_LIKING" || currentAttr.type === "ATTRIBUTE_LIKING") {
+      const labels = [
+        "Dislike Extremely",
+        "Dislike Very Much",
+        "Dislike Moderately",
+        "Dislike Slightly",
+        "Neither",
+        "Like Slightly",
+        "Like Moderately",
+        "Like Very Much",
+        "Like Extremely",
+      ];
+
+      return (
+        <div className="grid grid-cols-3 gap-2">
+          {labels.map((label, index) => {
+            const value = index + 1;
+            const isSelected = responses[currentAttr.name] === value;
+            return (
+              <button
+                key={value}
+                onClick={() => handleValueChange(value)}
+                className={`flex min-h-[4.25rem] flex-col items-center justify-center gap-1 rounded-lg border p-2 text-center transition-all ${
+                  isSelected
+                    ? "border-[#fdba74] bg-[#fff7ed] shadow-[0_4px_12px_rgba(15,23,42,0.08)]"
+                    : "border-[#e2e8f0] bg-white hover:border-[#fdba74]"
+                }`}
+              >
+                <span className={`text-lg font-bold ${isSelected ? "text-[#ea580c]" : "text-[#0f172a]"}`}>{value}</span>
+                <span className="text-[10px] leading-tight text-[#64748b]">{label}</span>
+              </button>
+            );
+          })}
+        </div>
+      );
+    }
+
+    if (currentAttr.type === "JAR") {
+      const options = currentAttr.jarOptions ?? {
+        low: "Too Low",
+        mid: "Just Right",
+        high: "Too High",
+      };
+
+      return (
+        <div className="space-y-3">
+          {[
+            { key: "too_low", label: options.low ?? "Too Low" },
+            { key: "just_right", label: options.mid ?? "Just Right" },
+            { key: "too_high", label: options.high ?? "Too High" },
+          ].map((opt) => (
+            <button
+              key={opt.key}
+              onClick={() => handleValueChange({ type: "JAR", value: opt.key })}
+              className={`w-full rounded-lg border px-4 py-3 text-left transition-all ${
+                (responses[currentAttr.name] as { value?: string } | undefined)?.value === opt.key
+                  ? "border-[#fdba74] bg-[#fff7ed]"
+                  : "border-[#e2e8f0] bg-white hover:border-[#fdba74]"
+              }`}
+            >
+              <p className="font-medium text-[#0f172a]">{opt.label}</p>
+            </button>
+          ))}
+        </div>
+      );
+    }
+
+    if (currentAttr.type === "OPEN_ENDED") {
+      return (
+        <textarea
+          className="h-32 w-full rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#0f172a] outline-none transition focus:border-[#f97316] focus:ring-2 focus:ring-[#fed7aa]"
+          placeholder="Share your thoughts..."
+          onChange={(event) => handleValueChange(event.target.value)}
+          value={(responses[currentAttr.name] as string | undefined) ?? ""}
+        />
+      );
+    }
+
+    return null;
+  };
+
+  if (attributes.length === 0 || !currentAttr) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#f8fafc] px-4">
+        <div className="w-full max-w-md rounded-xl border border-[#e2e8f0] bg-white p-6 text-center shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+          <h1 className="text-xl font-semibold text-[#0f172a]">No sensory attributes configured</h1>
+          <p className="mt-2 text-[#64748b]">This study cannot run until attributes are added.</p>
+        </div>
+      </div>
+    );
+  }
+
+  const progress = Math.round(((currentStep + 1) / attributes.length) * 100);
+
+  return (
+    <div className="min-h-screen bg-[#f8fafc]">
+      <header className="sticky top-0 z-10 border-b border-[#e2e8f0] bg-white px-4 py-3">
+        <div className="mx-auto flex w-full max-w-md items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-[#f97316]">
+              <Beaker className="h-3.5 w-3.5 text-white" />
+            </div>
+            <span className="text-xs text-[#64748b]">{productName}</span>
+          </div>
+          <span className="text-xs text-[#64748b]">
+            {currentStep + 1} of {attributes.length}
+          </span>
+        </div>
+        <div className="mx-auto mt-2 h-1 w-full max-w-md overflow-hidden rounded-full bg-[#e2e8f0]">
+          <div className="h-full rounded-full bg-[#f97316] transition-all" style={{ width: `${progress}%` }} />
+        </div>
+      </header>
+
+      <main className="mx-auto flex min-h-[calc(100vh-65px)] w-full max-w-md flex-col justify-between p-4">
+        <section className="space-y-6 rounded-xl border border-[#e2e8f0] bg-white p-6 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+          <div className="text-center">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[#fff7ed] px-3 py-1 text-xs font-medium text-[#ea580c]">
+              <Star className="h-3 w-3" />
+              {currentAttr.type.replace("_", " ")}
+            </span>
+            <h2 className="mt-3 text-lg font-semibold text-[#0f172a]">{currentAttr.name}</h2>
+          </div>
+
+          <div>{renderScale()}</div>
+
+          {error && <p className="text-center text-sm text-red-600">{error}</p>}
+        </section>
+
+        <div className="pb-2 pt-4">
+          <button
+            onClick={handleNext}
+            disabled={responses[currentAttr.name] === undefined || isSubmitting}
+            className="w-full rounded-lg border border-[#ea580c] bg-[#f97316] py-3 text-base font-semibold text-white transition hover:bg-[#ea580c] disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isLastStep ? (isSubmitting ? "Submitting..." : "Submit Test") : "Next Question"}
+          </button>
+        </div>
+      </main>
+
+      {isLastStep && !isSubmitting && responses[currentAttr.name] !== undefined && (
+        <div className="pointer-events-none fixed bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+          <Check className="mr-1 inline h-3 w-3" />
+          Final step ready
+        </div>
+      )}
+    </div>
+  );
+}

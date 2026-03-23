@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: tarasense-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: tarasense
+      POSTGRES_PASSWORD: tarasense
+      POSTGRES_DB: tarasense
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    container_name: tarasense-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: tarasense-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+
+  api:
+    build:
+      context: ../api
+      dockerfile: Dockerfile
+    container_name: tarasense-api
+    restart: unless-stopped
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      API_PREFIX: api
+      CORS_ORIGIN: http://localhost:3000
+      DATABASE_URL: postgresql://tarasense:tarasense@postgres:5432/tarasense?schema=public
+      JWT_ACCESS_SECRET: change-me-access-secret
+      JWT_REFRESH_SECRET: change-me-refresh-secret
+      JWT_ACCESS_TTL: 900s
+      JWT_REFRESH_TTL: 7d
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_DB: 0
+      S3_ENDPOINT: http://minio:9000
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_BUCKET: tarasense-files
+      S3_FORCE_PATH_STYLE: "true"
+    ports:
+      - "4000:4000"
+
+volumes:
+  postgres_data:
+  minio_data:

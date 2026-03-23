@@ -1,0 +1,75 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  MSME
+  FIC
+  CONSUMER
+  RESEARCHER
+  FIC_MANAGER
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  password     String?
+  name         String
+  role         UserRole @default(CONSUMER)
+  organization String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]   @relation("AuditActor")
+  uploadedFiles StoredFile[] @relation("FileUploader")
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, expiresAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  actor     User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  resource  String
+  metadata  Json?
+  ipAddress String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([action, createdAt])
+  @@index([actorId, createdAt])
+}
+
+model StoredFile {
+  id           String   @id @default(cuid())
+  uploaderId   String?
+  uploader     User?    @relation("FileUploader", fields: [uploaderId], references: [id], onDelete: SetNull)
+  bucket       String
+  objectKey    String   @unique
+  originalName String
+  contentType  String
+  size         Int
+  etag         String?
+  createdAt    DateTime @default(now())
+
+  @@index([uploaderId, createdAt])
+  @@index([bucket])
+}

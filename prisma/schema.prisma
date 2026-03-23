@@ -1,0 +1,331 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  password     String? // For credentials auth
+  name         String
+  role         UserRole @default(CONSUMER)
+  organization String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  studies          Study[]
+  panelistProfile  Panelist?
+  roleRequests     RoleUpgradeRequest[] @relation("RequestApplicant")
+  reviewedRequests RoleUpgradeRequest[] @relation("RequestReviewer")
+  notifications    Notification[]
+}
+
+enum UserRole {
+  ADMIN
+  MSME
+  FIC
+  CONSUMER
+  RESEARCHER
+  FIC_MANAGER
+}
+
+model RoleUpgradeRequest {
+  id         String        @id @default(cuid())
+  userId     String
+  user       User          @relation("RequestApplicant", fields: [userId], references: [id])
+  targetRole UserRole
+  status     RequestStatus @default(PENDING)
+  reason     String?
+
+  adminId    String?
+  reviewedBy User?     @relation("RequestReviewer", fields: [adminId], references: [id])
+  reviewedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, targetRole])
+  @@index([userId, status])
+}
+
+enum RequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Notification {
+  id        String               @id @default(cuid())
+  userId    String
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  message   String
+  level     NotificationLevel    @default(INFO)
+  category  NotificationCategory @default(SYSTEM)
+  actionUrl String?
+  metadata  Json?
+  isRead    Boolean              @default(false)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
+}
+
+enum NotificationLevel {
+  INFO
+  SUCCESS
+  WARNING
+  ERROR
+}
+
+enum NotificationCategory {
+  AUTH
+  STUDY
+  ROLE
+  SURVEY
+  SYSTEM
+}
+
+model Panelist {
+  id     String  @id @default(cuid())
+  userId String? @unique // Optional link to user account
+  user   User?   @relation(fields: [userId], references: [id])
+
+  // Demographics for stratification
+  name       String
+  email      String   @unique
+  phone      String?
+  age        Int
+  gender     Gender
+  location   String // City/Region
+  occupation String // Student, Office worker, etc.
+  lifestyle  String[] // Athlete, Fitness enthusiast, etc.
+
+  // Dietary & Consumption
+  dietaryPrefs      DietaryPref[]
+  consumptionHabits Json // {snacks: "daily", coffee: "weekly"}
+
+  // Screening History
+  screeningResponses ScreeningResponse[]
+
+  // Study Participation
+  participations StudyParticipant[]
+
+  // Metadata
+  isActive   Boolean  @default(true)
+  joinedAt   DateTime @default(now())
+  lastActive DateTime @updatedAt
+
+  @@index([age, gender])
+  @@index([isActive])
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  NON_BINARY
+  PREFER_NOT_SAY
+}
+
+enum DietaryPref {
+  VEGETARIAN
+  VEGAN
+  GLUTEN_FREE
+  DAIRY_FREE
+  NUT_FREE
+  HALAL
+  KOSHER
+}
+
+model Study {
+  id        String @id @default(cuid())
+  creatorId String
+  creator   User   @relation(fields: [creatorId], references: [id])
+
+  // Basic Info
+  title       String
+  productName String
+  category    ProductCategory
+  stage       StudyStage
+  description String?
+
+  // Targeting & Sampling
+  targetDemographics Json // {ageRange: [18,40], lifestyles: ["Student"], experience: "Regular"}
+  screeningCriteria  Json // Array of questions/conditions
+  stratificationVar  String? // "gender", "age_group", etc.
+  sampleSize         Int
+  location           String // "FIC Lab A", "Online", etc.
+
+  // Status
+  status StudyStatus @default(DRAFT)
+
+  // Relations
+  screeningResponses ScreeningResponse[]
+  participants       StudyParticipant[]
+  sensoryAttributes  SensoryAttribute[]
+  responses          SensoryResponse[]
+  analysis           StudyAnalysis?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, creatorId])
+}
+
+enum ProductCategory {
+  BEVERAGE
+  SNACK
+  DESSERT
+  FUNCTIONAL_FOOD
+  DAIRY
+  BAKERY
+}
+
+enum StudyStage {
+  PROTOTYPE_CHECK
+  REFINEMENT
+  MARKET_READINESS
+}
+
+enum StudyStatus {
+  DRAFT
+  RECRUITING
+  ACTIVE
+  ANALYZING
+  COMPLETED
+  ARCHIVED
+}
+
+model ScreeningResponse {
+  id         String   @id @default(cuid())
+  panelistId String
+  panelist   Panelist @relation(fields: [panelistId], references: [id])
+  studyId    String
+  study      Study    @relation(fields: [studyId], references: [id])
+
+  responses   Json // {q1: "daily", q2: "no_allergies", age: 25}
+  isQualified Boolean
+  score       Int? // Screening score if applicable
+
+  createdAt DateTime @default(now())
+
+  @@unique([panelistId, studyId])
+}
+
+model StudyParticipant {
+  id         String            @id @default(cuid())
+  studyId    String
+  study      Study             @relation(fields: [studyId], references: [id])
+  panelistId String
+  panelist   Panelist          @relation(fields: [panelistId], references: [id])
+  responses  SensoryResponse[]
+
+  status         ParticipantStatus @default(SELECTED)
+  stratum        String? // "male", "female", or "18-25", etc.
+  selectionOrder Int // For waitlist ordering
+  panelistNumber Int?
+  randomizeCode  String?
+  sampleCodes    Json?
+  offeredSessions Json?
+  applicationAt  DateTime?
+  requestedSessionAt DateTime?
+  consentStatus  ConsentStatus @default(PENDING)
+
+  // Participation tracking
+  invitationSent DateTime?
+  confirmedAt    DateTime?
+  consentedAt    DateTime?
+  declinedAt     DateTime?
+  sessionAt      DateTime?
+  reminderSentAt DateTime?
+  completedAt    DateTime?
+  noShow         Boolean   @default(false)
+
+  @@unique([studyId, panelistId])
+  @@index([studyId, panelistNumber])
+  @@index([studyId, randomizeCode])
+  @@index([studyId, status])
+}
+
+enum ParticipantStatus {
+  SELECTED // In the main sample
+  WAITLIST // In waitlist
+  CONFIRMED // Confirmed participation
+  COMPLETED // Finished test
+  CANCELLED // Dropped out
+  DECLINED // Refused invitation
+}
+
+enum ConsentStatus {
+  PENDING
+  AGREED
+  DECLINED
+}
+
+model SensoryAttribute {
+  id      String @id @default(cuid())
+  studyId String
+  study   Study  @relation(fields: [studyId], references: [id])
+
+  name  String // "Sweetness", "Texture", etc.
+  type  AttrType // LIKING or JAR
+  order Int // Display order
+
+  // For JAR attributes
+  jarOptions Json? // {low: "Too Low", mid: "Just Right", high: "Too High"}
+}
+
+enum AttrType {
+  OVERALL_LIKING
+  ATTRIBUTE_LIKING
+  JAR
+  OPEN_ENDED
+}
+
+model SensoryResponse {
+  id            String           @id @default(cuid())
+  studyId       String
+  study         Study            @relation(fields: [studyId], references: [id])
+  participantId String
+  participant   StudyParticipant @relation(fields: [participantId], references: [id])
+
+  // Responses stored as JSON
+  // {overallLiking: 7, sweetness: {type: "JAR", value: "just_right"}, texture: 8, comment: "..."}
+  data Json
+
+  submittedAt DateTime @default(now())
+
+  @@index([studyId, submittedAt])
+}
+
+model StudyAnalysis {
+  id      String @id @default(cuid())
+  studyId String @unique
+  study   Study  @relation(fields: [studyId], references: [id])
+
+  // Computed Statistics
+  overallLiking   Json // {mean: 7.2, stdDev: 1.4, n: 30}
+  attributeStats  Json // [{name: "Sweetness", mean: 6.8, jarDist: {...}}]
+  penaltyAnalysis Json // [{attribute: "Sweetness", tooHighPenalty: 1.3, ...}]
+
+  // AI Generated
+  aiInterpretation String?       @db.Text
+  aiRecommendation String?       @db.Text
+  decisionFlag     DecisionType?
+
+  generatedAt DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+enum DecisionType {
+  NEEDS_IMPROVEMENT
+  CONTINUE_REFINEMENT
+  READY_FOR_READINESS
+  READY_FOR_COMMERCIALIZATION
+}
