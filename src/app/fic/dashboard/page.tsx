@@ -6,12 +6,28 @@ import { NotificationPanel } from "@/components/notifications/notification-panel
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
-import { ClipboardCheck, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
+import { formatPanelistNumber } from "@/lib/participant-assignment";
+import { CalendarDays, ClipboardCheck, Clock3, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
 
 export const dynamic = "force-dynamic";
+const FIC_TIMEZONE = "Asia/Manila";
 
 type PageProps = {
   searchParams: Promise<{ view?: string; error?: string; message?: string; q?: string }>;
+};
+
+type CalendarEvent = {
+  id: string;
+  studyId: string;
+  studyTitle: string;
+  productName: string;
+  location: string;
+  panelistName: string;
+  panelistNumber: string;
+  sessionState: "CONFIRMED" | "PENDING_CONFIRMATION";
+  scheduledAt: Date;
+  msmeName: string;
+  msmeOrganization: string | null;
 };
 
 export default async function FicDashboardPage({ searchParams }: PageProps) {
@@ -24,7 +40,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
   const { error, message, q } = params;
   const activeView = parseFicView(params.view);
 
-  const [studies] = await Promise.all([
+  const [studies, participantSessions] = await Promise.all([
     prisma.study.findMany({
       orderBy: { createdAt: "desc" },
       include: {
@@ -32,6 +48,40 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         _count: { select: { responses: true, participants: true } },
       },
       take: 20,
+    }),
+    prisma.studyParticipant.findMany({
+      where: {
+        OR: [{ sessionAt: { not: null } }, { requestedSessionAt: { not: null } }],
+        status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
+        study: {
+          location: {
+            contains: "fic",
+            mode: "insensitive",
+          },
+        },
+      },
+      include: {
+        study: {
+          select: {
+            id: true,
+            title: true,
+            productName: true,
+            location: true,
+            creator: {
+              select: {
+                name: true,
+                organization: true,
+              },
+            },
+          },
+        },
+        panelist: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      take: 300,
     }),
   ]);
 
@@ -51,6 +101,56 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         return entry.includes(normalizedQuery);
       })
     : studies;
+
+  const filteredParticipantSessions = normalizedQuery
+    ? participantSessions.filter((row) => {
+        const entry = [
+          row.study.title,
+          row.study.productName,
+          row.study.location,
+          row.study.creator.name,
+          row.study.creator.organization ?? "",
+          row.panelist.name,
+          row.status,
+          formatPanelistNumber(row.panelistNumber),
+        ]
+          .join(" ")
+          .toLowerCase();
+        return entry.includes(normalizedQuery);
+      })
+    : participantSessions;
+
+  const calendarEvents = filteredParticipantSessions
+    .map<CalendarEvent | null>((row) => {
+      const scheduledAt = row.sessionAt ?? row.requestedSessionAt;
+      if (!scheduledAt) {
+        return null;
+      }
+      return {
+        id: row.id,
+        studyId: row.study.id,
+        studyTitle: row.study.title,
+        productName: row.study.productName,
+        location: row.study.location,
+        panelistName: row.panelist.name,
+        panelistNumber: formatPanelistNumber(row.panelistNumber),
+        sessionState: row.sessionAt ? "CONFIRMED" : "PENDING_CONFIRMATION",
+        scheduledAt,
+        msmeName: row.study.creator.name,
+        msmeOrganization: row.study.creator.organization,
+      };
+    })
+    .filter((event): event is CalendarEvent => Boolean(event))
+    .sort((left, right) => left.scheduledAt.getTime() - right.scheduledAt.getTime());
+
+  const todayKey = getDateKeyInTimezone(new Date(), FIC_TIMEZONE);
+  const upcomingCalendarEvents = calendarEvents.filter(
+    (event) => getDateKeyInTimezone(event.scheduledAt, FIC_TIMEZONE) >= todayKey
+  );
+  const calendarGroups = groupCalendarByDate(upcomingCalendarEvents, FIC_TIMEZONE);
+  const pendingCalendarCount = upcomingCalendarEvents.filter(
+    (event) => event.sessionState === "PENDING_CONFIRMATION"
+  ).length;
 
   const ficRelevant = filteredStudies.filter((study) => study.location.toLowerCase().includes("fic"));
   const activeStudies = filteredStudies.filter((study) => study.status === "ACTIVE" || study.status === "RECRUITING").length;
@@ -74,9 +174,18 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           badge: `${ficRelevant.length}`,
           active: activeView === "queue",
         },
+        {
+          label: "FIC Calendar",
+          href: "/fic/dashboard?view=calendar",
+          icon: CalendarDays,
+          badge: `${upcomingCalendarEvents.length}`,
+          active: activeView === "calendar",
+        },
       ]}
       stats={[
         { label: "Booking Notifications", value: `${ficRelevant.length}`, helper: "Studies tagged for FIC facilities", icon: MapPin, tone: "amber" },
+        { label: "Upcoming Sessions", value: `${upcomingCalendarEvents.length}`, helper: "Requested + confirmed session slots", icon: CalendarDays, tone: "sky" },
+        { label: "Pending Confirmation", value: `${pendingCalendarCount}`, helper: "Waiting MSME session confirmation", icon: Clock3, tone: "amber" },
         { label: "Uploaded Studies", value: `${studies.length}`, helper: "Visible MSME study submissions", icon: TestTube2, tone: "sky" },
         { label: "Active Studies", value: `${activeStudies}`, helper: "Recruiting or currently running", icon: LayoutDashboard, tone: "mint" },
         { label: "Total Responses", value: `${totalResponses}`, helper: "Responses across visible studies", icon: ClipboardCheck, tone: "slate" },
@@ -142,13 +251,150 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           ))}
         </section>
       )}
+
+      {activeView === "calendar" && (
+        <CollapsibleSection id="fic-calendar" title="Session Calendar" countLabel={`${upcomingCalendarEvents.length}`} defaultOpen={true}>
+          <div className="space-y-4">
+            <article className="rounded-2xl border border-[#e4d7cc] bg-white p-5 text-sm text-[#6f5b4f]">
+              <p>
+                Calendar timezone: <span className="font-semibold text-[#2e231c]">{FIC_TIMEZONE}</span>
+              </p>
+              <p className="mt-1">
+                Showing requested and confirmed sessions for FIC-tagged studies starting today.
+              </p>
+            </article>
+
+            {calendarGroups.length === 0 && (
+              <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                <h2 className="text-lg font-semibold text-[#2e231c]">No upcoming sessions</h2>
+                <p className="mt-1 text-sm text-[#6f5b4f]">
+                  Once MSMEs send schedule options and confirm slots, they will appear here.
+                </p>
+              </article>
+            )}
+
+            {calendarGroups.map((group) => (
+              <article key={group.dateKey} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h2 className="text-xl font-semibold text-[#2e231c]">{group.dateLabel}</h2>
+                  <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
+                    {group.events.length} session(s)
+                  </span>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  {group.events.map((event) => (
+                    <div key={event.id} className="rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
+                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <h3 className="text-base font-semibold text-[#2e231c]">{event.studyTitle}</h3>
+                          <p className="mt-1 text-sm text-[#6f5b4f]">{event.productName}</p>
+                          <p className="mt-2 text-xs text-[#8c776a]">
+                            Panelist {event.panelistNumber}: {event.panelistName}
+                          </p>
+                          <p className="mt-1 text-xs text-[#8c776a]">
+                            MSME: {event.msmeName}
+                            {event.msmeOrganization ? ` (${event.msmeOrganization})` : ""}
+                          </p>
+                          <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{event.location}</span>
+                            <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                              {formatTimeInTimezone(event.scheduledAt, FIC_TIMEZONE)}
+                            </span>
+                            <span
+                              className={
+                                event.sessionState === "CONFIRMED"
+                                  ? "rounded-full bg-[#e8f8ed] px-2.5 py-1 text-[#1d7c4a]"
+                                  : "rounded-full bg-[#fff7e9] px-2.5 py-1 text-[#8a5a00]"
+                              }
+                            >
+                              {event.sessionState === "CONFIRMED" ? "Confirmed" : "Pending MSME Confirmation"}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex gap-2 self-start">
+                          <Link
+                            href={`/studies/${event.studyId}/form`}
+                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
+                          >
+                            Open Study
+                          </Link>
+                          <Link
+                            href={`/dashboard/${event.studyId}`}
+                            className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
+                          >
+                            View Dashboard
+                          </Link>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </article>
+            ))}
+          </div>
+        </CollapsibleSection>
+      )}
     </DashboardShell>
   );
 }
 
 function parseFicView(value?: string) {
-  if (value === "profile" || value === "queue") {
+  if (value === "profile" || value === "queue" || value === "calendar") {
     return value;
   }
   return "dashboard";
+}
+
+function groupCalendarByDate(events: CalendarEvent[], timezone: string) {
+  const grouped = new Map<string, CalendarEvent[]>();
+  events.forEach((event) => {
+    const key = getDateKeyInTimezone(event.scheduledAt, timezone);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.push(event);
+      return;
+    }
+    grouped.set(key, [event]);
+  });
+
+  return Array.from(grouped.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([dateKey, rows]) => ({
+      dateKey,
+      dateLabel: formatDateHeading(rows[0].scheduledAt, timezone),
+      events: rows.sort((left, right) => left.scheduledAt.getTime() - right.scheduledAt.getTime()),
+    }));
+}
+
+function getDateKeyInTimezone(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "01";
+  const day = parts.find((part) => part.type === "day")?.value ?? "01";
+  return `${year}-${month}-${day}`;
+}
+
+function formatDateHeading(date: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
+function formatTimeInTimezone(date: Date, timeZone: string) {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hour: "numeric",
+    minute: "2-digit",
+    hour12: true,
+  }).format(date);
 }

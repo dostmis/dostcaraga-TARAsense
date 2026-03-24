@@ -30,6 +30,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
         select: {
           creatorId: true,
           productName: true,
+          targetDemographics: true,
           sensoryAttributes: {
             orderBy: { order: "asc" },
             select: {
@@ -52,6 +53,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
         study: {
           creatorId: string;
           productName: string;
+          targetDemographics: unknown;
           sensoryAttributes: Array<{
             id: string;
             name: string;
@@ -101,8 +103,8 @@ export default async function SensoryTestPage({ params }: PageProps) {
           <p className="mt-2 text-[#64748b]">
             Add sensory attributes to this study before launching test sessions.
           </p>
-          <Link className="mt-4 inline-block font-medium text-[#f97316] hover:text-[#ea580c]" href="/">
-            Return home
+          <Link className="mt-4 inline-block font-medium text-[#f97316] hover:text-[#ea580c]" href="/dashboard">
+            Return to Dashboard
           </Link>
         </div>
       </div>
@@ -123,6 +125,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
         ? (attribute.jarOptions as { low?: string; mid?: string; high?: string })
         : null,
   }));
+  const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
 
   return (
     <SensoryTestInterface
@@ -130,6 +133,20 @@ export default async function SensoryTestPage({ params }: PageProps) {
       participantId={participantId}
       attributes={attributes}
       productName={participant.study.productName}
+      sampleCount={sampleCount}
     />
   );
+}
+
+function resolveStudySampleCount(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return 1;
+  }
+
+  const data = value as { numberOfSamples?: unknown };
+  if (typeof data.numberOfSamples !== "number" || !Number.isFinite(data.numberOfSamples)) {
+    return 1;
+  }
+
+  return Math.max(1, Math.floor(data.numberOfSamples));
 }

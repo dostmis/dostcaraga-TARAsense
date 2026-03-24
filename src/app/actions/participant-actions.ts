@@ -10,6 +10,11 @@ import {
   formatPanelistNumber,
   parseOfferedSessions,
 } from "@/lib/participant-assignment";
+import {
+  formatSessionWindow,
+  normalizeDateValue,
+  parseStudySessionSchedule,
+} from "@/lib/study-schedule";
 
 export async function participateInStudy(formData: FormData) {
   const session = await getCurrentSession();
@@ -18,6 +23,7 @@ export async function participateInStudy(formData: FormData) {
   }
 
   const studyId = String(formData.get("studyId") ?? "").trim();
+  const sessionSlotId = String(formData.get("sessionSlotId") ?? "").trim();
   if (!studyId) {
     redirect("/consumer/dashboard?view=available&error=Study+ID+is+required");
   }
@@ -29,6 +35,7 @@ export async function participateInStudy(formData: FormData) {
       title: true,
       status: true,
       creatorId: true,
+      targetDemographics: true,
       sensoryAttributes: { select: { id: true }, take: 1 },
     },
   });
@@ -44,50 +51,138 @@ export async function participateInStudy(formData: FormData) {
   }
 
   const panelist = await ensurePanelistForUser(session.userId);
-  const existing = await prisma.studyParticipant.findFirst({
-    where: {
-      studyId: study.id,
-      panelistId: panelist.id,
-      status: { not: "CANCELLED" },
-    },
-    select: { id: true, status: true },
-  });
+  const schedule = parseStudySessionSchedule(study.targetDemographics);
+  const selectedSlot =
+    schedule && schedule.slots.length > 0
+      ? schedule.slots.find((slot) => slot.id === sessionSlotId) ?? null
+      : null;
 
-  if (existing) {
-    if (existing.status === "COMPLETED") {
-      redirect(`/consumer/dashboard?view=available&message=You+already+completed+this+study`);
-    }
-    redirect(`/consumer/dashboard?view=available&message=Participation+already+submitted`);
+  if (schedule && schedule.slots.length > 0 && !selectedSlot) {
+    redirect("/consumer/dashboard?view=available&error=Please+select+an+available+session+before+participating");
   }
 
-  const lastOrder = await prisma.studyParticipant.findFirst({
-    where: { studyId: study.id },
-    orderBy: { selectionOrder: "desc" },
-    select: { selectionOrder: true },
+  const transactionResult = await prisma.$transaction(async (tx) => {
+    const existing = await tx.studyParticipant.findFirst({
+      where: {
+        studyId: study.id,
+        panelistId: panelist.id,
+        status: { not: "CANCELLED" },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (existing) {
+      return {
+        type: "existing" as const,
+        status: existing.status,
+      };
+    }
+
+    let selectedStartIso: string | null = null;
+    if (selectedSlot) {
+      selectedStartIso = normalizeDateValue(selectedSlot.startsAt);
+      if (!selectedStartIso) {
+        return { type: "invalid-session" as const };
+      }
+
+      const selectedStartDate = new Date(selectedStartIso);
+      const occupiedCount = await tx.studyParticipant.count({
+        where: {
+          studyId: study.id,
+          status: { notIn: ["CANCELLED", "DECLINED"] },
+          OR: [
+            { requestedSessionAt: selectedStartDate },
+            { sessionAt: selectedStartDate },
+          ],
+        },
+      });
+
+      if (occupiedCount >= selectedSlot.capacity) {
+        return { type: "session-full" as const };
+      }
+    }
+
+    const lastOrder = await tx.studyParticipant.findFirst({
+      where: { studyId: study.id },
+      orderBy: { selectionOrder: "desc" },
+      select: { selectionOrder: true },
+    });
+
+    const selectedStartDate = selectedStartIso ? new Date(selectedStartIso) : null;
+    const created = await tx.studyParticipant.create({
+      data: {
+        studyId: study.id,
+        panelistId: panelist.id,
+        status: selectedSlot ? "SELECTED" : "WAITLIST",
+        selectionOrder: (lastOrder?.selectionOrder ?? 0) + 1,
+        applicationAt: new Date(),
+        offeredSessions: selectedSlot ? [selectedSlot.startsAt] : undefined,
+        requestedSessionAt: selectedStartDate,
+        sessionAt: selectedStartDate,
+        invitationSent: selectedSlot ? new Date() : null,
+        confirmedAt: selectedSlot ? new Date() : null,
+      },
+      select: {
+        id: true,
+        panelistNumber: true,
+        randomizeCode: true,
+        sampleCodes: true,
+      },
+    });
+
+    const assigned = await ensureParticipantAssignment(tx, {
+      participantId: created.id,
+      studyId: study.id,
+      panelistNumber: created.panelistNumber,
+      randomizeCode: created.randomizeCode,
+      sampleCodes: created.sampleCodes,
+    });
+
+    return {
+      type: "created" as const,
+      assignment: assigned,
+    };
   });
 
-  await prisma.studyParticipant.create({
-    data: {
-      studyId: study.id,
-      panelistId: panelist.id,
-      status: "WAITLIST",
-      selectionOrder: (lastOrder?.selectionOrder ?? 0) + 1,
-      applicationAt: new Date(),
-    },
-  });
+  if (transactionResult.type === "existing") {
+    if (transactionResult.status === "COMPLETED") {
+      redirect("/consumer/dashboard?view=available&message=You+already+completed+this+study");
+    }
+    redirect("/consumer/dashboard?view=available&message=Participation+already+submitted");
+  }
+  if (transactionResult.type === "invalid-session") {
+    redirect("/consumer/dashboard?view=available&error=The+selected+session+is+invalid");
+  }
+  if (transactionResult.type === "session-full") {
+    redirect("/consumer/dashboard?view=available&error=That+session+is+already+full.+Please+choose+another+slot");
+  }
+
+  const sessionSummary = selectedSlot
+    ? formatSessionWindow(selectedSlot, schedule?.timezone ?? "Asia/Manila")
+    : "No fixed schedule selected yet";
 
   await notifyUser(study.creatorId, {
-    title: "New consumer volunteer",
-    message: "A consumer volunteered for your study and is awaiting qualification.",
+    title: selectedSlot ? "New consumer booked a session" : "New consumer volunteer",
+    message: selectedSlot
+      ? `A consumer booked: ${sessionSummary}. Panelist No: ${formatPanelistNumber(transactionResult.assignment.panelistNumber)}.`
+      : "A consumer volunteered for your study and is awaiting qualification.",
     level: "INFO",
     category: "SURVEY",
     actionUrl: `/studies/${study.id}/form`,
-    metadata: { studyId: study.id },
+    metadata: {
+      studyId: study.id,
+      selectedSession: selectedSlot?.startsAt ?? null,
+      panelistNumber: transactionResult.assignment.panelistNumber,
+      sampleCodes: transactionResult.assignment.sampleCodes,
+    },
   });
 
   revalidatePath("/consumer/dashboard");
   revalidatePath(`/studies/${study.id}/form`);
 
+  if (selectedSlot) {
+    redirect("/consumer/dashboard?view=available&message=Session+booked+successfully");
+  }
   redirect("/consumer/dashboard?view=available&message=Participation+submitted.+Wait+for+MSME+qualification");
 }
 

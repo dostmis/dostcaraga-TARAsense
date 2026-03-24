@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import {
   ArrowRight,
   Beaker,
@@ -13,6 +14,8 @@ import {
   Users,
   Zap,
 } from "lucide-react";
+import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
+import { getCurrentRole } from "@/lib/auth/session";
 
 const roles = [
   {
@@ -60,7 +63,12 @@ const trustItems = [
   { icon: CheckCircle2, title: "MSME Ready", desc: "Designed for practical, real-world product development." },
 ];
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const currentRole = await getCurrentRole();
+  if (currentRole) {
+    redirect(ROLE_DASHBOARD_PATH[currentRole]);
+  }
+
   return (
     <div className="min-h-screen bg-white text-[#0f172a]">
       <header className="sticky top-0 z-50 border-b border-[#e2e8f0] bg-white/90 backdrop-blur-sm">
@@ -94,14 +102,11 @@ export default function LandingPage() {
             Test. Analyze. <span className="text-[#f97316]">Refine.</span> Advance.
           </h1>
           <p className="mx-auto mt-6 max-w-3xl text-lg leading-relaxed text-[#64748b]">
-            TARAsense connects MSMEs, consumers, FIC teams, and admins in one workflow to run better studies and build products people actually want.
+            Sensory and consumer driven food innovation platform that connects MSMEs, Consumer and Government support networks in one smart digital platform.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Link href="/register" className="inline-flex items-center rounded-lg border border-[#ea580c] bg-[#f97316] px-5 py-2.5 font-semibold text-white hover:bg-[#ea580c]">
               Start Your First Study <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
-            <Link href="/login" className="rounded-lg border border-[#e2e8f0] bg-white px-5 py-2.5 font-semibold text-[#0f172a] hover:bg-[#f8fafc]">
-              Log in to Dashboard
             </Link>
           </div>
         </div>

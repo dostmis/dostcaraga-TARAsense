@@ -5,7 +5,9 @@ import QRCode from "qrcode";
 import { confirmParticipantSession, offerScheduleOptions } from "@/app/actions/participant-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
+import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/lib/participant-assignment";
+import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
 
 type PageProps = {
@@ -60,6 +62,7 @@ export default async function StudyFormPage({ params }: PageProps) {
 
   const meta = toStudyMeta(study.targetDemographics);
   const criteria = toCriteria(study.screeningCriteria);
+  const sessionSchedule = parseStudySessionSchedule(study.targetDemographics);
   const isMarketStudy = meta.studyMode === "MARKET";
   const sampleCodes = buildSampleCodes(study.id, Math.max(meta.numberOfSamples ?? 3, 1));
   const overallLikingQuestion = study.sensoryAttributes.find((attribute) => attribute.type === "OVERALL_LIKING");
@@ -78,6 +81,7 @@ export default async function StudyFormPage({ params }: PageProps) {
   const qrTargetPath = isMarketStudy ? `/studies/${study.id}/form` : participantLink;
   const qrTargetUrl = `${baseUrl.replace(/\/$/, "")}${qrTargetPath}`;
   const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, { width: 280, margin: 1 });
+  const dashboardHref = session ? ROLE_DASHBOARD_PATH[session.role] : "/dashboard";
 
   return (
     <PageShell maxWidthClassName="max-w-6xl">
@@ -232,6 +236,26 @@ export default async function StudyFormPage({ params }: PageProps) {
             </div>
           </section>
 
+          {sessionSchedule && !isMarketStudy && (
+            <section className="space-y-3">
+              <h2 className="text-lg font-semibold text-[#0f172a]">Testing Session Plan</h2>
+              <p className="text-sm text-[#64748b]">Timezone: {sessionSchedule.timezone}</p>
+              <div className="space-y-2">
+                {sessionSchedule.slots.map((slot) => (
+                  <div
+                    key={slot.id}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2 text-sm"
+                  >
+                    <p className="text-[#0f172a]">{formatSessionWindow(slot, sessionSchedule.timezone)}</p>
+                    <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-xs font-medium text-[#1e4f8f]">
+                      Capacity: {slot.capacity}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
           {!isMarketStudy && (
             <section className="space-y-3">
               <h2 className="text-lg font-semibold text-[#0f172a]">Configured Questionnaire Items</h2>
@@ -298,10 +322,10 @@ export default async function StudyFormPage({ params }: PageProps) {
               </>
             )}
             <Link
-              href="/"
+              href={dashboardHref}
               className="app-button-secondary inline-flex w-full items-center justify-center py-2"
             >
-              Back to Study Hub
+              Back to Dashboard
             </Link>
           </div>
 
@@ -358,7 +382,7 @@ export default async function StudyFormPage({ params }: PageProps) {
                         </button>
                       </form>
 
-                      {requested && (
+                      {requested && !confirmed && (
                         <form action={confirmParticipantSession}>
                           <input type="hidden" name="studyId" value={study.id} />
                           <input type="hidden" name="participantId" value={participant.id} />

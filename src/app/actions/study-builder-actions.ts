@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "crypto";
 import { createStudy } from "@/app/actions/study-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
@@ -14,6 +15,14 @@ const PrismaCategorySchema = z.enum([
   "DAIRY",
   "BAKERY",
 ]);
+
+const BuilderSessionSlotSchema = z.object({
+  dayOffset: z.number().int().min(0),
+  label: z.string().min(1),
+  startDateTime: z.string().datetime(),
+  endDateTime: z.string().datetime(),
+  capacity: z.number().int().min(1),
+});
 
 const BuilderPayloadSchema = z.object({
   studyMode: z.enum(["MARKET", "SENSORY"]),
@@ -53,6 +62,9 @@ const BuilderPayloadSchema = z.object({
       })
     )
     .default([]),
+  testingStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  testingDurationDays: z.number().int().min(1).max(31).optional(),
+  sessionSlots: z.array(BuilderSessionSlotSchema).default([]),
   questions: z.array(z.string().min(1)).default([]),
 });
 
@@ -167,6 +179,22 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
     }
   }
 
+  const scheduleResult = buildSessionSchedule(payload);
+  if (!scheduleResult.success) {
+    return { success: false, error: scheduleResult.error };
+  }
+
+  const totalScheduleCapacity = scheduleResult.value.slots.reduce(
+    (sum, slot) => sum + slot.capacity,
+    0
+  );
+  if (payload.targetResponses > totalScheduleCapacity) {
+    return {
+      success: false,
+      error: `Target responses (${payload.targetResponses}) exceed configured session capacity (${totalScheduleCapacity}).`,
+    };
+  }
+
   await ensurePanelists(Math.max(payload.targetResponses * 2, 40));
 
   const stage = mapStage(payload.sensoryStudyType, objective);
@@ -191,6 +219,7 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
         consumerObjective: objective,
         categoryLabel: payload.categoryLabel,
         numberOfSamples: payload.numberOfSamples,
+        sessionSchedule: scheduleResult.value,
       },
       stratificationVar: "gender",
       attributes: attributeQuestions,
@@ -228,6 +257,80 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
     success: true,
     studyId: studyResult.studyId,
     redirectPath: `/studies/${studyResult.studyId}/form`,
+  };
+}
+
+function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
+  if (!payload.testingStartDate) {
+    return { success: false as const, error: "Testing start date is required." };
+  }
+  if (!payload.testingDurationDays) {
+    return { success: false as const, error: "Testing duration is required." };
+  }
+  const durationDays = payload.testingDurationDays;
+  if (payload.sessionSlots.length === 0) {
+    return { success: false as const, error: "Add at least one testing session." };
+  }
+
+  const slots = payload.sessionSlots.reduce<
+    Array<{
+      id: string;
+      dayOffset: number;
+      label: string;
+      startsAt: string;
+      endsAt: string;
+      capacity: number;
+    }>
+  >((accumulator, slot) => {
+    if (slot.dayOffset >= durationDays) {
+      return accumulator;
+    }
+
+    const startsAt = new Date(slot.startDateTime);
+    const endsAt = new Date(slot.endDateTime);
+    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+      return accumulator;
+    }
+    if (endsAt.getTime() <= startsAt.getTime()) {
+      return accumulator;
+    }
+
+    accumulator.push({
+      id: randomUUID(),
+      dayOffset: slot.dayOffset,
+      label: slot.label.trim(),
+      startsAt: startsAt.toISOString(),
+      endsAt: endsAt.toISOString(),
+      capacity: slot.capacity,
+    });
+    return accumulator;
+  }, []);
+
+  if (slots.length === 0) {
+    return {
+      success: false as const,
+      error: "All configured sessions are invalid. Check date, time, and day mapping.",
+    };
+  }
+
+  const uniqueStarts = new Set(slots.map((slot) => slot.startsAt));
+  if (uniqueStarts.size !== slots.length) {
+    return {
+      success: false as const,
+      error: "Duplicate session start times are not allowed.",
+    };
+  }
+
+  return {
+    success: true as const,
+    value: {
+      timezone: "Asia/Manila",
+      startDate: payload.testingStartDate,
+      durationDays,
+      slots: slots.sort(
+        (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime()
+      ),
+    },
   };
 }
 

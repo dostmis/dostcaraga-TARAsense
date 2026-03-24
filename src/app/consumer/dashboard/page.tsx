@@ -10,6 +10,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { ClipboardList, Compass, FileText, LayoutDashboard, ShieldCheck, UserRound } from "lucide-react";
 import { formatPanelistNumber, parseOfferedSessions } from "@/lib/participant-assignment";
+import { formatSessionWindow, normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
 
 export const dynamic = "force-dynamic";
 
@@ -35,11 +36,6 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       orderBy: { createdAt: "desc" },
       include: {
         participants: {
-          where: {
-            panelist: {
-              userId: session.userId,
-            },
-          },
           select: {
             id: true,
             status: true,
@@ -48,8 +44,12 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
             offeredSessions: true,
             requestedSessionAt: true,
             sessionAt: true,
+            panelist: {
+              select: {
+                userId: true,
+              },
+            },
           },
-          take: 1,
         },
         _count: {
           select: {
@@ -81,8 +81,12 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
 
   const pendingApplications = filteredApplications.filter((app) => app.status === "PENDING").length;
   const approvedApplications = filteredApplications.filter((app) => app.status === "APPROVED").length;
-  const completedStudies = filteredStudies.filter((study) => study.participants[0]?.status === "COMPLETED");
-  const openStudies = filteredStudies.filter((study) => study.participants[0]?.status !== "COMPLETED");
+  const completedStudies = filteredStudies.filter(
+    (study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status === "COMPLETED"
+  );
+  const openStudies = filteredStudies.filter(
+    (study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status !== "COMPLETED"
+  );
 
   return (
     <DashboardShell
@@ -211,8 +215,52 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
             )}
 
             {openStudies.map((study) => {
-              const myParticipation = study.participants[0];
+              const myParticipation = study.participants.find(
+                (participant) => participant.panelist.userId === session.userId
+              );
               const offeredSessions = myParticipation ? parseOfferedSessions(myParticipation.offeredSessions) : [];
+              const sessionSchedule = parseStudySessionSchedule(study.targetDemographics);
+              const scheduleSlots = sessionSchedule?.slots ?? [];
+
+              const occupancyBySlotStart = scheduleSlots.reduce<Record<string, number>>(
+                (accumulator, slot) => {
+                  accumulator[slot.startsAt] = 0;
+                  return accumulator;
+                },
+                {}
+              );
+
+              study.participants.forEach((participant) => {
+                if (participant.status === "CANCELLED" || participant.status === "DECLINED") {
+                  return;
+                }
+                const selectedStart = normalizeDateValue(
+                  participant.sessionAt ?? participant.requestedSessionAt
+                );
+                if (!selectedStart || occupancyBySlotStart[selectedStart] === undefined) {
+                  return;
+                }
+                occupancyBySlotStart[selectedStart] += 1;
+              });
+
+              const slotAvailability = scheduleSlots.map((slot) => {
+                const reservedCount = occupancyBySlotStart[slot.startsAt] ?? 0;
+                const remainingCount = Math.max(0, slot.capacity - reservedCount);
+                return {
+                  slot,
+                  reservedCount,
+                  remainingCount,
+                };
+              });
+
+              const hasAvailableSlot = slotAvailability.some((entry) => entry.remainingCount > 0);
+              const mySelectedSession = myParticipation
+                ? normalizeDateValue(myParticipation.sessionAt ?? myParticipation.requestedSessionAt)
+                : null;
+              const mySelectedSlot = slotAvailability.find(
+                (entry) => entry.slot.startsAt === mySelectedSession
+              );
+
               return (
                 <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
@@ -232,33 +280,109 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
                       >
                         View Study
                       </Link>
-                      {!myParticipation && (
-                        <form action={participateInStudy}>
-                          <input type="hidden" name="studyId" value={study.id} />
-                          <button
-                            type="submit"
-                            className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
-                          >
-                            Participate
-                          </button>
-                        </form>
-                      )}
                     </div>
                   </div>
+                  {!myParticipation && sessionSchedule && (
+                    <div className="mt-4 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
+                      <h3 className="text-sm font-semibold text-[#2e231c]">Choose a Testing Session</h3>
+                      <p className="mt-1 text-xs text-[#6f5b4f]">
+                        Timezone: {sessionSchedule.timezone}. Full sessions are automatically disabled.
+                      </p>
+                      <form action={participateInStudy} className="mt-3 flex flex-col gap-3 md:flex-row md:items-end">
+                        <input type="hidden" name="studyId" value={study.id} />
+                        <label className="flex-1 text-xs text-[#6f5b4f]">
+                          Session slot
+                          <select
+                            name="sessionSlotId"
+                            className="mt-1 w-full rounded-lg border border-[#d8c7b8] px-3 py-2 text-sm"
+                            required
+                          >
+                            <option value="">Select a session</option>
+                            {slotAvailability.map((entry) => (
+                              <option
+                                key={entry.slot.id}
+                                value={entry.slot.id}
+                                disabled={entry.remainingCount <= 0}
+                              >
+                                {formatSessionWindow(entry.slot, sessionSchedule.timezone)} ({entry.reservedCount}/
+                                {entry.slot.capacity}){entry.remainingCount <= 0 ? " - FULL" : ""}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <button
+                          type="submit"
+                          disabled={!hasAvailableSlot}
+                          className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Participate
+                        </button>
+                      </form>
+                      {!hasAvailableSlot && (
+                        <p className="mt-2 text-xs font-medium text-[#8a5a00]">
+                          All sessions are full for this study.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {!myParticipation && !sessionSchedule && (
+                    <div className="mt-4">
+                      <form action={participateInStudy}>
+                        <input type="hidden" name="studyId" value={study.id} />
+                        <button
+                          type="submit"
+                          className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
+                        >
+                          Participate
+                        </button>
+                      </form>
+                    </div>
+                  )}
+                  {sessionSchedule && (
+                    <div className="mt-4 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-[#8c776a]">
+                        Session Availability
+                      </p>
+                      <div className="mt-2 space-y-2">
+                        {slotAvailability.map((entry) => (
+                          <div
+                            key={`availability-${entry.slot.id}`}
+                            className="flex flex-col gap-1 rounded-md border border-[#eadfd6] bg-white px-3 py-2 text-xs text-[#6f5b4f] md:flex-row md:items-center md:justify-between"
+                          >
+                            <p>{formatSessionWindow(entry.slot, sessionSchedule.timezone)}</p>
+                            <span
+                              className={
+                                entry.remainingCount > 0
+                                  ? "rounded-full bg-[#e8f8ed] px-2.5 py-1 font-medium text-[#1d7c4a]"
+                                  : "rounded-full bg-[#fff7e9] px-2.5 py-1 font-medium text-[#8a5a00]"
+                              }
+                            >
+                              {entry.reservedCount}/{entry.slot.capacity} selected
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {myParticipation && (
                     <div className="mt-3 space-y-2">
                       <p className="text-xs text-[#6f5b4f]">
                         Assigned Panelist No: {formatPanelistNumber(myParticipation.panelistNumber)}
                       </p>
                       <p className="text-xs text-[#6f5b4f]">
-                        Session Schedule: {myParticipation.sessionAt ? new Date(myParticipation.sessionAt).toLocaleString() : "Not confirmed"}
+                        Session Schedule:{" "}
+                        {mySelectedSlot && sessionSchedule
+                          ? formatSessionWindow(mySelectedSlot.slot, sessionSchedule.timezone)
+                          : myParticipation.sessionAt
+                            ? new Date(myParticipation.sessionAt).toLocaleString()
+                            : "Not confirmed"}
                       </p>
                       {myParticipation.status === "WAITLIST" && (
                         <p className="text-xs font-medium text-[#8a5a00]">
                           Participation submitted. Waiting for MSME qualification.
                         </p>
                       )}
-                      {offeredSessions.length > 0 && !myParticipation.requestedSessionAt && (
+                      {!sessionSchedule && offeredSessions.length > 0 && !myParticipation.requestedSessionAt && (
                         <form action={chooseSessionOption} className="flex flex-wrap items-end gap-2">
                           <input type="hidden" name="studyId" value={study.id} />
                           <input type="hidden" name="participantId" value={myParticipation.id} />

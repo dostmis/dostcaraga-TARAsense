@@ -11,6 +11,15 @@ import { getCurrentSession } from "@/lib/auth/session";
 const SubmitResponseSchema = z.object({
   overallLiking: z.number().min(1).max(9),
   attributes: z.record(z.string(), z.unknown()),
+  sampleResponses: z
+    .array(
+      z.object({
+        sampleNumber: z.number().int().min(1),
+        overallLiking: z.number().min(1).max(9).optional(),
+        attributes: z.record(z.string(), z.unknown()),
+      })
+    )
+    .optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -77,6 +86,7 @@ export async function submitResponse(studyId: string, participantId: string, pay
       JSON.stringify({
         overallLiking: validated.overallLiking,
         attributes: validated.attributes,
+        sampleResponses: validated.sampleResponses ?? [],
       })
     ) as Prisma.InputJsonValue;
 

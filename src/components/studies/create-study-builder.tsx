@@ -24,6 +24,15 @@ interface SampleSetupRow {
   allergen: string;
 }
 
+interface SessionSlotDraft {
+  id: string;
+  dayOffset: number;
+  label: string;
+  startTime: string;
+  endTime: string;
+  capacity: number;
+}
+
 interface CategoryProfile {
   key: string;
   label: string;
@@ -220,6 +229,8 @@ const EMPTY_SAMPLE_SETUP: SampleSetupRow = {
   allergen: "",
 };
 
+const STUDY_TIMEZONE = "Asia/Manila";
+
 export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -240,6 +251,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [productName, setProductName] = useState("");
   const [profileKey, setProfileKey] = useState(CATEGORY_PROFILES[0].key);
   const [attributes, setAttributes] = useState<AttributeRow[]>(CATEGORY_PROFILES[0].attributes);
+  const [testingStartDate, setTestingStartDate] = useState(() => getTodayDateInput());
+  const [testingDurationDays, setTestingDurationDays] = useState(1);
+  const [sessionSlots, setSessionSlots] = useState<SessionSlotDraft[]>([
+    createSessionSlotDraft(0, 0),
+  ]);
 
   const [sampleSetupCount, setSampleSetupCount] = useState(1);
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
@@ -256,6 +272,26 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     return CONSUMER_OBJECTIVES.find((objective) => objective.value === consumerObjective)?.max ?? null;
   }, [sensoryStudyType, consumerObjective]);
 
+  const sessionSlotsByDay = useMemo(() => {
+    const totalDays = Math.max(1, Math.floor(testingDurationDays));
+    return Array.from({ length: totalDays }, (_, dayOffset) => ({
+      dayOffset,
+      date: addDaysToDateInput(testingStartDate, dayOffset),
+      slots: sessionSlots
+        .filter((slot) => slot.dayOffset === dayOffset)
+        .sort((left, right) => left.startTime.localeCompare(right.startTime)),
+    }));
+  }, [sessionSlots, testingDurationDays, testingStartDate]);
+
+  const totalSessionCapacity = useMemo(
+    () =>
+      sessionSlots.reduce(
+        (sum, slot) => sum + (Number.isFinite(slot.capacity) ? Math.max(1, Math.floor(slot.capacity)) : 1),
+        0
+      ),
+    [sessionSlots]
+  );
+
   useEffect(() => {
     setAttributes(selectedProfile.attributes);
   }, [selectedProfile]);
@@ -269,6 +305,26 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return next.slice(0, sampleSetupCount);
     });
   }, [sampleSetupCount]);
+
+  useEffect(() => {
+    const totalDays = Math.max(1, Math.floor(testingDurationDays));
+    setSessionSlots((previous) => {
+      const filtered = previous.filter((slot) => slot.dayOffset < totalDays);
+      const next = [...filtered];
+      for (let dayOffset = 0; dayOffset < totalDays; dayOffset += 1) {
+        if (!next.some((slot) => slot.dayOffset === dayOffset)) {
+          const daySlotCount = next.filter((slot) => slot.dayOffset === dayOffset).length;
+          next.push(createSessionSlotDraft(dayOffset, daySlotCount));
+        }
+      }
+      return next.sort((left, right) => {
+        if (left.dayOffset !== right.dayOffset) {
+          return left.dayOffset - right.dayOffset;
+        }
+        return left.startTime.localeCompare(right.startTime);
+      });
+    });
+  }, [testingDurationDays]);
 
   useEffect(() => {
     if (sensoryStudyType === "DISCRIMINATIVE") {
@@ -306,6 +362,52 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     );
   };
 
+  const addSessionSlot = (dayOffset: number) => {
+    setSessionSlots((previous) => {
+      const nextIndex = previous.filter((slot) => slot.dayOffset === dayOffset).length;
+      return [...previous, createSessionSlotDraft(dayOffset, nextIndex)];
+    });
+  };
+
+  const removeSessionSlot = (slotId: string) => {
+    setSessionSlots((previous) => {
+      const target = previous.find((slot) => slot.id === slotId);
+      if (!target) {
+        return previous;
+      }
+      const daySlots = previous.filter((slot) => slot.dayOffset === target.dayOffset);
+      if (daySlots.length <= 1) {
+        return previous;
+      }
+      return previous.filter((slot) => slot.id !== slotId);
+    });
+  };
+
+  const updateSessionSlot = (
+    slotId: string,
+    field: "label" | "startTime" | "endTime" | "capacity",
+    value: string
+  ) => {
+    setSessionSlots((previous) =>
+      previous.map((slot) => {
+        if (slot.id !== slotId) {
+          return slot;
+        }
+
+        if (field === "capacity") {
+          const parsed = Number(value);
+          const capacity = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
+          return { ...slot, capacity };
+        }
+
+        return {
+          ...slot,
+          [field]: value,
+        };
+      })
+    );
+  };
+
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
@@ -313,6 +415,78 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && consumerLimit && targetResponses > consumerLimit) {
       setError(`Target responses exceed the ${consumerLimit} maximum for this consumer test objective.`);
       return;
+    }
+
+    let sessionPayload: Array<{
+      dayOffset: number;
+      label: string;
+      startDateTime: string;
+      endDateTime: string;
+      capacity: number;
+    }> = [];
+
+    if (studyMode === "SENSORY") {
+      if (!testingStartDate) {
+        setError("Testing start date is required.");
+        return;
+      }
+
+      const invalidSlot = sessionSlots.find(
+        (slot) =>
+          !slot.label.trim() ||
+          !slot.startTime ||
+          !slot.endTime ||
+          !Number.isFinite(slot.capacity) ||
+          slot.capacity < 1
+      );
+      if (invalidSlot) {
+        setError("Complete all session fields (label, start time, end time, capacity).");
+        return;
+      }
+
+      sessionPayload = sessionSlots
+        .map((slot) => {
+          const dateValue = addDaysToDateInput(testingStartDate, slot.dayOffset);
+          const startsAt = new Date(`${dateValue}T${slot.startTime}:00`);
+          const endsAt = new Date(`${dateValue}T${slot.endTime}:00`);
+          if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
+            return null;
+          }
+          if (endsAt.getTime() <= startsAt.getTime()) {
+            return null;
+          }
+          return {
+            dayOffset: slot.dayOffset,
+            label: slot.label.trim(),
+            startDateTime: startsAt.toISOString(),
+            endDateTime: endsAt.toISOString(),
+            capacity: Math.max(1, Math.floor(slot.capacity)),
+          };
+        })
+        .filter(
+          (
+            slot
+          ): slot is {
+            dayOffset: number;
+            label: string;
+            startDateTime: string;
+            endDateTime: string;
+            capacity: number;
+          } => Boolean(slot)
+        );
+
+      if (sessionPayload.length !== sessionSlots.length) {
+        setError("Each session must have a valid time range (end time must be after start time).");
+        return;
+      }
+
+      const configuredCapacity = sessionPayload.reduce((sum, slot) => sum + slot.capacity, 0);
+      if (targetResponses > configuredCapacity) {
+        setError(
+          `Target responses (${targetResponses}) exceed the configured session capacity (${configuredCapacity}).`
+        );
+        return;
+      }
     }
 
     startTransition(async () => {
@@ -331,6 +505,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
         categoryLabel: studyMode === "SENSORY" ? selectedProfile.label : undefined,
         attributes: studyMode === "SENSORY" ? attributes : [],
+        testingStartDate: studyMode === "SENSORY" ? testingStartDate : undefined,
+        testingDurationDays: studyMode === "SENSORY" ? Math.max(1, Math.floor(testingDurationDays)) : undefined,
+        sessionSlots: studyMode === "SENSORY" ? sessionPayload : [],
         sampleSetups,
         questions: studyMode === "MARKET" ? marketQuestions.filter((question) => question.trim().length > 0) : [],
       };
@@ -553,6 +730,107 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
 
+              <div className="space-y-4 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-base font-semibold text-[#0f172a]">Testing Schedule (Date, Time, Session Capacity)</h3>
+                  <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-xs font-medium text-[#1e4f8f]">
+                    Total session capacity: {totalSessionCapacity}
+                  </span>
+                </div>
+
+                <div className="grid md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <FieldLabel text="Testing Start Date" />
+                    <input
+                      type="date"
+                      value={testingStartDate}
+                      onChange={(event) => setTestingStartDate(event.target.value)}
+                      className="app-input"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <FieldLabel text="Testing Duration (Days)" />
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={testingDurationDays}
+                      onChange={(event) => setTestingDurationDays(Math.max(1, Math.floor(Number(event.target.value) || 1)))}
+                      className="app-input"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <FieldLabel text="Timezone" />
+                    <input value={STUDY_TIMEZONE} className="app-input bg-[#f1f5f9]" readOnly />
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  {sessionSlotsByDay.map((day) => (
+                    <div key={`session-day-${day.dayOffset}`} className="rounded-lg border border-[#dbe3ec] bg-white p-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-sm font-semibold text-[#0f172a]">
+                          Day {day.dayOffset + 1} ({formatDateLabel(day.date)})
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => addSessionSlot(day.dayOffset)}
+                          className="rounded-md border border-[#ed7f2a] px-3 py-1 text-xs font-semibold text-[#c2410c] hover:bg-[#fff6ed]"
+                        >
+                          Add Session
+                        </button>
+                      </div>
+
+                      <div className="mt-3 space-y-2">
+                        {day.slots.map((slot) => (
+                          <div key={slot.id} className="grid gap-2 rounded-md border border-[#e2e8f0] bg-[#f8fafc] p-2 lg:grid-cols-[1.2fr_1fr_1fr_1fr_auto]">
+                            <input
+                              value={slot.label}
+                              onChange={(event) => updateSessionSlot(slot.id, "label", event.target.value)}
+                              className="app-input"
+                              placeholder="Session label (e.g., Morning)"
+                              required
+                            />
+                            <input
+                              type="time"
+                              value={slot.startTime}
+                              onChange={(event) => updateSessionSlot(slot.id, "startTime", event.target.value)}
+                              className="app-input"
+                              required
+                            />
+                            <input
+                              type="time"
+                              value={slot.endTime}
+                              onChange={(event) => updateSessionSlot(slot.id, "endTime", event.target.value)}
+                              className="app-input"
+                              required
+                            />
+                            <input
+                              type="number"
+                              min={1}
+                              value={slot.capacity}
+                              onChange={(event) => updateSessionSlot(slot.id, "capacity", event.target.value)}
+                              className="app-input"
+                              required
+                            />
+                            <button
+                              type="button"
+                              onClick={() => removeSessionSlot(slot.id)}
+                              disabled={day.slots.length <= 1}
+                              className="rounded-md border border-[#fecaca] px-3 py-2 text-xs font-semibold text-[#b91c1c] hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              Remove
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
               <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
                 Questionnaire Logic generated on create:
                 <ul className="list-disc pl-5 mt-2 space-y-1">
@@ -689,5 +967,63 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
 function FieldLabel({ text }: { text: string }) {
   return <label className="text-sm font-medium text-[#334155]">{text}</label>;
+}
+
+function getTodayDateInput() {
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, "0");
+  const day = String(today.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysToDateInput(dateInput: string, dayOffset: number) {
+  const base = new Date(`${dateInput}T00:00:00`);
+  if (Number.isNaN(base.getTime())) {
+    return dateInput;
+  }
+  base.setDate(base.getDate() + dayOffset);
+  const year = base.getFullYear();
+  const month = String(base.getMonth() + 1).padStart(2, "0");
+  const day = String(base.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function createSessionSlotDraft(dayOffset: number, slotIndex: number): SessionSlotDraft {
+  const defaults = [
+    { label: "Morning", startTime: "09:00", endTime: "11:30" },
+    { label: "Afternoon", startTime: "14:30", endTime: "16:00" },
+    { label: "Evening", startTime: "17:30", endTime: "19:00" },
+  ];
+  const fallback = {
+    label: `Session ${slotIndex + 1}`,
+    startTime: "09:00",
+    endTime: "10:00",
+  };
+  const template = defaults[slotIndex] ?? fallback;
+  return {
+    id: createId(),
+    dayOffset,
+    label: template.label,
+    startTime: template.startTime,
+    endTime: template.endTime,
+    capacity: 10,
+  };
+}
+
+function createId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function formatDateLabel(dateInput: string) {
+  const value = new Date(`${dateInput}T00:00:00`);
+  if (Number.isNaN(value.getTime())) {
+    return dateInput;
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  }).format(value);
 }
 
