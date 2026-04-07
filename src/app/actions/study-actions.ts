@@ -8,6 +8,7 @@ import { getCurrentSession } from "@/lib/auth/session";
 import { verifyPassword } from "@/lib/auth/password";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
+import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 
 const CreateStudySchema = z.object({
   title: z.string().min(3),
@@ -46,8 +47,12 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
   try {
     // Validate
     const validated = CreateStudySchema.parse(data);
+    const preparedTargetDemographics = prepareTargetDemographicsForStudy(
+      validated.targetDemographics,
+      validated.sampleSize
+    );
     const targetDemographicsJson = JSON.parse(
-      JSON.stringify(validated.targetDemographics)
+      JSON.stringify(preparedTargetDemographics)
     ) as Prisma.InputJsonValue;
     const screeningCriteriaJson = JSON.parse(
       JSON.stringify(validated.screeningQuestions)
@@ -133,6 +138,21 @@ function calculateStratumDistribution(
   return { default: totalSize };
 }
 
+function prepareTargetDemographicsForStudy(
+  targetDemographics: z.infer<typeof CreateStudySchema>["targetDemographics"],
+  sampleSize: number
+) {
+  const row = { ...targetDemographics } as Record<string, unknown>;
+  const existing = parseStudyRandomCodeBook(row.randomCodeBook);
+  if (existing) {
+    return row;
+  }
+
+  const sampleCount = resolveSampleCountFromTargetDemographics(row);
+  row.randomCodeBook = createStudyRandomCodeBook(sampleSize, sampleCount);
+  return row;
+}
+
 export async function deleteStudyWithPassword(formData: FormData) {
   const session = await getCurrentSession();
   if (!session || (session.role !== "MSME" && session.role !== "ADMIN")) {
@@ -215,6 +235,14 @@ function distributeEvenly(keys: string[], total: number) {
   }
 
   return distribution;
+}
+
+function resolveSampleCountFromTargetDemographics(targetDemographics: Record<string, unknown>) {
+  const raw = targetDemographics.numberOfSamples;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) {
+    return 1;
+  }
+  return Math.max(1, Math.floor(raw));
 }
 
 function withFeedback(pathname: string, key: "error" | "message", value: string) {

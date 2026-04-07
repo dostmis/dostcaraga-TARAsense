@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
+import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
+import type { Region, Facility } from "@/lib/facility-constants";
 
 type StudyMode = "MARKET" | "SENSORY";
 type MarketStudyType =
@@ -50,10 +52,10 @@ const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
 const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];
 const DESCRIPTIVE_METHODS = ["QDA", "Spectrum Method", "Similarity Measures"];
 
-const CONSUMER_OBJECTIVES: Array<{ value: ConsumerObjective; label: string; max: number }> = [
-  { value: "MARKET_READINESS", label: "Market Readiness (readiness check)", max: 110 },
-  { value: "REFINEMENT", label: "Refinement (refinement check)", max: 60 },
-  { value: "PROTOTYPING", label: "Prototyping (prototype check)", max: 35 },
+const CONSUMER_OBJECTIVES: Array<{ value: ConsumerObjective; label: string; max: number; defaultTarget: number }> = [
+  { value: "MARKET_READINESS", label: "Market Readiness (readiness check)", max: 110, defaultTarget: 100 },
+  { value: "REFINEMENT", label: "Refinement (refinement check)", max: 60, defaultTarget: 50 },
+  { value: "PROTOTYPING", label: "Prototyping (prototype check)", max: 35, defaultTarget: 30 },
 ];
 
 const DEFAULT_MARKET_QUESTIONS = [
@@ -242,10 +244,8 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [sensoryMethod, setSensoryMethod] = useState("Triangle Test");
   const [consumerObjective, setConsumerObjective] = useState<ConsumerObjective>("PROTOTYPING");
 
-  const [studyTitle, setStudyTitle] = useState("");
-  const [purpose, setPurpose] = useState("");
-  const [facilityType, setFacilityType] = useState("FIC Lab A");
-  const [numberOfSamples, setNumberOfSamples] = useState(1);
+  const [region, setRegion] = useState<Region | "">("");
+  const [facilityType, setFacilityType] = useState<string>("");
   const [targetResponses, setTargetResponses] = useState(30);
 
   const [productName, setProductName] = useState("");
@@ -261,6 +261,22 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
   const [marketQuestions, setMarketQuestions] = useState(DEFAULT_MARKET_QUESTIONS);
   const [error, setError] = useState<string | null>(null);
+
+  // Cascade region/facility logic
+  useEffect(() => {
+    if (region === "") {
+      setFacilityType("");
+    }
+  }, [region]);
+
+  useEffect(() => {
+    if (facilityType && !region) {
+      const detectedRegion = getRegionForFacility(facilityType);
+      if (detectedRegion) {
+        setRegion(detectedRegion);
+      }
+    }
+  }, [facilityType, region]);
 
   const selectedProfile = useMemo(
     () => CATEGORY_PROFILES.find((profile) => profile.key === profileKey) ?? CATEGORY_PROFILES[0],
@@ -295,6 +311,15 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   useEffect(() => {
     setAttributes(selectedProfile.attributes);
   }, [selectedProfile]);
+
+  useEffect(() => {
+    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
+      const objective = CONSUMER_OBJECTIVES.find((o) => o.value === consumerObjective);
+      if (objective) {
+        setTargetResponses(objective.defaultTarget);
+      }
+    }
+  }, [consumerObjective, sensoryStudyType, studyMode]);
 
   useEffect(() => {
     setSampleSetups((previous) => {
@@ -412,6 +437,21 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     event.preventDefault();
     setError(null);
 
+    if (!region) {
+      setError("Please select a region.");
+      return;
+    }
+
+    if (!facilityType) {
+      setError("Please select a facility type.");
+      return;
+    }
+
+    if (!Number.isInteger(targetResponses) || targetResponses < 1) {
+      setError("Target responses must be at least 1.");
+      return;
+    }
+
     if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && consumerLimit && targetResponses > consumerLimit) {
       setError(`Target responses exceed the ${consumerLimit} maximum for this consumer test objective.`);
       return;
@@ -490,16 +530,30 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     }
 
     startTransition(async () => {
+      const generatedStudyTitle = buildStudyTitle({
+        studyMode,
+        marketStudyType,
+        sensoryStudyType,
+        productName,
+      });
+      const generatedPurpose = buildStudyPurpose({
+        studyMode,
+        marketStudyType,
+        sensoryStudyType,
+        consumerObjective,
+        productName,
+      });
+
       const payload = {
         studyMode,
         marketStudyType: studyMode === "MARKET" ? marketStudyType : undefined,
         sensoryStudyType: studyMode === "SENSORY" ? sensoryStudyType : undefined,
         sensoryMethod: studyMode === "SENSORY" ? sensoryMethod : undefined,
         consumerObjective: studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" ? consumerObjective : undefined,
-        studyTitle,
-        purpose,
+        studyTitle: generatedStudyTitle,
+        purpose: generatedPurpose,
         facilityType,
-        numberOfSamples,
+        numberOfSamples: Math.max(1, sampleSetupCount),
         targetResponses,
         productName: studyMode === "SENSORY" ? productName : undefined,
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
@@ -730,6 +784,62 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
 
+              <div className="grid md:grid-cols-2 gap-4">
+                <FieldLabel text="Region" />
+                <select
+                  value={region}
+                  onChange={(event) => setRegion(event.target.value as Region | "")}
+                  className="app-select"
+                  required
+                >
+                  <option value="">Select Region</option>
+                  {REGIONS.map((regionOption) => (
+                    <option key={regionOption} value={regionOption}>
+                      {regionOption}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <FieldLabel text="Facility Type" />
+                <select
+                  value={facilityType}
+                  onChange={(event) => setFacilityType(event.target.value)}
+                  className="app-select"
+                  required
+                  disabled={!region}
+                >
+                  <option value="">{region ? "Select Facility" : "Select Region First"}</option>
+                  {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
+                    <option key={facilityOption} value={facilityOption}>
+                      {facilityOption}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="grid md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <FieldLabel text="Number of Target Responses" />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={targetResponses === 0 ? "" : String(targetResponses)}
+                    onChange={(event) => {
+                      const digits = event.target.value.replace(/\D/g, "");
+                      setTargetResponses(digits ? Number(digits) : 0);
+                    }}
+                    className="app-input"
+                    required
+                  />
+                  {consumerLimit && (
+                    <p className="text-xs text-gray-500">Maximum for selected objective: {consumerLimit}</p>
+                  )}
+                </div>
+              </div>
+              
               <div className="space-y-4 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-base font-semibold text-[#0f172a]">Testing Schedule (Date, Time, Session Capacity)</h3>
@@ -845,60 +955,24 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
           <section className="space-y-4">
             <h2 className="text-lg font-semibold text-gray-900">Details</h2>
-            <div className="grid md:grid-cols-2 gap-4">
-              <FieldLabel text="Study Title" />
-              <input
-                value={studyTitle}
-                onChange={(event) => setStudyTitle(event.target.value)}
-                className="app-input"
-                required
-              />
-            </div>
-            <div className="grid md:grid-cols-2 gap-4">
-              <FieldLabel text="Purpose" />
-              <textarea
-                value={purpose}
-                onChange={(event) => setPurpose(event.target.value)}
-                className="app-textarea min-h-24"
-                required
-              />
-            </div>
-            <div className="grid md:grid-cols-3 gap-4">
-              <div className="space-y-2">
-                <FieldLabel text="Facility Type" />
-                <input
-                  value={facilityType}
-                  onChange={(event) => setFacilityType(event.target.value)}
-                  className="app-input"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <FieldLabel text="Number of Samples" />
-                <input
-                  type="number"
-                  min={1}
-                  value={numberOfSamples}
-                  onChange={(event) => setNumberOfSamples(Number(event.target.value))}
-                  className="app-input"
-                  required
-                />
-              </div>
-              <div className="space-y-2">
-                <FieldLabel text="Number of Target Responses" />
-                <input
-                  type="number"
-                  min={1}
-                  max={consumerLimit ?? undefined}
-                  value={targetResponses}
-                  onChange={(event) => setTargetResponses(Number(event.target.value))}
-                  className="app-input"
-                  required
-                />
-                {consumerLimit && (
-                  <p className="text-xs text-gray-500">Maximum for selected objective: {consumerLimit}</p>
-                )}
-              </div>
+            <div className={`grid gap-4 ${studyMode === "MARKET" ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
+              {studyMode === "MARKET" && (
+                <div className="space-y-2">
+                  <FieldLabel text="Number of Target Responses" />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={targetResponses === 0 ? "" : String(targetResponses)}
+                    onChange={(event) => {
+                      const digits = event.target.value.replace(/\D/g, "");
+                      setTargetResponses(digits ? Number(digits) : 0);
+                    }}
+                    className="app-input"
+                    required
+                  />
+                </div>
+              )}
             </div>
           </section>
 
@@ -1013,6 +1087,45 @@ function createSessionSlotDraft(dayOffset: number, slotIndex: number): SessionSl
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function buildStudyTitle(input: {
+  studyMode: StudyMode;
+  marketStudyType: MarketStudyType;
+  sensoryStudyType: SensoryStudyType;
+  productName: string;
+}) {
+  if (input.studyMode === "MARKET") {
+    return `${humanizeEnum(input.marketStudyType)} Study`;
+  }
+  const product = input.productName.trim() || "Sensory Product";
+  return `${product} - ${humanizeEnum(input.sensoryStudyType)}`;
+}
+
+function buildStudyPurpose(input: {
+  studyMode: StudyMode;
+  marketStudyType: MarketStudyType;
+  sensoryStudyType: SensoryStudyType;
+  consumerObjective: ConsumerObjective;
+  productName: string;
+}) {
+  if (input.studyMode === "MARKET") {
+    return `Market study for ${humanizeEnum(input.marketStudyType)} to guide product and positioning decisions.`;
+  }
+
+  const product = input.productName.trim() || "the product";
+  if (input.sensoryStudyType === "CONSUMER_TEST") {
+    return `Consumer sensory test for ${product} focused on ${humanizeEnum(input.consumerObjective)}.`;
+  }
+  return `${humanizeEnum(input.sensoryStudyType)} sensory assessment for ${product}.`;
+}
+
+function humanizeEnum(value: string) {
+  return value
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
 function formatDateLabel(dateInput: string) {

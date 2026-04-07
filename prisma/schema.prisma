@@ -23,6 +23,7 @@ model User {
   roleRequests     RoleUpgradeRequest[] @relation("RequestApplicant")
   reviewedRequests RoleUpgradeRequest[] @relation("RequestReviewer")
   notifications    Notification[]
+  ficAvailability  FicAvailability[]    @relation("FicAvailability")
 }
 
 enum UserRole {
@@ -104,6 +105,7 @@ model Panelist {
   age        Int
   gender     Gender
   location   String // City/Region
+  organization String?
   occupation String // Student, Office worker, etc.
   lifestyle  String[] // Athlete, Fitness enthusiast, etc.
 
@@ -119,6 +121,7 @@ model Panelist {
 
   // Metadata
   isActive   Boolean  @default(true)
+  isGuest    Boolean  @default(false)
   joinedAt   DateTime @default(now())
   lastActive DateTime @updatedAt
 
@@ -226,6 +229,8 @@ model StudyParticipant {
   panelist   Panelist          @relation(fields: [panelistId], references: [id])
   responses  SensoryResponse[]
 
+  source         ParticipationSource @default(REGISTERED_CONSUMER)
+  guestCode      String?
   status         ParticipantStatus @default(SELECTED)
   stratum        String? // "male", "female", or "18-25", etc.
   selectionOrder Int // For waitlist ordering
@@ -248,9 +253,16 @@ model StudyParticipant {
   noShow         Boolean   @default(false)
 
   @@unique([studyId, panelistId])
+  @@unique([studyId, guestCode])
   @@index([studyId, panelistNumber])
   @@index([studyId, randomizeCode])
   @@index([studyId, status])
+  @@index([studyId, source])
+}
+
+enum ParticipationSource {
+  REGISTERED_CONSUMER
+  WALK_IN_GUEST
 }
 
 enum ParticipantStatus {
@@ -328,4 +340,28 @@ enum DecisionType {
   CONTINUE_REFINEMENT
   READY_FOR_READINESS
   READY_FOR_COMMERCIALIZATION
+}
+
+model FicAvailability {
+  id          String   @id @default(cuid())
+  ficUserId   String
+  ficUser     User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+  
+  // Date in YYYY-MM-DD format for easy querying and indexing
+  date        String   // e.g., "2025-03-15"
+  
+  // Availability status - FIC sets this manually
+  isAvailable Boolean  @default(false)
+  
+  // Booking lock - when a study books this date, it becomes locked
+  isLocked    Boolean  @default(false)
+  lockedById  String?  // Study ID that locked this date
+  lockedAt    DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@unique([ficUserId, date])
+  @@index([ficUserId, date])
+  @@index([date, isAvailable, isLocked])
 }

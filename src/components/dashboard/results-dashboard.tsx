@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { API_BASE_URL } from "@/lib/api-config";
 import {
   BarChart,
   Bar,
@@ -58,7 +59,7 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
       setError(null);
 
       try {
-        const response = await fetch(`/api/studies/${studyId}/analysis`, { cache: "no-store" });
+        const response = await fetch(`${API_BASE_URL}/studies/${studyId}/analysis`, { cache: "no-store" });
         if (!response.ok) {
           throw new Error(`Request failed with status ${response.status}`);
         }

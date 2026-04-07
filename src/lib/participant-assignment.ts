@@ -1,5 +1,11 @@
 import { randomBytes } from "crypto";
 import { Prisma, PrismaClient } from "@prisma/client";
+import {
+  assignSampleCodesFromCodeBook,
+  createStudyRandomCodeBook,
+  parseStudyRandomCodeBook,
+  StudyRandomCodeBook,
+} from "@/lib/random-codebook";
 
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -58,8 +64,15 @@ export async function ensureParticipantAssignment(db: DbClient, input: Assignmen
   }
 
   if (sampleCodes.length === 0) {
-    const sampleCount = await resolveStudySampleCount(db, input.studyId);
-    sampleCodes = await generateUniqueSampleCodes(db, input.studyId, sampleCount);
+    const config = await resolveStudyAssignmentConfig(db, input.studyId);
+    const planned = panelistNumber && config.codeBook
+      ? assignSampleCodesFromCodeBook(config.codeBook, panelistNumber)
+      : null;
+    if (planned && planned.length > 0) {
+      sampleCodes = planned;
+    } else {
+      sampleCodes = await generateUniqueSampleCodes(db, input.studyId, config.sampleCount);
+    }
     updateData.sampleCodes = sampleCodes as unknown as Prisma.InputJsonValue;
   }
 
@@ -127,22 +140,47 @@ export function parseOfferedSessions(value: unknown): string[] {
   return Array.from(new Set(valid)).sort();
 }
 
-async function resolveStudySampleCount(db: DbClient, studyId: string) {
+async function resolveStudyAssignmentConfig(db: DbClient, studyId: string): Promise<{
+  sampleCount: number;
+  codeBook: StudyRandomCodeBook | null;
+}> {
   const study = await db.study.findUnique({
     where: { id: studyId },
-    select: { targetDemographics: true },
+    select: { sampleSize: true, targetDemographics: true },
   });
 
-  if (!study?.targetDemographics || typeof study.targetDemographics !== "object") {
-    return 1;
+  if (!study) {
+    return { sampleCount: 1, codeBook: null };
   }
 
-  const row = study.targetDemographics as { numberOfSamples?: unknown };
-  if (typeof row.numberOfSamples !== "number" || row.numberOfSamples < 1) {
-    return 1;
+  const demographics = study.targetDemographics && typeof study.targetDemographics === "object"
+    ? (study.targetDemographics as Record<string, unknown>)
+    : {};
+  const sampleCount = resolveSampleCountFromDemographics(demographics);
+  const existingCodeBook = parseStudyRandomCodeBook(demographics.randomCodeBook);
+  if (existingCodeBook) {
+    return { sampleCount, codeBook: existingCodeBook };
   }
 
-  return Math.max(1, Math.floor(row.numberOfSamples));
+  // Backfill legacy studies so assignments become deterministic by panelist number.
+  const generated = createStudyRandomCodeBook(study.sampleSize, sampleCount);
+  const nextDemographics = {
+    ...demographics,
+    randomCodeBook: generated,
+  };
+
+  try {
+    await db.study.update({
+      where: { id: studyId },
+      data: {
+        targetDemographics: JSON.parse(JSON.stringify(nextDemographics)) as Prisma.InputJsonValue,
+      },
+    });
+    return { sampleCount, codeBook: generated };
+  } catch {
+    // If update fails (race conditions/permissions), continue with generated in-memory codebook.
+    return { sampleCount, codeBook: generated };
+  }
 }
 
 async function generateUniqueSampleCodes(db: DbClient, studyId: string, sampleCount: number) {
@@ -171,4 +209,12 @@ async function generateUniqueSampleCodes(db: DbClient, studyId: string, sampleCo
   }
 
   return generated;
+}
+
+function resolveSampleCountFromDemographics(targetDemographics: Record<string, unknown>) {
+  const raw = targetDemographics.numberOfSamples;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) {
+    return 1;
+  }
+  return Math.max(1, Math.floor(raw));
 }

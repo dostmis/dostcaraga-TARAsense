@@ -2,16 +2,24 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { SensoryTestInterface } from "@/components/sensory-test/test-interface";
-import { getCurrentSession, requireRole } from "@/lib/auth/session";
+import { getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 
 type PageProps = {
   params: Promise<{ studyId: string; participantId: string }>;
 };
 
 export default async function SensoryTestPage({ params }: PageProps) {
-  await requireRole(["CONSUMER", "MSME", "ADMIN"]);
-  const session = await getCurrentSession();
   const { studyId, participantId } = await params;
+  const session = await getCurrentSession();
+  const guestSession = await getCurrentGuestSession();
+  const isGuest = !session && guestSession?.studyId === studyId;
+
+  if (!session && !isGuest) {
+    redirect("/login?error=Please+login+to+continue");
+  }
+  if (session && !["CONSUMER", "MSME", "ADMIN"].includes(session.role)) {
+    notFound();
+  }
 
   const participant = (await prisma.studyParticipant.findFirst({
     where: {
@@ -20,6 +28,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
     },
     select: {
       status: true,
+      source: true,
       panelist: {
         select: {
           userId: true,
@@ -46,6 +55,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
   })) as
     | {
         status: "SELECTED" | "WAITLIST" | "CONFIRMED" | "COMPLETED" | "CANCELLED" | "DECLINED";
+        source: "REGISTERED_CONSUMER" | "WALK_IN_GUEST";
         panelist: {
           userId: string | null;
         };
@@ -72,6 +82,14 @@ export default async function SensoryTestPage({ params }: PageProps) {
   }
   if (session?.role === "CONSUMER" && participant.consentStatus !== "AGREED") {
     redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Please+complete+consent+before+evaluation`);
+  }
+  if (isGuest) {
+    if (!guestSession || participant.source !== "WALK_IN_GUEST" || participantId !== guestSession.participantId) {
+      notFound();
+    }
+    if (participant.consentStatus !== "AGREED") {
+      redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&guest=1&error=Please+complete+consent+before+evaluation`);
+    }
   }
   if (session?.role === "MSME" && participant.study.creatorId !== session.userId) {
     notFound();

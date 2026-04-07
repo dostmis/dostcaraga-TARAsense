@@ -1,0 +1,317 @@
+// Client-side service for FIC availability integration
+import { FACILITIES_BY_REGION } from "@/lib/facility-constants";
+import { API_BASE_URL } from "@/lib/api-config";
+
+// Debug logging to verify API_BASE_URL
+if (typeof window !== 'undefined') {
+  console.log('🔧 FIC Availability Service - API_BASE_URL:', API_BASE_URL);
+  console.log('🌎 Window location:', window.location.origin);
+}
+
+/** Custom error class for API errors */
+class ApiError extends Error {
+  constructor(
+    message: string,
+    public status?: number,
+    public statusText?: string
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+/** Make API request with enhanced error handling */
+async function makeApiRequest(url: string, options: RequestInit = {}) {
+  const requestUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
+  
+  // Debug logging
+  if (typeof window !== 'undefined') {
+    console.log('📡 Making API request:', {
+      url: requestUrl,
+      method: options.method || 'GET',
+      hasBody: !!options.body
+    });
+  }
+
+  try {
+    // Ensure credentials are always included for auth
+    const fetchOptions = {
+      ...options,
+      credentials: 'include' as RequestCredentials,
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+    };
+
+    const response = await fetch(requestUrl, fetchOptions);
+    
+    // Debug logging
+    if (typeof window !== 'undefined') {
+      console.log('📥 API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        url: response.url
+      });
+    }
+
+    // Handle non-OK responses
+    if (!response.ok) {
+      const errorData = await response.text().catch(() => 'No error details');
+      throw new ApiError(
+        `API Error: ${response.status} ${response.statusText}`,
+        response.status,
+        response.statusText
+      );
+    }
+
+    return response;
+  } catch (error) {
+    // Network error or CORS error
+    if (error instanceof TypeError && error.message === 'Failed to fetch') {
+      throw new ApiError(
+        `Failed to connect to API server at ${API_BASE_URL}. ` +
+        `Please ensure the backend is running on port 4000 and CORS is enabled.`
+      );
+    }
+    
+    // Re-throw other errors
+    throw error;
+  }
+}
+
+interface FicAvailability {
+  id: string;
+  ficUserId: string;
+  date: string;
+  isAvailable: boolean;
+  isLocked: boolean;
+  lockedById?: string;
+  lockedAt?: string;
+}
+
+export interface AvailableFic {
+  id: string;
+  name: string;
+  email: string;
+  organization?: string;
+  availableDates: string[];
+  availabilityPercentage: number;
+}
+
+/**
+ * Get available FICs for a date range and facility
+ */
+export async function getAvailableFics(
+  startDate: string,
+  endDate: string,
+  facility?: string
+): Promise<AvailableFic[]> {
+  try {
+    const params = new URLSearchParams({
+      startDate,
+      endDate,
+    });
+    
+    if (facility) {
+      params.append('facility', facility);
+    }
+
+    const response = await makeApiRequest(
+      `/fic-availability/available-fics?${params.toString()}`
+    );
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching available FICs:', error);
+    
+    // Show user-friendly error
+    if (typeof window !== 'undefined') {
+      alert(`Failed to load available FICs: ${error.message}. Please check if the API server is running.`);
+    }
+    
+    return [];
+  }
+}
+
+/**
+ * Get FIC calendar for a specific FIC user
+ */
+export async function getFicCalendar(
+  ficUserId: string,
+  startDate: string,
+  endDate: string
+): Promise<FicAvailability[]> {
+  try {
+    const params = new URLSearchParams({
+      startDate,
+      endDate,
+    });
+
+    const response = await makeApiRequest(
+      `/fic-availability/calendar/${ficUserId}?${params.toString()}`
+    );
+
+    const data = await response.json();
+    return data;
+  } catch (error) {
+    console.error('Error fetching FIC calendar:', error);
+    
+    // Show user-friendly error
+    if (typeof window !== 'undefined') {
+      alert(`Failed to load calendar: ${error.message}. Please check if the API server is running.`);
+    }
+    
+    return [];
+  }
+}
+
+/**
+ * Bulk set availability for multiple dates
+ */
+export async function bulkSetAvailability(
+  ficUserId: string,
+  dates: { date: string; isAvailable: boolean }[]
+): Promise<{ success: boolean; results?: any[]; errors?: any[] }> {
+  try {
+    const response = await makeApiRequest(
+      `/fic-availability/bulk?ficUserId=${ficUserId}`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ dates }),
+      }
+    );
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error setting availability:', error);
+    
+    // Show user-friendly error
+    if (typeof window !== 'undefined') {
+      alert(`Failed to update availability: ${error.message}`);
+    }
+    
+    return {
+      success: false,
+      errors: [{ message: error.message }],
+    };
+  }
+}
+
+/**
+ * Toggle availability for a single date
+ */
+export async function setAvailability(
+  ficUserId: string,
+  date: string,
+  isAvailable: boolean
+): Promise<FicAvailability | null> {
+  try {
+    const response = await makeApiRequest(
+      `/fic-availability/${ficUserId}/${date}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ isAvailable }),
+      }
+    );
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error toggling availability:', error);
+    
+    // Show user-friendly error
+    if (typeof window !== 'undefined') {
+      alert(`Failed to toggle availability: ${error.message}`);
+    }
+    
+    return null;
+  }
+}
+
+/**
+ * Extract dates from study session slots
+ */
+export function extractDatesFromSessions(sessions: any[]): string[] {
+  const dates = new Set<string>();
+  
+  for (const session of sessions) {
+    if (session.startDateTime) {
+      const date = new Date(session.startDateTime).toISOString().split('T')[0];
+      dates.add(date);
+    }
+  }
+  
+  return Array.from(dates).sort();
+}
+
+/**
+ * Check if dates are available for booking
+ */
+export async function checkDatesAvailability(
+  ficUserId: string,
+  dates: string[]
+): Promise<{ available: boolean; lockedDates?: string[] }> {
+  try {
+    const calendar = await getFicCalendar(ficUserId, dates[0], dates[dates.length - 1]);
+    const lockedDates = calendar
+      .filter(a => dates.includes(a.date) && a.isLocked)
+      .map(a => a.date);
+
+    return {
+      available: lockedDates.length === 0,
+      lockedDates: lockedDates.length > 0 ? lockedDates : undefined,
+    };
+  } catch (error) {
+    console.error('Error checking dates availability:', error);
+    return { available: false };
+  }
+}
+
+/**
+ * Get FICs by region
+ */
+export function getFicsByRegion(region: keyof typeof FACILITIES_BY_REGION): string[] {
+  return FACILITIES_BY_REGION[region] || [];
+}
+
+/**
+ * Format date for display (MM/DD/YYYY)
+ */
+export function formatDate(dateString: string): string {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', {
+    month: '2-digit',
+    day: '2-digit',
+    year: 'numeric',
+  });
+}
+
+/**
+ * Get current month range
+ */
+export function getCurrentMonthRange(): { startDate: string; endDate: string } {
+  const today = new Date();
+  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+
+  return {
+    startDate: startOfMonth.toISOString().split('T')[0],
+    endDate: endOfMonth.toISOString().split('T')[0],
+  };
+}
+
+/**
+ * Get next 6 months
+ */
+export function getNextSixMonths(): string[] {
+  const months = [];
+  const today = new Date();
+  
+  for (let i = 0; i < 6; i++) {
+    const month = new Date(today.getFullYear(), today.getMonth() + i, 1);
+    months.push(month.toISOString().slice(0, 7)); // YYYY-MM format
+  }
+  
+  return months;
+}

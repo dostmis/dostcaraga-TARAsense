@@ -1,12 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { Prisma } from "@prisma/client";
 import { notifyUser } from "@/lib/notifications";
-import { getCurrentSession } from "@/lib/auth/session";
+import { clearGuestSessionCookies, getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 
 const SubmitResponseSchema = z.object({
   overallLiking: z.number().min(1).max(9),
@@ -26,7 +27,8 @@ const SubmitResponseSchema = z.object({
 export async function submitResponse(studyId: string, participantId: string, payload: unknown) {
   try {
     const session = await getCurrentSession();
-    if (!session) {
+    const guestSession = await getCurrentGuestSession();
+    if (!session && !guestSession) {
       return { success: false, error: "Please login to submit responses." };
     }
 
@@ -40,6 +42,7 @@ export async function submitResponse(studyId: string, participantId: string, pay
       select: {
         id: true,
         status: true,
+        source: true,
         study: {
           select: {
             id: true,
@@ -58,11 +61,19 @@ export async function submitResponse(studyId: string, participantId: string, pay
     if (!participant) {
       return { success: false, error: "Participant not found for this study." };
     }
-    if (session.role === "CONSUMER" && participant.panelist.userId !== session.userId) {
+    if (session?.role === "CONSUMER" && participant.panelist.userId !== session.userId) {
       return { success: false, error: "You are not allowed to answer this study participant slot." };
     }
-    if (session.role === "MSME" && participant.study.creatorId === session.userId) {
+    if (session?.role === "MSME" && participant.study.creatorId === session.userId) {
       return { success: false, error: "MSME users cannot answer their own created studies." };
+    }
+    if (!session && guestSession) {
+      if (participant.source !== "WALK_IN_GUEST") {
+        return { success: false, error: "Guest session is not allowed for this participant slot." };
+      }
+      if (guestSession.studyId !== studyId || guestSession.participantId !== participant.id) {
+        return { success: false, error: "Guest session does not match this participant slot." };
+      }
     }
     if (participant.status === "COMPLETED") {
       return { success: false, error: "You already submitted this study." };
@@ -134,6 +145,11 @@ export async function submitResponse(studyId: string, participantId: string, pay
 
     revalidatePath(`/dashboard/${studyId}`);
     revalidatePath("/");
+
+    if (!session && guestSession) {
+      const store = await cookies();
+      clearGuestSessionCookies(store);
+    }
 
     return { success: true };
   } catch (error) {

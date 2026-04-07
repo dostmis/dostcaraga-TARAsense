@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { AppRole, parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
-import { getCurrentSession, SESSION_KEYS } from "@/lib/auth/session";
+import { clearGuestSessionCookies, getCurrentSession, SESSION_KEYS } from "@/lib/auth/session";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 
 const DEFAULT_ADMIN_EMAIL = process.env.ADMIN_EMAIL ?? "admin@tarasense.local";
@@ -31,6 +31,7 @@ export async function login(formData: FormData) {
   }
 
   const store = await cookies();
+  clearGuestSessionCookies(store);
   applySessionCookies(store, user.id, user.role);
 
   const role = parseRole(user.role);
@@ -87,6 +88,7 @@ export async function register(formData: FormData) {
   });
 
   const store = await cookies();
+  clearGuestSessionCookies(store);
   applySessionCookies(store, user.id, "CONSUMER");
 
   await notifyUser(user.id, {
@@ -282,6 +284,7 @@ export async function logout() {
   const store = await cookies();
   store.delete(SESSION_KEYS.userId);
   store.delete(SESSION_KEYS.role);
+  clearGuestSessionCookies(store);
   redirect("/login?message=You+have+been+logged+out");
 }
 

@@ -29,6 +29,7 @@ model User {
   refreshTokens RefreshToken[]
   auditLogs     AuditLog[]   @relation("AuditActor")
   uploadedFiles StoredFile[] @relation("FileUploader")
+  ficAvailability FicAvailability[]
 }
 
 model RefreshToken {
@@ -72,4 +73,21 @@ model StoredFile {
 
   @@index([uploaderId, createdAt])
   @@index([bucket])
+}
+
+model FicAvailability {
+  id          String   @id @default(cuid())
+  ficUserId   String
+  ficUser     User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+  date        String
+  isAvailable Boolean  @default(false)
+  isLocked    Boolean  @default(false)
+  lockedById  String?
+  lockedAt    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([ficUserId, date])
+  @@index([ficUserId, date])
+  @@index([date, isAvailable, isLocked])
 }

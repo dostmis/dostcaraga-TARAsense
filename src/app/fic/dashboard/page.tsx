@@ -6,6 +6,8 @@ import { NotificationPanel } from "@/components/notifications/notification-panel
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
+import { FicCalendarControls } from "@/components/fic-calendar-controls";
+import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar";
 import { formatPanelistNumber } from "@/lib/participant-assignment";
 import { CalendarDays, ClipboardCheck, Clock3, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
 
@@ -253,87 +255,95 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
       )}
 
       {activeView === "calendar" && (
-        <CollapsibleSection id="fic-calendar" title="Session Calendar" countLabel={`${upcomingCalendarEvents.length}`} defaultOpen={true}>
-          <div className="space-y-4">
-            <article className="rounded-2xl border border-[#e4d7cc] bg-white p-5 text-sm text-[#6f5b4f]">
-              <p>
-                Calendar timezone: <span className="font-semibold text-[#2e231c]">{FIC_TIMEZONE}</span>
-              </p>
-              <p className="mt-1">
-                Showing requested and confirmed sessions for FIC-tagged studies starting today.
-              </p>
-            </article>
+        <div className="space-y-6">
+          {/* Availability Calendar */}
+          <CollapsibleSection id="fic-availability" title="My Availability Calendar" defaultOpen={true}>
+            <FicAvailabilityCalendar ficUserId={session.userId} />
+          </CollapsibleSection>
 
-            {calendarGroups.length === 0 && (
-              <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
-                <h2 className="text-lg font-semibold text-[#2e231c]">No upcoming sessions</h2>
-                <p className="mt-1 text-sm text-[#6f5b4f]">
-                  Once MSMEs send schedule options and confirm slots, they will appear here.
+          {/* Session Calendar */}
+          <CollapsibleSection id="fic-calendar" title="Booked Sessions Calendar" countLabel={`${upcomingCalendarEvents.length}`} defaultOpen={true}>
+            <div className="space-y-4">
+              <article className="rounded-2xl border border-[#e4d7cc] bg-white p-5 text-sm text-[#6f5b4f]">
+                <p>
+                  Calendar timezone: <span className="font-semibold text-[#2e231c]">{FIC_TIMEZONE}</span>
+                </p>
+                <p className="mt-1">
+                  Showing requested and confirmed sessions for FIC-tagged studies starting today.
                 </p>
               </article>
-            )}
 
-            {calendarGroups.map((group) => (
-              <article key={group.dateKey} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h2 className="text-xl font-semibold text-[#2e231c]">{group.dateLabel}</h2>
-                  <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
-                    {group.events.length} session(s)
-                  </span>
-                </div>
+              {calendarGroups.length === 0 && (
+                <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                  <h2 className="text-lg font-semibold text-[#2e231c]">No upcoming sessions</h2>
+                  <p className="mt-1 text-sm text-[#6f5b4f]">
+                    Once MSMEs send schedule options and confirm slots, they will appear here.
+                  </p>
+                </article>
+              )}
 
-                <div className="mt-4 space-y-3">
-                  {group.events.map((event) => (
-                    <div key={event.id} className="rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
-                      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
-                          <h3 className="text-base font-semibold text-[#2e231c]">{event.studyTitle}</h3>
-                          <p className="mt-1 text-sm text-[#6f5b4f]">{event.productName}</p>
-                          <p className="mt-2 text-xs text-[#8c776a]">
-                            Panelist {event.panelistNumber}: {event.panelistName}
-                          </p>
-                          <p className="mt-1 text-xs text-[#8c776a]">
-                            MSME: {event.msmeName}
-                            {event.msmeOrganization ? ` (${event.msmeOrganization})` : ""}
-                          </p>
-                          <div className="mt-3 flex flex-wrap gap-2 text-xs">
-                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{event.location}</span>
-                            <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
-                              {formatTimeInTimezone(event.scheduledAt, FIC_TIMEZONE)}
-                            </span>
-                            <span
-                              className={
-                                event.sessionState === "CONFIRMED"
-                                  ? "rounded-full bg-[#e8f8ed] px-2.5 py-1 text-[#1d7c4a]"
-                                  : "rounded-full bg-[#fff7e9] px-2.5 py-1 text-[#8a5a00]"
-                              }
+              {calendarGroups.map((group) => (
+                <article key={group.dateKey} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <h2 className="text-xl font-semibold text-[#2e231c]">{group.dateLabel}</h2>
+                    <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
+                      {group.events.length} session(s)
+                    </span>
+                  </div>
+
+                  <div className="mt-4 space-y-3">
+                    {group.events.map((event) => (
+                      <div key={event.id} className="rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
+                        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                          <div>
+                            <h3 className="text-base font-semibold text-[#2e231c]">{event.studyTitle}</h3>
+                            <p className="mt-1 text-sm text-[#6f5b4f]">{event.productName}</p>
+                            <p className="mt-2 text-xs text-[#8c776a]">
+                              Panelist {event.panelistNumber}: {event.panelistName}
+                            </p>
+                            <p className="mt-1 text-xs text-[#8c776a]">
+                              MSME: {event.msmeName}
+                              {event.msmeOrganization ? ` (${event.msmeOrganization})` : ""}
+                            </p>
+                            <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                              <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{event.location}</span>
+                              <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                                {formatTimeInTimezone(event.scheduledAt, FIC_TIMEZONE)}
+                              </span>
+                              <span
+                                className={
+                                  event.sessionState === "CONFIRMED"
+                                    ? "rounded-full bg-[#e8f8ed] px-2.5 py-1 text-[#1d7c4a]"
+                                    : "rounded-full bg-[#fff7e9] px-2.5 py-1 text-[#8a5a00]"
+                                }
+                              >
+                                {event.sessionState === "CONFIRMED" ? "Confirmed" : "Pending MSME Confirmation"}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="flex gap-2 self-start">
+                            <Link
+                              href={`/studies/${event.studyId}/form`}
+                              className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
                             >
-                              {event.sessionState === "CONFIRMED" ? "Confirmed" : "Pending MSME Confirmation"}
-                            </span>
+                              Open Study
+                            </Link>
+                            <Link
+                              href={`/dashboard/${event.studyId}`}
+                              className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
+                            >
+                              View Dashboard
+                            </Link>
                           </div>
                         </div>
-                        <div className="flex gap-2 self-start">
-                          <Link
-                            href={`/studies/${event.studyId}/form`}
-                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
-                          >
-                            Open Study
-                          </Link>
-                          <Link
-                            href={`/dashboard/${event.studyId}`}
-                            className="inline-flex items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
-                          >
-                            View Dashboard
-                          </Link>
-                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
-          </div>
-        </CollapsibleSection>
+                    ))}
+                  </div>
+                </article>
+              ))}
+            </div>
+          </CollapsibleSection>
+        </div>
       )}
     </DashboardShell>
   );

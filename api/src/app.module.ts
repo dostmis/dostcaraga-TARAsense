@@ -9,6 +9,7 @@ import { StorageModule } from './storage/storage.module';
 import { HealthController } from './health.controller';
 import { RolesGuard } from './common/guards/roles.guard';
 import { AuditModule } from './audit/audit.module';
+import { FicAvailabilityModule } from './fic-availability/fic-availability.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { AuditModule } from './audit/audit.module';
     RedisModule,
     QueueModule,
     StorageModule,
+    FicAvailabilityModule,
   ],
   controllers: [HealthController],
   providers: [

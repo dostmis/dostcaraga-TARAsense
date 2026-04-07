@@ -1,9 +1,10 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
 @Injectable()
 export class RedisService implements OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
   private readonly client: Redis;
 
   constructor(private readonly configService: ConfigService) {
@@ -22,7 +23,17 @@ export class RedisService implements OnModuleDestroy {
   }
 
   async ping() {
-    return this.client.ping();
+    try {
+      return await Promise.race<string>([
+        this.client.ping(),
+        new Promise<string>((resolve) => {
+          setTimeout(() => resolve('TIMEOUT'), 1000);
+        }),
+      ]);
+    } catch (error) {
+      this.logger.warn(`Redis ping failed: ${String(error)}`);
+      return 'UNAVAILABLE';
+    }
   }
 
   async get<T = string>(key: string): Promise<T | null> {

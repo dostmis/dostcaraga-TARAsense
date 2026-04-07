@@ -40,7 +40,6 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
             id: true,
             status: true,
             panelistNumber: true,
-            randomizeCode: true,
             offeredSessions: true,
             requestedSessionAt: true,
             sessionAt: true,

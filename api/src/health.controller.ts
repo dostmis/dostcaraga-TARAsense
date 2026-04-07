@@ -13,15 +13,19 @@ export class HealthController {
   async getHealth() {
     const now = new Date().toISOString();
 
-    const db = await this.prisma.$queryRaw`SELECT 1`;
+    const dbOk = await this.prisma.$queryRaw`SELECT 1`
+      .then(() => true)
+      .catch(() => false);
     const redis = await this.redis.ping();
+    const redisOk = redis === 'PONG';
+    const overallStatus = dbOk ? 'ok' : 'degraded';
 
     return {
-      status: 'ok',
+      status: overallStatus,
       timestamp: now,
       checks: {
-        database: Array.isArray(db) ? 'ok' : 'ok',
-        redis: redis === 'PONG' ? 'ok' : 'degraded',
+        database: dbOk ? 'ok' : 'degraded',
+        redis: redisOk ? 'ok' : 'degraded',
       },
     };
   }

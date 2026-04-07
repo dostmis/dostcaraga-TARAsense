@@ -7,6 +7,7 @@ import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/lib/participant-assignment";
+import { parseStudyRandomCodeBook } from "@/lib/random-codebook";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
 
@@ -22,6 +23,7 @@ interface StudyMeta {
   consumerObjective?: string;
   categoryLabel?: string;
   numberOfSamples?: number;
+  randomCodeBook?: unknown;
 }
 
 export default async function StudyFormPage({ params }: PageProps) {
@@ -39,6 +41,8 @@ export default async function StudyFormPage({ params }: PageProps) {
         orderBy: [{ panelistNumber: "asc" }, { selectionOrder: "asc" }],
         select: {
           id: true,
+          source: true,
+          guestCode: true,
           panelistNumber: true,
           randomizeCode: true,
           sampleCodes: true,
@@ -64,7 +68,16 @@ export default async function StudyFormPage({ params }: PageProps) {
   const criteria = toCriteria(study.screeningCriteria);
   const sessionSchedule = parseStudySessionSchedule(study.targetDemographics);
   const isMarketStudy = meta.studyMode === "MARKET";
-  const sampleCodes = buildSampleCodes(study.id, Math.max(meta.numberOfSamples ?? 3, 1));
+  const isConsumerView = session?.role === "CONSUMER";
+  const isMsmeView = session?.role === "MSME";
+  const myParticipation = isConsumerView
+    ? study.participants.find((participant) => participant.panelist.userId === session.userId) ?? null
+    : null;
+  const randomCodeBook = parseStudyRandomCodeBook(meta.randomCodeBook);
+  const codePlanRows = randomCodeBook ? buildCodePlanRows(randomCodeBook) : [];
+  const totalRandomizedCodes = randomCodeBook
+    ? randomCodeBook.participantCapacity * randomCodeBook.sampleCount
+    : 0;
   const overallLikingQuestion = study.sensoryAttributes.find((attribute) => attribute.type === "OVERALL_LIKING");
   const attributeLikingQuestions = study.sensoryAttributes.filter((attribute) => attribute.type === "ATTRIBUTE_LIKING");
   const jarQuestions = study.sensoryAttributes.filter((attribute) => attribute.type === "JAR");
@@ -81,6 +94,42 @@ export default async function StudyFormPage({ params }: PageProps) {
   const qrTargetPath = isMarketStudy ? `/studies/${study.id}/form` : participantLink;
   const qrTargetUrl = `${baseUrl.replace(/\/$/, "")}${qrTargetPath}`;
   const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, { width: 280, margin: 1 });
+  const participantSessionRows = sessionSchedule
+    ? await prisma.studyParticipant.findMany({
+        where: {
+          studyId: study.id,
+          status: { notIn: ["CANCELLED", "DECLINED"] },
+        },
+        select: {
+          requestedSessionAt: true,
+          sessionAt: true,
+        },
+      })
+    : [];
+  const walkInSlotQrs = sessionSchedule
+    ? await Promise.all(
+        sessionSchedule.slots.map(async (slot) => {
+          const slotStart = new Date(slot.startsAt).getTime();
+          const occupied = participantSessionRows.filter((row) => {
+            const requested = row.requestedSessionAt ? new Date(row.requestedSessionAt).getTime() : -1;
+            const confirmed = row.sessionAt ? new Date(row.sessionAt).getTime() : -1;
+            return requested === slotStart || confirmed === slotStart;
+          }).length;
+          const remaining = Math.max(slot.capacity - occupied, 0);
+          const path = `/guest/check-in?studyId=${encodeURIComponent(study.id)}&slotId=${encodeURIComponent(slot.id)}`;
+          const url = `${baseUrl.replace(/\/$/, "")}${path}`;
+          const qr = await QRCode.toDataURL(url, { width: 220, margin: 1 });
+          return {
+            slot,
+            occupied,
+            remaining,
+            path,
+            url,
+            qr,
+          };
+        })
+      )
+    : [];
   const dashboardHref = session ? ROLE_DASHBOARD_PATH[session.role] : "/dashboard";
 
   return (
@@ -132,16 +181,68 @@ export default async function StudyFormPage({ params }: PageProps) {
                 </p>
               </section>
 
-              <section className="rounded-xl border p-4">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Sample Order (Randomized)</h2>
-                <div className="mt-2 flex flex-wrap gap-2 text-sm">
-                  {sampleCodes.map((code) => (
-                    <span key={code} className="rounded-full border border-[#fed7aa] bg-[#fff7ed] px-3 py-1 text-[#ea580c]">
-                      Sample {code}
-                    </span>
-                  ))}
-                </div>
-              </section>
+              {isMsmeView && (
+                <section className="rounded-xl border p-4">
+                  <h2 className="text-lg font-semibold text-[#0f172a]">Randomized Blind Code Plan</h2>
+                  {randomCodeBook ? (
+                    <div className="mt-2 space-y-3">
+                      <p className="text-sm text-[#64748b]">
+                        Generated at study creation: {totalRandomizedCodes} total 3-digit codes
+                        ({randomCodeBook.participantCapacity} panelists x {randomCodeBook.sampleCount} samples).
+                      </p>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        {randomCodeBook.codesBySample.map((bucket) => (
+                          <span key={`sample-bucket-${bucket.sample}`} className="rounded-full border border-[#fed7aa] bg-[#fff7ed] px-2.5 py-1 text-[#c2410c]">
+                            Sample {bucket.sample}: {bucket.codes.length} codes
+                          </span>
+                        ))}
+                      </div>
+                      <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
+                        <table className="w-full min-w-[560px] text-xs">
+                          <thead className="bg-[#f8fafc]">
+                            <tr>
+                              <th className="px-3 py-2 text-left">Panelist No</th>
+                              {Array.from({ length: randomCodeBook.sampleCount }, (_, index) => (
+                                <th key={`sample-col-${index + 1}`} className="px-3 py-2 text-left">
+                                  Sample {index + 1} Code
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {codePlanRows.map((row) => (
+                              <tr key={`code-row-${row.panelistNumber}`} className="border-t">
+                                <td className="px-3 py-2 font-medium text-[#0f172a]">{formatPanelistNumber(row.panelistNumber)}</td>
+                                {row.codes.map((code) => (
+                                  <td key={`code-${row.panelistNumber}-${code.sample}`} className="px-3 py-2 text-[#334155]">
+                                    {code.code}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-2 text-sm text-[#64748b]">
+                      Randomized code plan is not available yet. Codes will be assigned as participants are scheduled.
+                    </p>
+                  )}
+                </section>
+              )}
+
+              {isConsumerView && myParticipation && (
+                <section className="rounded-xl border p-4">
+                  <h2 className="text-lg font-semibold text-[#0f172a]">Your Participation Details</h2>
+                  <p className="mt-2 text-sm text-[#64748b]">
+                    Panelist Number: <span className="font-semibold text-[#0f172a]">{formatPanelistNumber(myParticipation.panelistNumber)}</span>
+                  </p>
+                  <p className="mt-1 text-xs text-[#64748b]">
+                    Your randomized sample codes will be revealed only after you tap START and verify your panelist number.
+                  </p>
+                </section>
+              )}
 
               <section className="rounded-xl border p-4 space-y-2">
                 <h2 className="text-lg font-semibold text-[#0f172a]">Section 1 - Overall Liking</h2>
@@ -329,14 +430,54 @@ export default async function StudyFormPage({ params }: PageProps) {
             </Link>
           </div>
 
-          {!isMarketStudy && study.participants.length > 0 && (
+          {!isMarketStudy && walkInSlotQrs.length > 0 && (
+            <div className="border-t border-[#e2e8f0] pt-3">
+              <h3 className="text-sm font-semibold text-[#0f172a]">Walk-in Guest QR by Session</h3>
+              <p className="mt-1 text-xs text-[#64748b]">
+                Use these QR codes for on-site guests when registered participants are below the slot capacity.
+              </p>
+              <div className="mt-3 space-y-3">
+                {walkInSlotQrs.map((item) => (
+                  <div key={item.slot.id} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3">
+                    <p className="text-xs font-medium text-[#0f172a]">{formatSessionWindow(item.slot, sessionSchedule?.timezone ?? "Asia/Manila")}</p>
+                    <p className="mt-1 text-[11px] text-[#64748b]">
+                      Capacity: {item.slot.capacity} | Occupied: {item.occupied} | Remaining: {item.remaining}
+                    </p>
+                    <Image
+                      src={item.qr}
+                      alt={`Walk-in QR ${item.slot.label}`}
+                      width={220}
+                      height={220}
+                      unoptimized
+                      className="mx-auto mt-2 rounded-md border"
+                    />
+                    <p className="mt-2 break-all text-[10px] text-[#64748b]">{item.url}</p>
+                    <Link
+                      href={item.path}
+                      className="app-button-secondary mt-2 inline-flex w-full items-center justify-center py-1.5 text-xs"
+                    >
+                      Open Walk-in Check-In
+                    </Link>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {!isMarketStudy && !isConsumerView && study.participants.length > 0 && (
             <div className="border-t border-[#e2e8f0] pt-2">
               <h3 className="mb-2 text-sm font-semibold text-[#0f172a]">Participant Queue</h3>
               <div className="space-y-2 text-xs text-[#64748b]">
                 {study.participants.slice(0, 8).map((participant) => (
                   <div key={participant.id} className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] p-2">
                     <p>
-                      {formatPanelistNumber(participant.panelistNumber)} | {participant.panelist.name} | {participant.status}
+                      {formatPanelistNumber(participant.panelistNumber)} | {participant.panelist.name}
+                      {participant.source === "WALK_IN_GUEST" && (
+                        <span className="ml-1 rounded-full bg-[#fff0de] px-1.5 py-0.5 text-[10px] font-semibold text-[#c2410c]">
+                          Guest {participant.guestCode ?? ""}
+                        </span>
+                      )}{" "}
+                      | {participant.status}
                     </p>
                     <p className="mt-1 text-[11px] text-[#8a725f]">
                       Codes: {parseSampleCodes(participant.sampleCodes).map((row) => `S${row.sample}:${row.code}`).join(", ") || participant.randomizeCode || "Unassigned"}
@@ -347,7 +488,7 @@ export default async function StudyFormPage({ params }: PageProps) {
             </div>
           )}
 
-          {!isMarketStudy && (session?.role === "MSME" || session?.role === "ADMIN") && study.participants.length > 0 && (
+          {!isMarketStudy && !isConsumerView && (session?.role === "MSME" || session?.role === "ADMIN") && study.participants.length > 0 && (
             <div className="border-t border-[#e2e8f0] pt-3">
               <h3 className="mb-2 text-sm font-semibold text-[#0f172a]">MSME Scheduling Controls</h3>
               <div className="space-y-3">
@@ -358,7 +499,8 @@ export default async function StudyFormPage({ params }: PageProps) {
                   return (
                     <div key={`${participant.id}-schedule`} className="rounded-lg border border-[#e2e8f0] bg-[#fffdfb] p-3 space-y-2">
                       <p className="text-xs font-medium text-[#0f172a]">
-                        {participant.panelist.name} ({formatPanelistNumber(participant.panelistNumber)}) - {participant.status}
+                        {participant.panelist.name} ({formatPanelistNumber(participant.panelistNumber)})
+                        {participant.source === "WALK_IN_GUEST" && ` | ${participant.guestCode ?? "Guest"}`} - {participant.status}
                       </p>
                       {offered.length > 0 && (
                         <p className="text-[11px] text-[#64748b]">Offered: {offered.map((value) => new Date(value).toLocaleString()).join(" | ")}</p>
@@ -465,11 +607,14 @@ function humanize(value: string) {
   return value.replace(/_/g, " ");
 }
 
-function buildSampleCodes(studyId: string, count: number) {
-  const base = studyId
-    .split("")
-    .reduce((accumulator, character) => accumulator + character.charCodeAt(0), 0);
-  return Array.from({ length: count }, (_, index) => String((base + (index + 1) * 173) % 900 + 100));
+function buildCodePlanRows(codeBook: NonNullable<ReturnType<typeof parseStudyRandomCodeBook>>) {
+  return Array.from({ length: codeBook.participantCapacity }, (_, index) => ({
+    panelistNumber: index + 1,
+    codes: codeBook.codesBySample.map((bucket) => ({
+      sample: bucket.sample,
+      code: bucket.codes[index] ?? "",
+    })),
+  }));
 }
 
 function parseJarOptions(value: unknown) {

@@ -1,9 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { getCurrentSession } from "@/lib/auth/session";
+import { clearGuestSessionCookies, getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 import { notifyUser } from "@/lib/notifications";
 import {
   ensureParticipantAssignment,
@@ -463,11 +464,15 @@ export async function verifyPanelistNumber(formData: FormData) {
 
 export async function submitStudyConsent(formData: FormData) {
   const session = await getCurrentSession();
-  if (!session || session.role !== "CONSUMER") {
+  const studyId = String(formData.get("studyId") ?? "").trim();
+  const guestSession = await getCurrentGuestSession();
+  const isConsumer = session?.role === "CONSUMER";
+  const isGuest = !session && guestSession?.studyId === studyId;
+
+  if (!isConsumer && !isGuest) {
     redirect("/login?error=Consumer+login+required");
   }
 
-  const studyId = String(formData.get("studyId") ?? "").trim();
   const participantId = String(formData.get("participantId") ?? "").trim();
   const decision = String(formData.get("decision") ?? "").toUpperCase();
   if (!studyId || !participantId || (decision !== "AGREE" && decision !== "DECLINE")) {
@@ -483,6 +488,7 @@ export async function submitStudyConsent(formData: FormData) {
           userId: true,
         },
       },
+      source: true,
       study: {
         select: {
           creatorId: true,
@@ -492,8 +498,17 @@ export async function submitStudyConsent(formData: FormData) {
     },
   });
 
-  if (!participant || participant.panelist.userId !== session.userId) {
+  if (!participant) {
+    if (isGuest) {
+      redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Participant+slot+not+found`);
+    }
     redirect("/consumer/dashboard?view=available&error=Participant+slot+not+found");
+  }
+  if (isConsumer && participant.panelist.userId !== session?.userId) {
+    redirect("/consumer/dashboard?view=available&error=Participant+slot+not+found");
+  }
+  if (isGuest && (!guestSession || participant.source !== "WALK_IN_GUEST" || participant.id !== guestSession.participantId)) {
+    redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Guest+session+is+invalid`);
   }
 
   if (decision === "DECLINE") {
@@ -517,6 +532,11 @@ export async function submitStudyConsent(formData: FormData) {
 
     revalidatePath("/consumer/dashboard");
     revalidatePath(`/studies/${studyId}/form`);
+    if (isGuest) {
+      const store = await cookies();
+      clearGuestSessionCookies(store);
+      redirect(`/test/completed?studyId=${studyId}`);
+    }
     redirect("/consumer/dashboard?view=available&message=Consent+declined.+You+will+not+proceed+to+evaluation");
   }
 

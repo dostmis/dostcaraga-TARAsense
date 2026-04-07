@@ -1,6 +1,7 @@
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
-import { getCurrentSession, requireRole } from "@/lib/auth/session";
+import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
+import { getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 import { submitStudyConsent, verifyPanelistNumber } from "@/app/actions/participant-actions";
 import { formatPanelistNumber, parseSampleCodes } from "@/lib/participant-assignment";
 
@@ -10,16 +11,23 @@ type PageProps = {
 };
 
 export default async function StartStudyPage({ params, searchParams }: PageProps) {
-  await requireRole(["CONSUMER"]);
+  const { studyId } = await params;
   const session = await getCurrentSession();
-  if (!session) {
+  const guestSession = await getCurrentGuestSession();
+  const isConsumer = session?.role === "CONSUMER";
+  const isGuest = !session && guestSession?.studyId === studyId;
+
+  if (session && session.role !== "CONSUMER") {
+    redirect(ROLE_DASHBOARD_PATH[session.role]);
+  }
+  if (!isConsumer && !isGuest) {
     redirect("/login?error=Please+login+to+start+a+survey");
   }
 
-  const { studyId } = await params;
   const query = await searchParams;
   const error = query.error ? decodeURIComponent(query.error) : undefined;
-  const participantId = typeof query.participantId === "string" ? query.participantId : "";
+  const participantIdFromQuery = typeof query.participantId === "string" ? query.participantId : "";
+  const participantId = participantIdFromQuery || (isGuest ? guestSession?.participantId ?? "" : "");
   const verified = query.verified === "1";
 
   const study = await prisma.study.findUnique({
@@ -43,32 +51,45 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
     redirect(`/consumer/dashboard?view=available&error=This+study+has+no+questionnaire+yet`);
   }
 
-  const panelist = await prisma.panelist.findFirst({
-    where: {
-      userId: session.userId,
-    },
-    select: { id: true },
-  });
+  const panelist = isConsumer
+    ? await prisma.panelist.findFirst({
+        where: {
+          userId: session?.userId,
+        },
+        select: { id: true },
+      })
+    : null;
 
-  const participant =
-    verified && participantId && panelist
-      ? await prisma.studyParticipant.findFirst({
-          where: {
-            id: participantId,
-            studyId: study.id,
-            panelistId: panelist.id,
-            status: { in: ["SELECTED", "CONFIRMED"] },
-          },
-          select: {
-            id: true,
-            status: true,
-            panelistNumber: true,
-            randomizeCode: true,
-            sampleCodes: true,
-            consentStatus: true,
-          },
-        })
-      : null;
+  const participant = verified && participantId
+    ? await prisma.studyParticipant.findFirst({
+        where: {
+          id: participantId,
+          studyId: study.id,
+          status: { in: ["SELECTED", "CONFIRMED"] },
+          ...(isConsumer
+            ? {
+                panelistId: panelist?.id ?? "__no-panelist__",
+              }
+            : {
+                source: "WALK_IN_GUEST",
+              }),
+        },
+        select: {
+          id: true,
+          status: true,
+          panelistNumber: true,
+          randomizeCode: true,
+          sampleCodes: true,
+          consentStatus: true,
+          guestCode: true,
+          source: true,
+        },
+      })
+    : null;
+
+  if (isGuest && participant && guestSession && participant.id !== guestSession.participantId) {
+    redirect("/login?error=Guest+session+mismatch.+Please+scan+the+QR+again");
+  }
 
   if (participant?.status === "COMPLETED") {
     redirect(`/test/completed?studyId=${study.id}`);
@@ -84,7 +105,7 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
           {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
         </section>
 
-        {!participant && (
+        {!participant && isConsumer && (
           <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
             <h2 className="text-lg font-semibold text-[#0f172a]">Enter Panelist Number</h2>
             <p className="mt-1 text-sm text-[#64748b]">
@@ -110,6 +131,15 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
           </section>
         )}
 
+        {!participant && isGuest && (
+          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
+            <h2 className="text-lg font-semibold text-[#0f172a]">Guest access not ready</h2>
+            <p className="mt-1 text-sm text-[#64748b]">
+              Your guest session could not be verified. Please rescan the walk-in QR code from the facilitator.
+            </p>
+          </section>
+        )}
+
         {participant && (
           <>
             <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
@@ -117,6 +147,9 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
               <p className="mt-1 text-sm text-[#64748b]">
                 Panelist No: {formatPanelistNumber(participant.panelistNumber)} | Use these codes to match your physical samples.
               </p>
+              {participant.guestCode && (
+                <p className="mt-1 text-xs font-medium text-[#ea580c]">Guest ID: {participant.guestCode}</p>
+              )}
               <div className="mt-4 grid gap-2 sm:grid-cols-2">
                 {renderSampleCodes(participant.sampleCodes, participant.randomizeCode).map((row) => (
                   <div key={`${row.sample}-${row.code}`} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3 text-sm">

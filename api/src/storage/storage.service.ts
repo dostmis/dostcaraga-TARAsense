@@ -2,7 +2,9 @@ import {
   BadRequestException,
   Injectable,
   InternalServerErrorException,
+  Logger,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -20,8 +22,10 @@ import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class StorageService implements OnModuleInit {
-  private readonly s3: S3Client;
+  private readonly logger = new Logger(StorageService.name);
+  private readonly s3?: S3Client;
   private readonly bucket: string;
+  private storageReady = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -32,12 +36,12 @@ export class StorageService implements OnModuleInit {
     const region = this.configService.get<string>('S3_REGION') || 'us-east-1';
     const accessKeyId = this.configService.get<string>('S3_ACCESS_KEY');
     const secretAccessKey = this.configService.get<string>('S3_SECRET_KEY');
+    this.bucket = this.configService.get<string>('S3_BUCKET') || 'tarasense-files';
 
     if (!endpoint || !accessKeyId || !secretAccessKey) {
-      throw new Error('S3 config is incomplete. Set S3_ENDPOINT, S3_ACCESS_KEY, and S3_SECRET_KEY.');
+      this.logger.warn('S3 config is incomplete. Storage features are disabled until S3 is configured.');
+      return;
     }
-
-    this.bucket = this.configService.get<string>('S3_BUCKET') || 'tarasense-files';
 
     this.s3 = new S3Client({
       endpoint,
@@ -51,13 +55,23 @@ export class StorageService implements OnModuleInit {
   }
 
   async onModuleInit() {
+    if (!this.s3) {
+      return;
+    }
+
     try {
       await this.s3.send(new HeadBucketCommand({ Bucket: this.bucket }));
+      this.storageReady = true;
     } catch {
       try {
         await this.s3.send(new CreateBucketCommand({ Bucket: this.bucket }));
+        this.storageReady = true;
       } catch (error) {
-        throw new InternalServerErrorException(`Unable to initialize bucket ${this.bucket}: ${String(error)}`);
+        const message = `Unable to initialize bucket ${this.bucket}: ${String(error)}`;
+        if ((this.configService.get<string>('NODE_ENV') || 'development') === 'production') {
+          throw new InternalServerErrorException(message);
+        }
+        this.logger.error(`${message}. Continuing without storage in non-production mode.`);
       }
     }
   }
@@ -67,13 +81,15 @@ export class StorageService implements OnModuleInit {
     uploaderId?: string,
     meta?: { ip?: string; ua?: string | string[] },
   ) {
+    const s3 = this.getS3Client();
+
     if (!file?.buffer?.length) {
       throw new BadRequestException('File is required');
     }
 
     const objectKey = this.buildObjectKey(file.originalname);
 
-    const putResult = await this.s3.send(
+    const putResult = await s3.send(
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: objectKey,
@@ -111,6 +127,7 @@ export class StorageService implements OnModuleInit {
     uploaderId?: string,
     meta?: { ip?: string; ua?: string | string[] },
   ) {
+    const s3 = this.getS3Client();
     const objectKey = this.buildObjectKey(dto.originalName);
     const command = new PutObjectCommand({
       Bucket: this.bucket,
@@ -118,7 +135,7 @@ export class StorageService implements OnModuleInit {
       ContentType: dto.contentType,
     });
 
-    const uploadUrl = await getSignedUrl(this.s3, command, { expiresIn: 60 * 10 });
+    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 60 * 10 });
 
     const created = await this.prisma.storedFile.create({
       data: {
@@ -151,6 +168,7 @@ export class StorageService implements OnModuleInit {
   }
 
   async getSignedDownloadUrl(fileId: string) {
+    const s3 = this.getS3Client();
     const file = await this.prisma.storedFile.findUnique({
       where: { id: fileId },
     });
@@ -166,7 +184,7 @@ export class StorageService implements OnModuleInit {
       ResponseContentDisposition: `inline; filename=\"${encodeURIComponent(file.originalName)}\"`,
     });
 
-    const downloadUrl = await getSignedUrl(this.s3, command, { expiresIn: 60 * 10 });
+    const downloadUrl = await getSignedUrl(s3, command, { expiresIn: 60 * 10 });
 
     return {
       file,
@@ -186,5 +204,15 @@ export class StorageService implements OnModuleInit {
     const safeName = originalName.replace(/[^a-zA-Z0-9._-]/g, '_');
     const date = new Date().toISOString().slice(0, 10);
     return `uploads/${date}/${randomUUID()}-${safeName}`;
+  }
+
+  private getS3Client() {
+    if (!this.s3 || !this.storageReady) {
+      throw new ServiceUnavailableException(
+        'Storage service is unavailable. Please ensure S3/MinIO is running and reachable.',
+      );
+    }
+
+    return this.s3;
   }
 }
