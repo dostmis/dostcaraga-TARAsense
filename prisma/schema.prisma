@@ -23,7 +23,7 @@ model User {
   roleRequests     RoleUpgradeRequest[] @relation("RequestApplicant")
   reviewedRequests RoleUpgradeRequest[] @relation("RequestReviewer")
   notifications    Notification[]
-  ficAvailability  FicAvailability[]    @relation("FicAvailability")
+  ficAvailability  FicAvailability[]
 }
 
 enum UserRole {

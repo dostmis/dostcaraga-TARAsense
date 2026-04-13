@@ -1,15 +1,16 @@
 import Link from "next/link";
 import { logout } from "@/app/actions/auth-actions";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { NotificationPanel } from "@/components/notifications/notification-panel";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
-import { FicCalendarControls } from "@/components/fic-calendar-controls";
 import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar";
 import { formatPanelistNumber } from "@/lib/participant-assignment";
 import { CalendarDays, ClipboardCheck, Clock3, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
+import { isMissingColumnError, logSchemaDriftWarning } from "@/lib/db-schema-drift";
 
 export const dynamic = "force-dynamic";
 const FIC_TIMEZONE = "Asia/Manila";
@@ -42,50 +43,93 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
   const { error, message, q } = params;
   const activeView = parseFicView(params.view);
 
-  const [studies, participantSessions] = await Promise.all([
-    prisma.study.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        creator: { select: { name: true, organization: true } },
-        _count: { select: { responses: true, participants: true } },
-      },
-      take: 20,
-    }),
-    prisma.studyParticipant.findMany({
-      where: {
-        OR: [{ sessionAt: { not: null } }, { requestedSessionAt: { not: null } }],
-        status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
-        study: {
-          location: {
-            contains: "fic",
-            mode: "insensitive",
-          },
+  let studies: Array<{
+    id: string;
+    title: string;
+    productName: string;
+    location: string;
+    status: string;
+    creator: { name: string; organization: string | null };
+    _count: { responses: number; participants: number };
+  }> = [];
+  let participantSessions: Array<{
+    id: string;
+    panelistNumber: number | null;
+    status: string;
+    sessionAt: Date | null;
+    requestedSessionAt: Date | null;
+    study: {
+      id: string;
+      title: string;
+      productName: string;
+      location: string;
+      creator: { name: string; organization: string | null };
+    };
+    panelist: { name: string };
+  }> = [];
+
+  try {
+    [studies, participantSessions] = await Promise.all([
+      prisma.study.findMany({
+        orderBy: { createdAt: "desc" },
+        select: {
+          id: true,
+          title: true,
+          productName: true,
+          location: true,
+          status: true,
+          creator: { select: { name: true, organization: true } },
+          _count: { select: { responses: true, participants: true } },
         },
-      },
-      include: {
-        study: {
-          select: {
-            id: true,
-            title: true,
-            productName: true,
-            location: true,
-            creator: {
-              select: {
-                name: true,
-                organization: true,
-              },
+        take: 20,
+      }),
+      prisma.studyParticipant.findMany({
+        where: {
+          OR: [{ sessionAt: { not: null } }, { requestedSessionAt: { not: null } }],
+          status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
+          study: {
+            location: {
+              contains: "fic",
+              mode: "insensitive",
             },
           },
         },
-        panelist: {
-          select: {
-            name: true,
+        select: {
+          id: true,
+          panelistNumber: true,
+          status: true,
+          sessionAt: true,
+          requestedSessionAt: true,
+          study: {
+            select: {
+              id: true,
+              title: true,
+              productName: true,
+              location: true,
+              creator: {
+                select: {
+                  name: true,
+                  organization: true,
+                },
+              },
+            },
+          },
+          panelist: {
+            select: {
+              name: true,
+            },
           },
         },
-      },
-      take: 300,
-    }),
-  ]);
+        take: 300,
+      }),
+    ]);
+  } catch (error) {
+    if (isMissingColumnError(error, "StudyParticipant")) {
+      logSchemaDriftWarning("fic dashboard participant sessions", error);
+      redirect("/fic/dashboard?error=Database+schema+is+out+of+date.+Run+npm+run+db:sync");
+    }
+    throw error;
+  }
 
   const normalizedQuery = (q ?? "").trim().toLowerCase();
   const filteredStudies = normalizedQuery

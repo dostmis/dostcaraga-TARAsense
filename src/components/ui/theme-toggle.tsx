@@ -21,26 +21,20 @@ function resolveInitialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function resolveThemeForRender(): Theme {
+  if (typeof window === "undefined") {
+    return "light";
+  }
+  return resolveInitialTheme();
+}
+
 export function ThemeToggle() {
-  const [mounted, setMounted] = useState(false);
-  const [theme, setTheme] = useState<Theme>("light");
+  const [theme, setTheme] = useState<Theme>(resolveThemeForRender);
 
   useEffect(() => {
-    const initialTheme = resolveInitialTheme();
-    setTheme(initialTheme);
-    applyTheme(initialTheme);
-    setMounted(true);
-  }, []);
-
-  useEffect(() => {
-    if (!mounted) return;
     applyTheme(theme);
     window.localStorage.setItem(STORAGE_KEY, theme);
-  }, [mounted, theme]);
-
-  if (!mounted) {
-    return null;
-  }
+  }, [theme]);
 
   const isDark = theme === "dark";
 

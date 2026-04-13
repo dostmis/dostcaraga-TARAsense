@@ -22,7 +22,8 @@ export type Facility = typeof FACILITIES_BY_REGION[Region][number];
 
 export function getRegionForFacility(facility: string): Region | null {
   for (const region of REGIONS) {
-    if (FACILITIES_BY_REGION[region].includes(facility as Facility)) {
+    const facilities = FACILITIES_BY_REGION[region] as readonly string[];
+    if (facilities.includes(facility)) {
       return region;
     }
   }

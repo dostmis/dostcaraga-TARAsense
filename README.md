@@ -8,10 +8,13 @@ This repository now contains:
 
 ```bash
 npm install
+npm run db:sync
 npm run dev
 ```
 
 Web URL: `http://localhost:3000`
+FIC calendar endpoints run from the same Next.js app at `/api/fic-availability/*` by default.
+You only need `NEXT_PUBLIC_API_URL` when intentionally routing calls to an external API gateway.
 
 ## API (NestJS)
 

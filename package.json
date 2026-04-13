@@ -5,9 +5,16 @@
   "scripts": {
     "dev": "next dev --webpack",
     "dev:turbo": "next dev --turbopack",
-    "build": "next build",
+    "build": "npm run build:web",
+    "prebuild:web": "prisma generate",
+    "build:web": "next build",
+    "build:api": "npm --prefix api run build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push",
+    "db:sync": "prisma db push --accept-data-loss && prisma generate",
+    "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",

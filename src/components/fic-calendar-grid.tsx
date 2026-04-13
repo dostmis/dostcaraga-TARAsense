@@ -90,7 +90,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
 
       setCalendarDays(days);
     } catch (err) {
-      setError('Failed to load calendar. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to load calendar. Please try again.');
       console.error('Error loading calendar:', err);
     } finally {
       setLoading(false);
@@ -312,7 +312,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
       {bulkMode ? (
         <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
           <p className="text-sm text-blue-800">
-            <strong>Bulk Mode:</strong> Click dates to select/deselect them, then click "Apply Changes" to update all selected dates at once.
+            <strong>Bulk Mode:</strong> Click dates to select/deselect them, then click &quot;Apply Changes&quot; to update all selected dates at once.
           </p>
         </div>
       ) : (

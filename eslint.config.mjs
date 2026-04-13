@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // NestJS API is linted from ./api with its own config.
+    "api/**",
   ]),
 ]);
 

@@ -212,4 +212,3 @@ function formatGuestCode(panelistNumber: number | null) {
   const safeNumber = panelistNumber && panelistNumber > 0 ? panelistNumber : 0;
   return `G-${String(safeNumber).padStart(3, "0")}`;
 }
-

@@ -1,12 +1,6 @@
 // Client-side service for FIC availability integration
 import { FACILITIES_BY_REGION } from "@/lib/facility-constants";
-import { API_BASE_URL } from "@/lib/api-config";
-
-// Debug logging to verify API_BASE_URL
-if (typeof window !== 'undefined') {
-  console.log('🔧 FIC Availability Service - API_BASE_URL:', API_BASE_URL);
-  console.log('🌎 Window location:', window.location.origin);
-}
+import { buildApiUrl } from "@/lib/api-config";
 
 /** Custom error class for API errors */
 class ApiError extends Error {
@@ -20,18 +14,13 @@ class ApiError extends Error {
   }
 }
 
+function getErrorMessage(error: unknown) {
+  return error instanceof Error ? error.message : "Unknown error";
+}
+
 /** Make API request with enhanced error handling */
 async function makeApiRequest(url: string, options: RequestInit = {}) {
-  const requestUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`;
-  
-  // Debug logging
-  if (typeof window !== 'undefined') {
-    console.log('📡 Making API request:', {
-      url: requestUrl,
-      method: options.method || 'GET',
-      hasBody: !!options.body
-    });
-  }
+  const requestUrl = buildApiUrl(url);
 
   try {
     // Ensure credentials are always included for auth
@@ -46,20 +35,11 @@ async function makeApiRequest(url: string, options: RequestInit = {}) {
 
     const response = await fetch(requestUrl, fetchOptions);
     
-    // Debug logging
-    if (typeof window !== 'undefined') {
-      console.log('📥 API Response:', {
-        status: response.status,
-        statusText: response.statusText,
-        url: response.url
-      });
-    }
-
     // Handle non-OK responses
     if (!response.ok) {
-      const errorData = await response.text().catch(() => 'No error details');
+      const errorData = await response.text().catch(() => "No error details");
       throw new ApiError(
-        `API Error: ${response.status} ${response.statusText}`,
+        `API Error: ${response.status} ${response.statusText}. ${errorData}`,
         response.status,
         response.statusText
       );
@@ -70,8 +50,7 @@ async function makeApiRequest(url: string, options: RequestInit = {}) {
     // Network error or CORS error
     if (error instanceof TypeError && error.message === 'Failed to fetch') {
       throw new ApiError(
-        `Failed to connect to API server at ${API_BASE_URL}. ` +
-        `Please ensure the backend is running on port 4000 and CORS is enabled.`
+        `Failed to connect to the calendar service. Please refresh and try again.`
       );
     }
     
@@ -80,7 +59,7 @@ async function makeApiRequest(url: string, options: RequestInit = {}) {
   }
 }
 
-interface FicAvailability {
+export interface FicAvailability {
   id: string;
   ficUserId: string;
   date: string;
@@ -98,6 +77,20 @@ export interface AvailableFic {
   availableDates: string[];
   availabilityPercentage: number;
 }
+
+export interface BulkAvailabilityError {
+  message: string;
+}
+
+export interface BulkAvailabilityResult {
+  success: boolean;
+  results?: Array<Record<string, unknown>>;
+  errors?: BulkAvailabilityError[];
+}
+
+type SessionSlotLike = {
+  startDateTime?: string | Date | null;
+};
 
 /**
  * Get available FICs for a date range and facility
@@ -125,12 +118,7 @@ export async function getAvailableFics(
     return data;
   } catch (error) {
     console.error('Error fetching available FICs:', error);
-    
-    // Show user-friendly error
-    if (typeof window !== 'undefined') {
-      alert(`Failed to load available FICs: ${error.message}. Please check if the API server is running.`);
-    }
-    
+
     return [];
   }
 }
@@ -149,21 +137,13 @@ export async function getFicCalendar(
       endDate,
     });
 
-    const response = await makeApiRequest(
-      `/fic-availability/calendar/${ficUserId}?${params.toString()}`
-    );
+    const response = await makeApiRequest(`/fic-availability/calendar/${ficUserId}?${params.toString()}`);
 
     const data = await response.json();
     return data;
   } catch (error) {
     console.error('Error fetching FIC calendar:', error);
-    
-    // Show user-friendly error
-    if (typeof window !== 'undefined') {
-      alert(`Failed to load calendar: ${error.message}. Please check if the API server is running.`);
-    }
-    
-    return [];
+    throw new Error(getErrorMessage(error));
   }
 }
 
@@ -173,7 +153,7 @@ export async function getFicCalendar(
 export async function bulkSetAvailability(
   ficUserId: string,
   dates: { date: string; isAvailable: boolean }[]
-): Promise<{ success: boolean; results?: any[]; errors?: any[] }> {
+): Promise<BulkAvailabilityResult> {
   try {
     const response = await makeApiRequest(
       `/fic-availability/bulk?ficUserId=${ficUserId}`,
@@ -186,15 +166,10 @@ export async function bulkSetAvailability(
     return await response.json();
   } catch (error) {
     console.error('Error setting availability:', error);
-    
-    // Show user-friendly error
-    if (typeof window !== 'undefined') {
-      alert(`Failed to update availability: ${error.message}`);
-    }
-    
+
     return {
       success: false,
-      errors: [{ message: error.message }],
+      errors: [{ message: getErrorMessage(error) }],
     };
   }
 }
@@ -219,20 +194,14 @@ export async function setAvailability(
     return await response.json();
   } catch (error) {
     console.error('Error toggling availability:', error);
-    
-    // Show user-friendly error
-    if (typeof window !== 'undefined') {
-      alert(`Failed to toggle availability: ${error.message}`);
-    }
-    
-    return null;
+    throw new Error(getErrorMessage(error));
   }
 }
 
 /**
  * Extract dates from study session slots
  */
-export function extractDatesFromSessions(sessions: any[]): string[] {
+export function extractDatesFromSessions(sessions: SessionSlotLike[]): string[] {
   const dates = new Set<string>();
   
   for (const session of sessions) {
@@ -271,7 +240,7 @@ export async function checkDatesAvailability(
 /**
  * Get FICs by region
  */
-export function getFicsByRegion(region: keyof typeof FACILITIES_BY_REGION): string[] {
+export function getFicsByRegion(region: keyof typeof FACILITIES_BY_REGION): readonly string[] {
   return FACILITIES_BY_REGION[region] || [];
 }
 
