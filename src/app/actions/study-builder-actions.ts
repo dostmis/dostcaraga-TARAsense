@@ -174,6 +174,12 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
   if (!payload.sensoryStudyType) {
     return { success: false, error: "Select a sensory study type." };
   }
+  if (payload.targetResponses < 10) {
+    return { success: false, error: "Sensory studies require at least 10 target responses." };
+  }
+  if (payload.targetResponses > 200) {
+    return { success: false, error: "Sensory studies support up to 200 target responses." };
+  }
   if (!payload.productName?.trim()) {
     return { success: false, error: "Product name is required for sensory studies." };
   }

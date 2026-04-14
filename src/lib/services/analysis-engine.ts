@@ -9,9 +9,27 @@ interface ParsedJARValue {
   bucket: JarBucket;
 }
 
+interface DescriptiveStats {
+  mean: number;
+  stdDev: number;
+  n: number;
+  median: number;
+}
+
+interface SampleResponseEntry {
+  sampleNumber: number;
+  sampleLabel?: string;
+  overallLiking?: number;
+  attributes: Record<string, unknown>;
+}
+
 interface StudyResponse {
   overallLiking?: number;
   attributes: Record<string, unknown>;
+  sampleResponses?: SampleResponseEntry[];
+  importMeta?: {
+    sampleLabelByNumber?: Record<string, unknown>;
+  };
 }
 
 interface PenaltyResult {
@@ -28,6 +46,43 @@ interface PenaltyResult {
   isSignificant: boolean;
 }
 
+interface SamplePerformanceRow {
+  sampleNumber: number;
+  sampleLabel: string;
+  meanScore: number;
+  n: number;
+  interpretation: string;
+}
+
+interface SampleJarBreakdownRow {
+  attribute: string;
+  tooLowPercent: number;
+  justRightPercent: number;
+  tooHighPercent: number;
+  tooLowCount: number;
+  justRightCount: number;
+  tooHighCount: number;
+  tooLowPenalty: number | null;
+  tooHighPenalty: number | null;
+  driverLevel: DriverLevel;
+}
+
+interface SampleAnalysisBlock {
+  sampleNumber: number;
+  sampleLabel: string;
+  overallLiking: DescriptiveStats;
+  interpretation: string;
+  jarBreakdown: SampleJarBreakdownRow[];
+  penaltyAnalysis: PenaltyResult[];
+  actionableDrivers: string[];
+}
+
+interface SampleInsights {
+  samplePerformance: SamplePerformanceRow[];
+  bySample: SampleAnalysisBlock[];
+  bestSample: SamplePerformanceRow | null;
+}
+
 export class SensoryAnalysisEngine {
   async analyzeStudy(studyId: string) {
     const responses = await prisma.sensoryResponse.findMany({
@@ -37,15 +92,19 @@ export class SensoryAnalysisEngine {
 
     const parsedResponses: StudyResponse[] = responses.map((r: { data: unknown }) => r.data as StudyResponse);
 
-    const overallLikingScores = parsedResponses
-      .map((response) => response.overallLiking)
-      .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
-    const overallStats = this.computeDescriptiveStats(overallLikingScores);
-
     const attributes = await prisma.sensoryAttribute.findMany({
       where: { studyId },
       orderBy: { order: "asc" },
     });
+
+    const overallLikingScores = parsedResponses
+      .map((response) => response.overallLiking)
+      .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
+    const overallStats = this.computeDescriptiveStats(overallLikingScores);
+    const sampleInsights = this.buildSampleInsights(
+      parsedResponses,
+      attributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.name)
+    );
 
     const attributeResults: Array<Record<string, unknown>> = [];
     const penaltyResults: PenaltyResult[] = [];
@@ -79,29 +138,45 @@ export class SensoryAnalysisEngine {
 
     const attributeStatsJson = JSON.parse(JSON.stringify(attributeResults)) as Prisma.InputJsonValue;
     const penaltyStatsJson = JSON.parse(JSON.stringify(penaltyResults)) as Prisma.InputJsonValue;
+    const overallLikingPayload = {
+      ...overallStats,
+      samplePerformance: sampleInsights.samplePerformance,
+      bestSample: sampleInsights.bestSample,
+      bySample: sampleInsights.bySample,
+      jarFramework: {
+        tooLow: "1-2",
+        justRight: "3",
+        tooHigh: "4-5",
+      },
+      driverRules: {
+        strong: "Penalty >= 1.0 and non-JAR >= 20%",
+        moderate: "Penalty 0.5-0.99 and non-JAR >= 20%",
+      },
+    };
+    const overallLikingJson = JSON.parse(JSON.stringify(overallLikingPayload)) as Prisma.InputJsonValue;
 
     const analysis = await prisma.studyAnalysis.upsert({
       where: { studyId },
       update: {
-        overallLiking: overallStats,
+        overallLiking: overallLikingJson,
         attributeStats: attributeStatsJson,
         penaltyAnalysis: penaltyStatsJson,
       },
       create: {
         studyId,
-        overallLiking: overallStats,
+        overallLiking: overallLikingJson,
         attributeStats: attributeStatsJson,
         penaltyAnalysis: penaltyStatsJson,
       },
     });
 
-    await this.writeDerivedMetrics(studyId, overallStats, attributeResults, penaltyResults);
+    await this.writeDerivedMetrics(studyId, overallLikingPayload, attributeResults, penaltyResults);
     await this.generateAIInterpretation(studyId, overallStats, penaltyResults);
 
     return analysis;
   }
 
-  private computeDescriptiveStats(values: number[]) {
+  private computeDescriptiveStats(values: number[]): DescriptiveStats {
     if (values.length === 0) {
       return { mean: 0, stdDev: 0, n: 0, median: 0 };
     }
@@ -231,9 +306,112 @@ export class SensoryAnalysisEngine {
     };
   }
 
+  private buildSampleInsights(parsedResponses: StudyResponse[], jarAttributeNames: string[]): SampleInsights {
+    const buckets = new Map<number, { sampleNumber: number; sampleLabel: string; responses: StudyResponse[] }>();
+
+    parsedResponses.forEach((response) => {
+      const labelMap = toSampleLabelMap(response.importMeta?.sampleLabelByNumber);
+      const sampleRows =
+        Array.isArray(response.sampleResponses) && response.sampleResponses.length > 0
+          ? response.sampleResponses
+          : [
+              {
+                sampleNumber: 1,
+                sampleLabel: labelMap.get(1) ?? "Sample 1",
+                overallLiking: response.overallLiking,
+                attributes: response.attributes,
+              },
+            ];
+
+      sampleRows.forEach((sample) => {
+        const normalizedSampleNumber =
+          typeof sample.sampleNumber === "number" && Number.isFinite(sample.sampleNumber) && sample.sampleNumber > 0
+            ? Math.floor(sample.sampleNumber)
+            : 1;
+        const sampleLabel =
+          sample.sampleLabel?.trim() || labelMap.get(normalizedSampleNumber) || `Sample ${normalizedSampleNumber}`;
+
+        const bucket = buckets.get(normalizedSampleNumber) ?? {
+          sampleNumber: normalizedSampleNumber,
+          sampleLabel,
+          responses: [],
+        };
+        bucket.sampleLabel = bucket.sampleLabel || sampleLabel;
+        bucket.responses.push({
+          overallLiking:
+            typeof sample.overallLiking === "number" && Number.isFinite(sample.overallLiking)
+              ? sample.overallLiking
+              : response.overallLiking,
+          attributes: sample.attributes,
+        });
+        buckets.set(normalizedSampleNumber, bucket);
+      });
+    });
+
+    const sampleRows = Array.from(buckets.values()).sort((left, right) => left.sampleNumber - right.sampleNumber);
+    const bySample: SampleAnalysisBlock[] = sampleRows.map((sampleRow) => {
+      const overallScores = sampleRow.responses
+        .map((row) => row.overallLiking)
+        .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
+      const stats = this.computeDescriptiveStats(overallScores);
+      const penalties = jarAttributeNames.map((attributeName) =>
+        this.calculatePenaltyAnalysis(attributeName, sampleRow.responses)
+      );
+      const jarBreakdown: SampleJarBreakdownRow[] = jarAttributeNames.map((attributeName) => {
+        const distribution = this.calculateJARDistribution(attributeName, sampleRow.responses);
+        const penalty = penalties.find((row) => row.attribute === attributeName);
+        return {
+          attribute: attributeName,
+          tooLowPercent: distribution.tooLow.percent,
+          justRightPercent: distribution.justRight.percent,
+          tooHighPercent: distribution.tooHigh.percent,
+          tooLowCount: distribution.tooLow.count,
+          justRightCount: distribution.justRight.count,
+          tooHighCount: distribution.tooHigh.count,
+          tooLowPenalty: penalty?.tooLowPenalty ?? null,
+          tooHighPenalty: penalty?.tooHighPenalty ?? null,
+          driverLevel: penalty?.driverLevel ?? "NOT_ACTIONABLE",
+        };
+      });
+      const actionableDrivers = penalties.filter((row) => row.isActionable).map((row) => row.attribute);
+
+      return {
+        sampleNumber: sampleRow.sampleNumber,
+        sampleLabel: sampleRow.sampleLabel,
+        overallLiking: stats,
+        interpretation: interpretSampleMean(stats.mean),
+        jarBreakdown,
+        penaltyAnalysis: penalties,
+        actionableDrivers,
+      };
+    });
+
+    const samplePerformance: SamplePerformanceRow[] = bySample.map((sample) => ({
+      sampleNumber: sample.sampleNumber,
+      sampleLabel: sample.sampleLabel,
+      meanScore: sample.overallLiking.mean,
+      n: sample.overallLiking.n,
+      interpretation: sample.interpretation,
+    }));
+
+    const bestSample =
+      samplePerformance.length > 0
+        ? [...samplePerformance].sort((left, right) => {
+            if (right.meanScore !== left.meanScore) return right.meanScore - left.meanScore;
+            return left.sampleNumber - right.sampleNumber;
+          })[0]
+        : null;
+
+    return {
+      samplePerformance,
+      bySample,
+      bestSample,
+    };
+  }
+
   private async writeDerivedMetrics(
     studyId: string,
-    overallStats: Record<string, number>,
+    overallStats: Record<string, unknown>,
     attributeResults: Array<Record<string, unknown>>,
     penalties: PenaltyResult[]
   ) {
@@ -292,7 +470,7 @@ export class SensoryAnalysisEngine {
     });
   }
 
-  private async generateAIInterpretation(studyId: string, overallStats: Record<string, number>, penalties: PenaltyResult[]) {
+  private async generateAIInterpretation(studyId: string, overallStats: DescriptiveStats, penalties: PenaltyResult[]) {
     if (!process.env.OPENAI_API_KEY) {
       return;
     }
@@ -445,4 +623,36 @@ function normalizeAttributeBaseName(name: string) {
     .replace(/\s*\(jar\)\s*$/i, "")
     .replace(/\s*liking\s*$/i, "")
     .trim();
+}
+
+function interpretSampleMean(mean: number) {
+  if (mean >= 7.5) {
+    return "Highly liked";
+  }
+  if (mean >= 6.5) {
+    return "Generally liked";
+  }
+  if (mean >= 5.5) {
+    return "Acceptable but weak";
+  }
+  return "Low liking";
+}
+
+function toSampleLabelMap(value: unknown) {
+  const map = new Map<number, string>();
+  if (!value || typeof value !== "object") {
+    return map;
+  }
+
+  Object.entries(value as Record<string, unknown>).forEach(([key, rawLabel]) => {
+    const sampleNumber = Number(key);
+    if (!Number.isFinite(sampleNumber) || sampleNumber < 1) {
+      return;
+    }
+    if (typeof rawLabel !== "string" || !rawLabel.trim()) {
+      return;
+    }
+    map.set(Math.floor(sampleNumber), rawLabel.trim());
+  });
+  return map;
 }

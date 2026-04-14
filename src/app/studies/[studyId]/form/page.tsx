@@ -10,6 +10,7 @@ import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/
 import { parseStudyRandomCodeBook } from "@/lib/random-codebook";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
+import { StudyImportPanel } from "@/components/studies/study-import-panel";
 
 type PageProps = {
   params: Promise<{ studyId: string }>;
@@ -70,6 +71,7 @@ export default async function StudyFormPage({ params }: PageProps) {
   const isMarketStudy = meta.studyMode === "MARKET";
   const isConsumerView = session?.role === "CONSUMER";
   const isMsmeView = session?.role === "MSME";
+  const canImportStudyData = !isMarketStudy && (session?.role === "MSME" || session?.role === "ADMIN");
   const myParticipation = isConsumerView
     ? study.participants.find((participant) => participant.panelist.userId === session.userId) ?? null
     : null;
@@ -429,6 +431,8 @@ export default async function StudyFormPage({ params }: PageProps) {
               Back to Dashboard
             </Link>
           </div>
+
+          {canImportStudyData && <StudyImportPanel studyId={study.id} />}
 
           {!isMarketStudy && walkInSlotQrs.length > 0 && (
             <div className="border-t border-[#e2e8f0] pt-3">

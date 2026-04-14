@@ -20,9 +20,43 @@ interface ResultsDashboardProps {
   studyId: string;
 }
 
+interface SamplePerformanceRow {
+  sampleNumber: number;
+  sampleLabel: string;
+  meanScore: number;
+  n: number;
+  interpretation: string;
+}
+
+interface SampleJarBreakdownRow {
+  attribute: string;
+  tooLowPercent: number;
+  justRightPercent: number;
+  tooHighPercent: number;
+  tooLowPenalty: number | null;
+  tooHighPenalty: number | null;
+  driverLevel: "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
+}
+
+interface SampleAnalysisBlock {
+  sampleNumber: number;
+  sampleLabel: string;
+  overallLiking: { mean: number; stdDev: number; n: number; median?: number };
+  interpretation: string;
+  jarBreakdown: SampleJarBreakdownRow[];
+}
+
 interface AnalysisPayload {
   generatedAt: string;
-  overallLiking: { mean: number; stdDev: number; n: number; median?: number };
+  overallLiking: {
+    mean: number;
+    stdDev: number;
+    n: number;
+    median?: number;
+    samplePerformance?: SamplePerformanceRow[];
+    bestSample?: SamplePerformanceRow | null;
+    bySample?: SampleAnalysisBlock[];
+  };
   attributeStats: Array<{
     name: string;
     type: "LIKING" | "JAR";
@@ -110,6 +144,9 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
 
   const decisionStyles = getDecisionStyle(decisionFlag);
   const actionableDrivers = penaltyAnalysis.filter((penalty) => penalty.isActionable);
+  const samplePerformance = overallLiking.samplePerformance ?? [];
+  const bySample = overallLiking.bySample ?? [];
+  const bestSample = overallLiking.bestSample;
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-6 lg:p-8">
@@ -145,6 +182,82 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
           </div>
         </div>
       </section>
+
+      {samplePerformance.length > 0 && (
+        <Card title="By Sample Performance" className="lg:col-span-2">
+          <p className="mb-3 rounded-lg border border-[#dbeafe] bg-[#eff6ff] px-3 py-2 text-xs text-[#1e3a8a]">
+            Sample-level analysis is the primary view for completed imported studies, anchored on Overall Liking and JAR penalty rules.
+          </p>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
+              <thead className="bg-[#f8fafc]">
+                <tr>
+                  <th className="px-4 py-3 text-left">Sample</th>
+                  <th className="px-4 py-3 text-center">Mean Overall Liking</th>
+                  <th className="px-4 py-3 text-center">Respondents</th>
+                  <th className="px-4 py-3 text-left">Interpretation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {samplePerformance.map((sample) => (
+                  <tr key={`sample-performance-${sample.sampleNumber}`} className="border-b border-[#e2e8f0]">
+                    <td className="px-4 py-3 font-medium text-[#0f172a]">
+                      {sample.sampleLabel} {bestSample && bestSample.sampleNumber === sample.sampleNumber ? "(Best)" : ""}
+                    </td>
+                    <td className="px-4 py-3 text-center">{sample.meanScore}</td>
+                    <td className="px-4 py-3 text-center">{sample.n}</td>
+                    <td className="px-4 py-3">{sample.interpretation}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+
+      {bySample.length > 0 && (
+        <Card title="By Sample JAR And Penalty" className="lg:col-span-2">
+          <div className="space-y-4">
+            {bySample.map((sample) => (
+              <section key={`sample-block-${sample.sampleNumber}`} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4">
+                <h3 className="text-base font-semibold text-[#0f172a]">
+                  {sample.sampleLabel} | Mean: {sample.overallLiking.mean} ({sample.interpretation})
+                </h3>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[700px] text-xs">
+                    <thead className="bg-white">
+                      <tr>
+                        <th className="px-3 py-2 text-left">Attribute</th>
+                        <th className="px-3 py-2 text-center">Too Low %</th>
+                        <th className="px-3 py-2 text-center">JAR %</th>
+                        <th className="px-3 py-2 text-center">Too High %</th>
+                        <th className="px-3 py-2 text-center">Too Low Penalty</th>
+                        <th className="px-3 py-2 text-center">Too High Penalty</th>
+                        <th className="px-3 py-2 text-center">Driver</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sample.jarBreakdown.map((row) => (
+                        <tr key={`${sample.sampleNumber}-${row.attribute}`} className="border-t border-[#e2e8f0]">
+                          <td className="px-3 py-2 font-medium text-[#0f172a]">{row.attribute}</td>
+                          <td className="px-3 py-2 text-center">{row.tooLowPercent}%</td>
+                          <td className="px-3 py-2 text-center">{row.justRightPercent}%</td>
+                          <td className="px-3 py-2 text-center">{row.tooHighPercent}%</td>
+                          <td className="px-3 py-2 text-center">{row.tooLowPenalty !== null ? row.tooLowPenalty : "-"}</td>
+                          <td className="px-3 py-2 text-center">{row.tooHighPenalty !== null ? row.tooHighPenalty : "-"}</td>
+                          <td className="px-3 py-2 text-center">
+                            <DriverBadge level={row.driverLevel} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            ))}
+          </div>
+        </Card>
+      )}
 
       <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Stat title="Participants" value={overallLiking.n} icon={<Users className="h-5 w-5" />} />

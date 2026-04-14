@@ -39,7 +39,7 @@ export async function GET(request: Request, context: RouteContext) {
     if (responseCount === 0 && !study.analysis) {
       return NextResponse.json({
         generatedAt: new Date().toISOString(),
-        overallLiking: { mean: 0, stdDev: 0, n: 0, median: 0 },
+        overallLiking: { mean: 0, stdDev: 0, n: 0, median: 0, samplePerformance: [], bySample: [], bestSample: null },
         attributeStats: [],
         penaltyAnalysis: [],
         aiInterpretation: null,

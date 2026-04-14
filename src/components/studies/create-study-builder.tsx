@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
+import { createStudyAndImportFromFile } from "@/app/actions/study-import-actions";
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
 import type { Region } from "@/lib/facility-constants";
 
@@ -48,6 +49,22 @@ interface SessionSlotDraft {
   startTime: string;
   endTime: string;
   capacity: number;
+}
+
+interface ImportCreateResult {
+  success?: boolean;
+  valid?: boolean;
+  error?: string;
+  rowsRead?: number;
+  rowsParsed?: number;
+  rowsRejected?: number;
+  respondents?: number;
+  sampleCount?: number;
+  attributeCount?: number;
+  sampleLabels?: string[];
+  warnings?: Array<{ rowNumber?: number; field?: string; message: string }>;
+  errors?: Array<{ rowNumber?: number; field?: string; message: string }>;
+  redirectPath?: string;
 }
 
 interface CategoryProfile {
@@ -284,6 +301,8 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
   const [marketQuestions, setMarketQuestions] = useState(DEFAULT_MARKET_QUESTIONS);
   const [error, setError] = useState<string | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importResult, setImportResult] = useState<ImportCreateResult | null>(null);
 
   // Cascade region/facility logic
   useEffect(() => {
@@ -569,6 +588,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return;
     }
 
+    if (studyMode === "SENSORY" && targetResponses < 10) {
+      setError("Sensory studies require at least 10 target responses.");
+      return;
+    }
+
+    if (studyMode === "SENSORY" && targetResponses > 200) {
+      setError("Sensory studies support up to 200 target responses.");
+      return;
+    }
+
     if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && consumerLimit && targetResponses > consumerLimit) {
       setError(`Target responses exceed the ${consumerLimit} maximum for this consumer test objective.`);
       return;
@@ -720,6 +749,26 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     });
   };
 
+  const onCreateFromImportFile = () => {
+    setError(null);
+    if (!importFile) {
+      setImportResult({ success: false, error: "Choose an Excel/CSV file first." });
+      return;
+    }
+
+    startTransition(async () => {
+      const formData = new FormData();
+      formData.set("file", importFile);
+      const result = await createStudyAndImportFromFile(formData);
+      const actionResult = result as ImportCreateResult;
+      setImportResult(actionResult);
+
+      if (actionResult.success && actionResult.valid && actionResult.redirectPath) {
+        router.push(actionResult.redirectPath);
+      }
+    });
+  };
+
   return (
     <div className={embedded ? "" : "min-h-screen bg-[#f8fafc] px-4 py-8"}>
       <div
@@ -737,6 +786,73 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             {error}
           </div>
         )}
+
+        <section className="space-y-3 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] p-4">
+          <h2 className="text-lg font-semibold text-[#1e3a8a]">Import Existing Sensory Dataset</h2>
+          <p className="text-sm text-[#334155]">
+            Upload a completed sensory Excel/CSV file and TARAsense will auto-create the study, import respondents,
+            compute analysis, and mark the study as completed.
+          </p>
+          <p className="text-xs text-[#475569]">
+            Required columns: Respondent_ID, Sample, Overall_Liking, Attribute, JAR_Score
+          </p>
+          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
+            <input
+              type="file"
+              accept=".xlsx,.csv"
+              onChange={(event) => {
+                setImportFile(event.target.files?.[0] ?? null);
+                setImportResult(null);
+              }}
+              className="block w-full rounded-md border border-[#93c5fd] bg-white px-3 py-2 text-sm text-[#334155] file:mr-3 file:rounded file:border-0 file:bg-[#2563eb] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
+            />
+            <button
+              type="button"
+              onClick={onCreateFromImportFile}
+              disabled={isPending}
+              className="rounded-md border border-[#1d4ed8] bg-[#2563eb] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isPending ? "Processing..." : "Create Study + Import + Analyze"}
+            </button>
+          </div>
+
+          {importResult?.error && (
+            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importResult.error}</p>
+          )}
+
+          {importResult && !importResult.error && (
+            <div className="space-y-2 rounded-md border border-[#dbeafe] bg-white px-3 py-2 text-xs text-[#334155]">
+              <p className="font-medium text-[#0f172a]">
+                Import Preview: {importResult.valid ? "Ready/Completed" : "Validation issues found"}
+              </p>
+              <p>
+                Rows read: {importResult.rowsRead ?? 0} | Parsed: {importResult.rowsParsed ?? 0} | Rejected: {importResult.rowsRejected ?? 0}
+              </p>
+              <p>
+                Respondents: {importResult.respondents ?? 0} | Samples: {importResult.sampleCount ?? 0} | Attributes: {importResult.attributeCount ?? 0}
+              </p>
+              {importResult.sampleLabels && importResult.sampleLabels.length > 0 && (
+                <p>Sample labels: {importResult.sampleLabels.join(", ")}</p>
+              )}
+              {importResult.warnings && importResult.warnings.length > 0 && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
+                  {importResult.warnings.slice(0, 6).map((warning, index) => (
+                    <p key={`create-import-warning-${index}`}>{formatImportIssue(warning)}</p>
+                  ))}
+                  {importResult.warnings.length > 6 && <p>...and {importResult.warnings.length - 6} more warning(s).</p>}
+                </div>
+              )}
+              {importResult.errors && importResult.errors.length > 0 && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700">
+                  {importResult.errors.slice(0, 8).map((issue, index) => (
+                    <p key={`create-import-error-${index}`}>{formatImportIssue(issue)}</p>
+                  ))}
+                  {importResult.errors.length > 8 && <p>...and {importResult.errors.length - 8} more error(s).</p>}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
 
         <form onSubmit={onSubmit} className="space-y-8">
           <section className="space-y-4">
@@ -1356,6 +1472,12 @@ function validateObjectiveSelection(attributes: AttributeRow[], objective: Consu
   }
 
   return { valid: true, error: "" };
+}
+
+function formatImportIssue(issue: { rowNumber?: number; field?: string; message: string }) {
+  const rowPrefix = issue.rowNumber ? `Row ${issue.rowNumber}: ` : "";
+  const fieldPrefix = issue.field ? `${issue.field} - ` : "";
+  return `${rowPrefix}${fieldPrefix}${issue.message}`;
 }
 
 function FieldLabel({ text }: { text: string }) {
