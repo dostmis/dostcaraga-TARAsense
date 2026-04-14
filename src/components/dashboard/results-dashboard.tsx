@@ -39,6 +39,10 @@ interface AnalysisPayload {
     tooLowPenalty: number | null;
     tooHighPercent: number;
     tooHighPenalty: number | null;
+    tooLowLevel: "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
+    tooHighLevel: "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
+    driverLevel: "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
+    isActionable: boolean;
     isSignificant: boolean;
   }>;
   aiInterpretation: string | null;
@@ -105,6 +109,7 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
   ];
 
   const decisionStyles = getDecisionStyle(decisionFlag);
+  const actionableDrivers = penaltyAnalysis.filter((penalty) => penalty.isActionable);
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 p-4 md:p-6 lg:p-8">
@@ -228,6 +233,9 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
         </Card>
 
         <Card title="Penalty Analysis" className="lg:col-span-2">
+          <p className="mb-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2 text-xs text-[#64748b]">
+            What does this mean? Attributes marked as drivers are those where many participants felt the level was not right and overall liking dropped.
+          </p>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[640px] text-sm">
               <thead className="bg-[#f8fafc]">
@@ -253,19 +261,20 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
                       {penalty.tooHighPenalty !== null ? `-${penalty.tooHighPenalty}` : "-"}
                     </td>
                     <td className="px-4 py-3 text-center">
-                      {penalty.isSignificant ? (
-                        <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-semibold text-red-700">Action Needed</span>
-                      ) : (
-                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Optimal</span>
-                      )}
+                      <DriverBadge level={penalty.driverLevel} />
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
+          {actionableDrivers.length === 0 && (
+            <p className="mt-4 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+              No strong drivers detected. This suggests the product is generally well balanced, or changes may not significantly improve liking.
+            </p>
+          )}
           <p className="mt-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-3 py-2 text-xs text-[#64748b]">
-            * Penalty is Mean(JAR) - Mean(non-optimal). Significant when penalty is at least 1.0 and non-optimal share is at least 20%.
+            * Penalty = Mean liking (JAR group) - Mean liking (non-JAR group). Strong: penalty &gt;= 1.0 with &gt;= 20% non-JAR. Moderate: 0.5-0.99 with &gt;= 20% non-JAR.
           </p>
         </Card>
       </div>
@@ -314,4 +323,14 @@ function Stat({ title, value, icon }: { title: string; value: string | number; i
       </div>
     </article>
   );
+}
+
+function DriverBadge({ level }: { level: "STRONG" | "MODERATE" | "NOT_ACTIONABLE" }) {
+  if (level === "STRONG") {
+    return <span className="rounded-full bg-red-100 px-2 py-1 text-xs font-semibold text-red-700">Strong Driver</span>;
+  }
+  if (level === "MODERATE") {
+    return <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-semibold text-amber-700">Moderate Driver</span>;
+  }
+  return <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-semibold text-emerald-700">Not Actionable</span>;
 }

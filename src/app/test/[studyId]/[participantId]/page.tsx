@@ -140,7 +140,14 @@ export default async function SensoryTestPage({ params }: PageProps) {
     type: attribute.type,
     jarOptions:
       attribute.jarOptions && typeof attribute.jarOptions === "object"
-        ? (attribute.jarOptions as { low?: string; mid?: string; high?: string })
+        ? (attribute.jarOptions as {
+            low?: string;
+            midLow?: string;
+            mid?: string;
+            midHigh?: string;
+            high?: string;
+            labels?: string[];
+          })
         : null,
   }));
   const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);

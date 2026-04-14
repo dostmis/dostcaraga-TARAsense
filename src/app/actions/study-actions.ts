@@ -10,6 +10,9 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 
+const MAX_STUDY_ATTRIBUTES = 25;
+const MAX_ATTRIBUTE_NAME_LENGTH = 120;
+
 const CreateStudySchema = z.object({
   title: z.string().min(3),
   productName: z.string().min(1),
@@ -27,10 +30,18 @@ const CreateStudySchema = z.object({
   attributes: z.array(z.object({
     name: z.string(),
     type: z.enum(["OVERALL_LIKING", "ATTRIBUTE_LIKING", "JAR", "OPEN_ENDED"]),
+    attributeType: z.string().optional(),
+    sourceAttributeName: z.string().optional(),
+    isCustom: z.boolean().optional(),
+    questionType: z.enum(["HEDONIC", "JAR", "OPEN_ENDED"]).optional(),
+    scaleType: z.enum(["NINE_PT", "JAR_5PT", "TEXT"]).optional(),
     jarOptions: z.object({
       low: z.string(),
+      midLow: z.string().optional(),
       mid: z.string(),
-      high: z.string()
+      midHigh: z.string().optional(),
+      high: z.string(),
+      labels: z.array(z.string()).optional(),
     }).optional()
   })),
   screeningQuestions: z.array(z.object({
@@ -47,6 +58,31 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
   try {
     // Validate
     const validated = CreateStudySchema.parse(data);
+    const normalizedAttributes = validated.attributes.map((attribute) => ({
+      ...attribute,
+      name: attribute.name.trim(),
+      sourceAttributeName: attribute.sourceAttributeName?.trim(),
+      attributeType: attribute.attributeType?.trim().toLowerCase(),
+      isCustom: Boolean(attribute.isCustom),
+      jarOptions:
+        attribute.type === "JAR" && attribute.jarOptions
+          ? {
+            low: attribute.jarOptions.low.trim(),
+            midLow: attribute.jarOptions.midLow?.trim(),
+            mid: attribute.jarOptions.mid.trim(),
+            midHigh: attribute.jarOptions.midHigh?.trim(),
+            high: attribute.jarOptions.high.trim(),
+            labels: Array.isArray(attribute.jarOptions.labels)
+              ? attribute.jarOptions.labels.map((label) => label.trim())
+              : undefined,
+            }
+          : undefined,
+    }));
+    const attributeValidationError = validateSensoryAttributeSetup(normalizedAttributes);
+    if (attributeValidationError) {
+      return { success: false, error: attributeValidationError };
+    }
+
     const preparedTargetDemographics = prepareTargetDemographicsForStudy(
       validated.targetDemographics,
       validated.sampleSize
@@ -58,30 +94,38 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
       JSON.stringify(validated.screeningQuestions)
     ) as Prisma.InputJsonValue;
 
-    const study = await prisma.study.create({
-      data: {
-        title: validated.title,
-        productName: validated.productName,
-        category: validated.category,
-        stage: validated.stage,
-        sampleSize: validated.sampleSize,
-        location: validated.location,
-        targetDemographics: targetDemographicsJson,
-        stratificationVar: validated.stratificationVar === "none" ? null : validated.stratificationVar,
-        screeningCriteria: screeningCriteriaJson,
-        creatorId: userId,
-        status: "RECRUITING"
-      }
-    });
+    const study = await prisma.$transaction(async (tx) => {
+      const createdStudy = await tx.study.create({
+        data: {
+          title: validated.title,
+          productName: validated.productName,
+          category: validated.category,
+          stage: validated.stage,
+          sampleSize: validated.sampleSize,
+          location: validated.location,
+          targetDemographics: targetDemographicsJson,
+          stratificationVar: validated.stratificationVar === "none" ? null : validated.stratificationVar,
+          screeningCriteria: screeningCriteriaJson,
+          creatorId: userId,
+          status: "RECRUITING"
+        }
+      });
 
-    await prisma.sensoryAttribute.createMany({
-      data: validated.attributes.map((attr, idx) => ({
-        studyId: study.id,
-        name: attr.name,
-        type: attr.type,
-        order: idx,
-        jarOptions: attr.jarOptions
-      }))
+      await tx.sensoryAttribute.createMany({
+        data: normalizedAttributes.map((attr, idx) => ({
+          studyId: createdStudy.id,
+          name: attr.name,
+          type: attr.type,
+          order: idx,
+          attributeType: attr.attributeType,
+          sourceAttributeName: attr.sourceAttributeName,
+          isCustom: attr.isCustom,
+          jarOptions: attr.type === "JAR" ? (attr.jarOptions as Prisma.InputJsonValue) : undefined
+        }))
+      });
+
+      await syncCoreSensoryTables(tx, createdStudy.id, normalizedAttributes, preparedTargetDemographics);
+      return createdStudy;
     });
 
     // Execute stratified sampling if not "none"
@@ -113,6 +157,184 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
     console.error("Create study error:", error);
     return { success: false, error: "Failed to create study" };
   }
+}
+
+function validateSensoryAttributeSetup(
+  attributes: Array<{
+    name: string;
+    type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+    attributeType?: string;
+    jarOptions?: {
+      low: string;
+      midLow?: string;
+      mid: string;
+      midHigh?: string;
+      high: string;
+      labels?: string[];
+    };
+  }>
+) {
+  if (attributes.length === 0) {
+    return "At least one sensory attribute is required.";
+  }
+  if (attributes.length > MAX_STUDY_ATTRIBUTES) {
+    return `Too many sensory attributes. Maximum is ${MAX_STUDY_ATTRIBUTES}.`;
+  }
+
+  let overallCount = 0;
+  const seenNames = new Set<string>();
+
+  for (const attribute of attributes) {
+    if (!attribute.name) {
+      return "Attribute names cannot be blank.";
+    }
+    if (attribute.name.length > MAX_ATTRIBUTE_NAME_LENGTH) {
+      return `Attribute names must be ${MAX_ATTRIBUTE_NAME_LENGTH} characters or fewer.`;
+    }
+
+    const normalizedName = attribute.name.toLowerCase();
+    if (seenNames.has(normalizedName)) {
+      return `Duplicate attribute name detected: "${attribute.name}".`;
+    }
+    seenNames.add(normalizedName);
+
+    if (attribute.type === "OVERALL_LIKING") {
+      overallCount += 1;
+    }
+
+    if (attribute.type === "JAR") {
+      if (!attribute.jarOptions) {
+        return `JAR options are required for "${attribute.name}".`;
+      }
+      if (
+        !attribute.jarOptions.low ||
+        !attribute.jarOptions.mid ||
+        !attribute.jarOptions.high ||
+        !attribute.jarOptions.midLow ||
+        !attribute.jarOptions.midHigh
+      ) {
+        return `JAR options for "${attribute.name}" cannot be blank.`;
+      }
+      if (!attribute.attributeType) {
+        return `Attribute type is required for JAR question "${attribute.name}".`;
+      }
+      const normalizedType = attribute.attributeType.toLowerCase();
+      if (!["taste", "texture", "aftertaste", "mouthfeel"].includes(normalizedType)) {
+        return `Invalid attribute type "${attribute.attributeType}" for "${attribute.name}".`;
+      }
+    }
+  }
+
+  if (overallCount !== 1) {
+    return "Exactly one OVERALL_LIKING question is required.";
+  }
+
+  return null;
+}
+
+async function syncCoreSensoryTables(
+  tx: Prisma.TransactionClient,
+  studyId: string,
+  attributes: Array<{
+    name: string;
+    type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+    attributeType?: string;
+    sourceAttributeName?: string;
+    isCustom: boolean;
+    questionType?: "HEDONIC" | "JAR" | "OPEN_ENDED";
+    scaleType?: "NINE_PT" | "JAR_5PT" | "TEXT";
+  }>,
+  targetDemographics: Record<string, unknown>
+) {
+  const plan = extractSensoryAttributePlan(targetDemographics);
+  const attributeDefs = plan.length > 0
+    ? plan
+    : attributes
+      .filter((attribute) => attribute.type === "JAR")
+      .map((attribute) => ({
+        name: attribute.sourceAttributeName?.trim() || attribute.name.replace(/\s*\(JAR\)\s*$/i, "").trim(),
+        attributeType: attribute.attributeType?.toLowerCase() || "taste",
+        isCustom: Boolean(attribute.isCustom),
+      }));
+
+  const attributeIdByName = new Map<string, string>();
+  for (const definition of attributeDefs) {
+    const created = await tx.coreAttribute.create({
+      data: {
+        studyId,
+        attributeName: definition.name,
+        category: "SENSORY",
+        attributeType: definition.attributeType,
+        isCustom: definition.isCustom,
+      },
+      select: { id: true, attributeName: true },
+    });
+    attributeIdByName.set(created.attributeName.toLowerCase(), created.id);
+  }
+
+  const questionsPayload = attributes.map((attribute, index) => {
+    const questionType = attribute.questionType ?? mapLegacyAttributeTypeToQuestionType(attribute.type);
+    const scaleType = attribute.scaleType ?? mapLegacyAttributeTypeToScaleType(attribute.type);
+    const sourceName = (attribute.sourceAttributeName || attribute.name).toLowerCase();
+    const attributeId = attributeIdByName.get(sourceName) ?? null;
+
+    return {
+      studyId,
+      attributeId,
+      questionText: attribute.name,
+      questionType,
+      scaleType,
+      order: index,
+    };
+  });
+
+  if (questionsPayload.length > 0) {
+    await tx.sensoryQuestion.createMany({
+      data: questionsPayload,
+    });
+  }
+}
+
+function extractSensoryAttributePlan(targetDemographics: Record<string, unknown>) {
+  const raw = targetDemographics.sensoryAttributePlan;
+  if (!Array.isArray(raw)) {
+    return [] as Array<{ name: string; attributeType: string; isCustom: boolean }>;
+  }
+
+  return raw.reduce<Array<{ name: string; attributeType: string; isCustom: boolean }>>((accumulator, item) => {
+    if (!item || typeof item !== "object") {
+      return accumulator;
+    }
+
+    const row = item as { name?: unknown; dimension?: unknown; isCustom?: unknown };
+    if (typeof row.name !== "string" || typeof row.dimension !== "string") {
+      return accumulator;
+    }
+    const normalizedName = row.name.trim();
+    const normalizedType = row.dimension.trim().toLowerCase();
+    if (!normalizedName || !["taste", "texture", "aftertaste", "mouthfeel"].includes(normalizedType)) {
+      return accumulator;
+    }
+
+    accumulator.push({
+      name: normalizedName,
+      attributeType: normalizedType,
+      isCustom: Boolean(row.isCustom),
+    });
+    return accumulator;
+  }, []);
+}
+
+function mapLegacyAttributeTypeToQuestionType(type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED") {
+  if (type === "JAR") return "JAR" as const;
+  if (type === "OPEN_ENDED") return "OPEN_ENDED" as const;
+  return "HEDONIC" as const;
+}
+
+function mapLegacyAttributeTypeToScaleType(type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED") {
+  if (type === "JAR") return "JAR_5PT" as const;
+  if (type === "OPEN_ENDED") return "TEXT" as const;
+  return "NINE_PT" as const;
 }
 
 function calculateStratumDistribution(

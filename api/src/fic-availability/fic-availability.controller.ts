@@ -16,7 +16,7 @@ export class FicAvailabilityController {
 
   @Get('calendar/:ficUserId')
   @ApiOperation({ summary: 'Get availability calendar for a specific FIC user' })
-  @Roles(Role.ADMIN, Role.FIC, Role.FIC_MANAGER, Role.MSME)
+  @Roles(Role.ADMIN, Role.FIC, Role.FIC_MANAGER)
   async getCalendar(
     @Param('ficUserId') ficUserId: string,
     @Query('startDate') startDate: string,
@@ -28,9 +28,9 @@ export class FicAvailabilityController {
       const today = new Date();
       const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
       const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-      
-      startDate = startOfMonth.toISOString().split('T')[0];
-      endDate = endOfMonth.toISOString().split('T')[0];
+
+      startDate = this.formatDate(startOfMonth);
+      endDate = this.formatDate(endOfMonth);
     }
 
     return this.ficAvailabilityService.getFicCalendar(
@@ -39,6 +39,13 @@ export class FicAvailabilityController {
       endDate,
       req.user,
     );
+  }
+
+  private formatDate(date: Date) {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }
 
   @Get('available-fics')

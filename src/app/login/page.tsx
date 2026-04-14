@@ -92,7 +92,7 @@ export default async function LoginPage({ searchParams }: PageProps) {
           </div>
 
           <p className="mt-4 text-xs text-[#64748b]">
-            Admin account is single-instance and managed via `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
+            Admin accounts are provisioned separately by system administrators.
           </p>
         </div>
       </section>

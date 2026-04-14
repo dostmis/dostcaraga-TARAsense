@@ -245,7 +245,7 @@ export default async function StudyFormPage({ params }: PageProps) {
               )}
 
               <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 1 - Overall Liking</h2>
+                <h2 className="text-lg font-semibold text-[#0f172a]">Section 1 - Overall Acceptability</h2>
                 <p className="text-sm text-[#64748b]">
                   {overallLikingQuestion?.name ?? "How much do you like this sample overall?"}
                 </p>
@@ -279,7 +279,7 @@ export default async function StudyFormPage({ params }: PageProps) {
                         <div key={attribute.id} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3">
                           <p className="text-sm font-medium text-[#0f172a]">{attribute.name}</p>
                           <p className="mt-1 text-xs text-[#64748b]">
-                            {options.low} / {options.mid} / {options.high}
+                            1. {options.low} / 2. {options.midLow} / 3. {options.mid} / 4. {options.midHigh} / 5. {options.high}
                           </p>
                         </div>
                       );
@@ -619,14 +619,21 @@ function buildCodePlanRows(codeBook: NonNullable<ReturnType<typeof parseStudyRan
 
 function parseJarOptions(value: unknown) {
   if (!value || typeof value !== "object") {
-    return { low: "Too Low", mid: "Just About Right", high: "Too High" };
+    return {
+      low: "Much too low",
+      midLow: "Slightly too low",
+      mid: "Just about right",
+      midHigh: "Slightly too high",
+      high: "Much too high",
+    };
   }
 
-  const options = value as { low?: unknown; mid?: unknown; high?: unknown };
+  const options = value as { low?: unknown; midLow?: unknown; mid?: unknown; midHigh?: unknown; high?: unknown };
   return {
-    low: typeof options.low === "string" ? options.low : "Too Low",
-    mid: typeof options.mid === "string" ? options.mid : "Just About Right",
-    high: typeof options.high === "string" ? options.high : "Too High",
+    low: typeof options.low === "string" ? options.low : "Much too low",
+    midLow: typeof options.midLow === "string" ? options.midLow : "Slightly too low",
+    mid: typeof options.mid === "string" ? options.mid : "Just about right",
+    midHigh: typeof options.midHigh === "string" ? options.midHigh : "Slightly too high",
+    high: typeof options.high === "string" ? options.high : "Much too high",
   };
 }
-

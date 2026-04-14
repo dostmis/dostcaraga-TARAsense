@@ -53,6 +53,19 @@ export async function generateUniqueRandomizeCode(db: DbClient, studyId: string)
 }
 
 export async function ensureParticipantAssignment(db: DbClient, input: AssignmentInput) {
+  if (canStartTransaction(db)) {
+    return db.$transaction(
+      async (tx) => ensureParticipantAssignmentWithinTransaction(tx, input),
+      { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+    );
+  }
+
+  return ensureParticipantAssignmentWithinTransaction(db, input);
+}
+
+async function ensureParticipantAssignmentWithinTransaction(db: DbClient, input: AssignmentInput) {
+  await lockStudyForAssignment(db, input.studyId);
+
   let panelistNumber = input.panelistNumber;
   let randomizeCode = input.randomizeCode;
   let sampleCodes = parseSampleCodes(input.sampleCodes);
@@ -100,6 +113,14 @@ export async function ensureParticipantAssignment(db: DbClient, input: Assignmen
     randomizeCode,
     sampleCodes,
   };
+}
+
+function canStartTransaction(db: DbClient): db is PrismaClient {
+  return typeof (db as PrismaClient).$transaction === "function";
+}
+
+async function lockStudyForAssignment(db: DbClient, studyId: string) {
+  await db.$queryRaw`SELECT id FROM "Study" WHERE id = ${studyId} FOR UPDATE`;
 }
 
 export function formatPanelistNumber(value: number | null | undefined) {

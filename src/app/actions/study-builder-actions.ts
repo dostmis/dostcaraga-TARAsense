@@ -36,7 +36,15 @@ const BuilderPayloadSchema = z.object({
     .optional(),
   sensoryStudyType: z.enum(["DISCRIMINATIVE", "DESCRIPTIVE", "CONSUMER_TEST"]).optional(),
   sensoryMethod: z.string().optional(),
-  consumerObjective: z.enum(["MARKET_READINESS", "REFINEMENT", "PROTOTYPING"]).optional(),
+  consumerObjective: z
+    .enum([
+      "CHECK_ACCEPTABILITY",
+      "IMPROVE_TASTE",
+      "IMPROVE_TEXTURE",
+      "FINE_TUNE",
+      "FAST_ITERATION",
+    ])
+    .optional(),
   studyTitle: z.string().min(3),
   purpose: z.string().min(3),
   facilityType: z.string().min(1),
@@ -49,7 +57,10 @@ const BuilderPayloadSchema = z.object({
     .array(
       z.object({
         name: z.string().min(1),
-        dimension: z.string().min(1),
+        dimension: z.enum(["Taste", "Texture", "Aftertaste", "Mouthfeel"]),
+        isJarTarget: z.boolean().optional(),
+        isCustom: z.boolean().optional(),
+        actionable: z.boolean().optional(),
       })
     )
     .default([]),
@@ -68,10 +79,15 @@ const BuilderPayloadSchema = z.object({
   questions: z.array(z.string().min(1)).default([]),
 });
 
-const OBJECTIVE_LIMITS: Record<"MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING", number> = {
-  MARKET_READINESS: 110,
-  REFINEMENT: 60,
-  PROTOTYPING: 35,
+const OBJECTIVE_LIMITS: Record<
+  "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION",
+  number
+> = {
+  CHECK_ACCEPTABILITY: 110,
+  IMPROVE_TASTE: 60,
+  IMPROVE_TEXTURE: 60,
+  FINE_TUNE: 60,
+  FAST_ITERATION: 35,
 };
 
 export async function createStudyFromBuilder(payload: unknown) {
@@ -198,7 +214,12 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
   await ensurePanelists(Math.max(payload.targetResponses * 2, 40));
 
   const stage = mapStage(payload.sensoryStudyType, objective);
-  const attributeQuestions = buildSensoryQuestionnaire(payload.attributes);
+  const planResult = validateSensoryAttributePlan(payload.attributes, objective);
+  if (!planResult.success) {
+    return { success: false, error: planResult.error };
+  }
+
+  const attributeQuestions = buildSensoryQuestionnaire(planResult.rows);
 
   const studyResult = await createStudy(
     {
@@ -220,6 +241,7 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
         categoryLabel: payload.categoryLabel,
         numberOfSamples: payload.numberOfSamples,
         sessionSchedule: scheduleResult.value,
+        sensoryAttributePlan: planResult.rows,
       },
       stratificationVar: "gender",
       attributes: attributeQuestions,
@@ -334,31 +356,58 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
   };
 }
 
-function buildSensoryQuestionnaire(attributes: Array<{ name: string; dimension: string }>) {
+function buildSensoryQuestionnaire(
+  attributes: Array<{
+    name: string;
+    dimension: "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
+    isJarTarget: boolean;
+    isCustom: boolean;
+  }>
+) {
   const rows = attributes.slice(0, 5).filter((attribute) => attribute.name.trim().length > 0);
   const output: Array<{
     name: string;
     type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
-    jarOptions?: { low: string; mid: string; high: string };
+    attributeType?: string;
+    sourceAttributeName?: string;
+    isCustom?: boolean;
+    questionType?: "HEDONIC" | "JAR" | "OPEN_ENDED";
+    scaleType?: "NINE_PT" | "JAR_5PT" | "TEXT";
+    jarOptions?: {
+      low: string;
+      midLow: string;
+      mid: string;
+      midHigh: string;
+      high: string;
+      labels: string[];
+    };
   }> = [];
 
-  output.push({ name: "Overall Liking", type: "OVERALL_LIKING" });
-
-  rows.forEach((attribute) => {
-    output.push({
-      name: `${attribute.name} Liking`,
-      type: "ATTRIBUTE_LIKING",
-    });
+  output.push({
+    name: "Overall Acceptability",
+    type: "OVERALL_LIKING",
+    questionType: "HEDONIC",
+    scaleType: "NINE_PT",
   });
 
-  rows.forEach((attribute) => {
+  rows
+    .filter((attribute) => attribute.isJarTarget)
+    .forEach((attribute) => {
     output.push({
       name: `${attribute.name} (JAR)`,
       type: "JAR",
+      attributeType: attribute.dimension.toLowerCase(),
+      sourceAttributeName: attribute.name,
+      isCustom: attribute.isCustom,
+      questionType: "JAR",
+      scaleType: "JAR_5PT",
       jarOptions: {
-        low: `Too low ${attribute.name.toLowerCase()}`,
-        mid: "Just right",
-        high: `Too high ${attribute.name.toLowerCase()}`,
+        low: "Much too low",
+        midLow: "Slightly too low",
+        mid: "Just about right",
+        midHigh: "Slightly too high",
+        high: "Much too high",
+        labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
       },
     });
   });
@@ -366,6 +415,8 @@ function buildSensoryQuestionnaire(attributes: Array<{ name: string; dimension: 
   output.push({
     name: "What should be improved?",
     type: "OPEN_ENDED",
+    questionType: "OPEN_ENDED",
+    scaleType: "TEXT",
   });
 
   return output;
@@ -373,14 +424,106 @@ function buildSensoryQuestionnaire(attributes: Array<{ name: string; dimension: 
 
 function mapStage(
   studyType: "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST",
-  objective?: "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING"
+  objective?: "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION"
 ): "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS" {
   if (studyType === "CONSUMER_TEST") {
-    if (objective === "MARKET_READINESS") return "MARKET_READINESS";
-    if (objective === "REFINEMENT") return "REFINEMENT";
+    if (objective === "CHECK_ACCEPTABILITY") return "MARKET_READINESS";
+    if (objective === "IMPROVE_TASTE" || objective === "IMPROVE_TEXTURE" || objective === "FINE_TUNE") return "REFINEMENT";
     return "PROTOTYPE_CHECK";
   }
   return "PROTOTYPE_CHECK";
+}
+
+function validateSensoryAttributePlan(
+  attributes: Array<{
+    name: string;
+    dimension: "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
+    isJarTarget?: boolean;
+    isCustom?: boolean;
+    actionable?: boolean;
+  }>,
+  objective: "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION" | undefined
+) {
+  const rows = attributes
+    .slice(0, 5)
+    .map((attribute) => ({
+      name: attribute.name.trim(),
+      dimension: attribute.dimension,
+      isJarTarget: Boolean(attribute.isJarTarget),
+      isCustom: Boolean(attribute.isCustom),
+      actionable: Boolean(attribute.actionable),
+    }))
+    .filter((attribute) => attribute.name.length > 0);
+
+  if (rows.length > 5) {
+    return { success: false as const, error: "A maximum of 5 attributes may be selected per test." };
+  }
+
+  const customAttributes = rows.filter((attribute) => attribute.isCustom);
+  if (customAttributes.length > 1) {
+    return { success: false as const, error: "Only 1 custom attribute is allowed per test." };
+  }
+
+  for (const customAttribute of customAttributes) {
+    const words = customAttribute.name.split(/\s+/).filter(Boolean);
+    if (words.length > 2) {
+      return { success: false as const, error: "Custom attribute name must be at most 2 words." };
+    }
+    if (!customAttribute.actionable) {
+      return {
+        success: false as const,
+        error: "Custom attributes must be marked actionable and adjustable in formulation.",
+      };
+    }
+  }
+
+  const jarTargets = rows.filter((attribute) => attribute.isJarTarget);
+  if (jarTargets.length > 3) {
+    return { success: false as const, error: "Only the TOP 3 attributes can be selected for JAR questions." };
+  }
+
+  if (!objective) {
+    return { success: false as const, error: "Select the MSME goal for this consumer test." };
+  }
+
+  if (objective === "CHECK_ACCEPTABILITY" && jarTargets.length !== 0) {
+    return { success: false as const, error: "Check acceptability requires Overall Acceptability only (no JAR attributes)." };
+  }
+
+  if (objective === "IMPROVE_TASTE") {
+    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Taste") {
+      return { success: false as const, error: "Improve taste requires exactly 1 Taste JAR attribute." };
+    }
+  }
+
+  if (objective === "IMPROVE_TEXTURE") {
+    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Texture") {
+      return { success: false as const, error: "Improve texture requires exactly 1 Texture JAR attribute." };
+    }
+  }
+
+  if (objective === "FINE_TUNE" && jarTargets.length !== 2) {
+    return { success: false as const, error: "Fine-tune requires exactly 2 JAR attributes." };
+  }
+
+  if (objective === "FAST_ITERATION" && (jarTargets.length < 1 || jarTargets.length > 2)) {
+    return { success: false as const, error: "FAST iteration requires 1 to 2 JAR attributes." };
+  }
+
+  if (objective !== "CHECK_ACCEPTABILITY" && jarTargets.length === 0) {
+    return { success: false as const, error: "Select at least 1 JAR attribute for this objective." };
+  }
+
+  const duplicates = new Set<string>();
+  for (const row of rows) {
+    const key = row.name.toLowerCase();
+    if (duplicates.has(key)) {
+      return { success: false as const, error: `Duplicate attribute detected: ${row.name}` };
+    }
+    duplicates.add(key);
+  }
+
+  return { success: true as const, rows };
 }
 
 async function ensurePanelists(minPanelists: number) {

@@ -79,7 +79,13 @@ export class StorageController {
 
   @Get(':fileId/signed-download')
   @Roles(Role.ADMIN, Role.MSME, Role.FIC)
-  async signedDownload(@Param('fileId') fileId: string) {
-    return this.storageService.getSignedDownloadUrl(fileId);
+  async signedDownload(
+    @Param('fileId') fileId: string,
+    @CurrentUser() user: { sub: string; role: Role },
+  ) {
+    const result = await this.storageService.getSignedDownloadUrl(fileId, user.sub, user.role);
+    return {
+      downloadUrl: result.downloadUrl,
+    };
   }
 }

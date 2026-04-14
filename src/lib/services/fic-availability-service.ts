@@ -206,7 +206,7 @@ export function extractDatesFromSessions(sessions: SessionSlotLike[]): string[] 
   
   for (const session of sessions) {
     if (session.startDateTime) {
-      const date = new Date(session.startDateTime).toISOString().split('T')[0];
+      const date = formatDateKey(new Date(session.startDateTime));
       dates.add(date);
     }
   }
@@ -265,8 +265,8 @@ export function getCurrentMonthRange(): { startDate: string; endDate: string } {
   const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
   return {
-    startDate: startOfMonth.toISOString().split('T')[0],
-    endDate: endOfMonth.toISOString().split('T')[0],
+    startDate: formatDateKey(startOfMonth),
+    endDate: formatDateKey(endOfMonth),
   };
 }
 
@@ -279,8 +279,21 @@ export function getNextSixMonths(): string[] {
   
   for (let i = 0; i < 6; i++) {
     const month = new Date(today.getFullYear(), today.getMonth() + i, 1);
-    months.push(month.toISOString().slice(0, 7)); // YYYY-MM format
+    months.push(formatMonthKey(month));
   }
   
   return months;
+}
+
+function formatDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatMonthKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
 }

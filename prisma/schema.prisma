@@ -173,6 +173,10 @@ model Study {
   participants       StudyParticipant[]
   sensoryAttributes  SensoryAttribute[]
   responses          SensoryResponse[]
+  attributes         CoreAttribute[]
+  sensoryQuestions   SensoryQuestion[]
+  questionResponses  QuestionResponse[]
+  derivedMetrics     DerivedMetric[]
   analysis           StudyAnalysis?
 
   createdAt DateTime @default(now())
@@ -254,6 +258,7 @@ model StudyParticipant {
 
   @@unique([studyId, panelistId])
   @@unique([studyId, guestCode])
+  @@unique([studyId, panelistNumber])
   @@index([studyId, panelistNumber])
   @@index([studyId, randomizeCode])
   @@index([studyId, status])
@@ -285,9 +290,12 @@ model SensoryAttribute {
   studyId String
   study   Study  @relation(fields: [studyId], references: [id])
 
-  name  String // "Sweetness", "Texture", etc.
-  type  AttrType // LIKING or JAR
-  order Int // Display order
+  name                String // "Sweetness", "Texture", etc.
+  type                AttrType // LIKING or JAR
+  order               Int // Display order
+  attributeType       String? // taste, texture, aftertaste, mouthfeel
+  sourceAttributeName String? // base attribute label for grouped reporting
+  isCustom            Boolean @default(false)
 
   // For JAR attributes
   jarOptions Json? // {low: "Too Low", mid: "Just Right", high: "Too High"}
@@ -313,6 +321,7 @@ model SensoryResponse {
 
   submittedAt DateTime @default(now())
 
+  @@unique([studyId, participantId])
   @@index([studyId, submittedAt])
 }
 
@@ -340,6 +349,91 @@ enum DecisionType {
   CONTINUE_REFINEMENT
   READY_FOR_READINESS
   READY_FOR_COMMERCIALIZATION
+}
+
+model CoreAttribute {
+  id            String   @id @default(cuid()) @map("attribute_id")
+  studyId       String   @map("test_id")
+  study         Study    @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  attributeName String   @map("attribute_name")
+  category      String   @default("SENSORY")
+  attributeType String   @map("attribute_type")
+  isCustom      Boolean  @default(false) @map("is_custom")
+  questions     SensoryQuestion[]
+  metrics       DerivedMetric[]
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([studyId])
+  @@index([studyId, attributeType])
+  @@map("attributes")
+}
+
+enum SensoryQuestionType {
+  HEDONIC
+  JAR
+  OPEN_ENDED
+}
+
+enum SensoryScaleType {
+  NINE_PT
+  JAR_5PT
+  TEXT
+}
+
+model SensoryQuestion {
+  id           String              @id @default(cuid()) @map("question_id")
+  studyId      String              @map("test_id")
+  study        Study               @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  attributeId  String?             @map("attribute_id")
+  attribute    CoreAttribute?      @relation(fields: [attributeId], references: [id], onDelete: SetNull)
+  questionText String              @map("question_text")
+  questionType SensoryQuestionType @map("question_type")
+  scaleType    SensoryScaleType    @map("scale_type")
+  order        Int                 @default(0)
+  responses    QuestionResponse[]
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+
+  @@index([studyId, order])
+  @@map("sensory_questions")
+}
+
+model QuestionResponse {
+  id           String          @id @default(cuid()) @map("response_id")
+  studyId      String          @map("test_id")
+  study        Study           @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  respondentId String          @map("respondent_id")
+  questionId   String          @map("question_id")
+  question     SensoryQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  rawValue     Float           @map("raw_value")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+
+  @@index([studyId, respondentId])
+  @@index([questionId])
+  @@map("responses")
+}
+
+enum DerivedMetricType {
+  MEAN_LIKING
+  JAR_FREQ
+  PENALTY
+}
+
+model DerivedMetric {
+  id          String            @id @default(cuid()) @map("metric_id")
+  studyId     String            @map("test_id")
+  study       Study             @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  attributeId String?           @map("attribute_id")
+  attribute   CoreAttribute?    @relation(fields: [attributeId], references: [id], onDelete: SetNull)
+  metricType  DerivedMetricType @map("metric_type")
+  value       Json
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+
+  @@index([studyId, metricType])
+  @@map("derived_metrics")
 }
 
 model FicAvailability {

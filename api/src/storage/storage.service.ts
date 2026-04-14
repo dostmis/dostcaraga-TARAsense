@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   Logger,
@@ -19,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSignedUploadDto } from './dto/create-signed-upload.dto';
 import { AuditService } from '../audit/audit.service';
+import { Role } from '../common/enums/role.enum';
 
 @Injectable()
 export class StorageService implements OnModuleInit {
@@ -167,14 +169,18 @@ export class StorageService implements OnModuleInit {
     };
   }
 
-  async getSignedDownloadUrl(fileId: string) {
+  async getSignedDownloadUrl(fileId: string, requesterId: string, requesterRole: Role) {
     const s3 = this.getS3Client();
-    const file = await this.prisma.storedFile.findUnique({
-      where: { id: fileId },
+
+    const file = await this.prisma.storedFile.findFirst({
+      where: requesterRole === Role.ADMIN ? { id: fileId } : { id: fileId, uploaderId: requesterId },
     });
 
     if (!file) {
       throw new BadRequestException('File not found');
+    }
+    if (requesterRole !== Role.ADMIN && file.uploaderId !== requesterId) {
+      throw new ForbiddenException('You are not allowed to access this file');
     }
 
     const command = new GetObjectCommand({

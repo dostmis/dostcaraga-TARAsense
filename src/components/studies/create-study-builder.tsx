@@ -1,10 +1,11 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
-import type { Region, Facility } from "@/lib/facility-constants";
+import type { Region } from "@/lib/facility-constants";
 
 type StudyMode = "MARKET" | "SENSORY";
 type MarketStudyType =
@@ -13,11 +14,25 @@ type MarketStudyType =
   | "PRODUCT_INTENT"
   | "CONSUMER_USAGE_HABIT";
 type SensoryStudyType = "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST";
-type ConsumerObjective = "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING";
+type ConsumerObjective =
+  | "CHECK_ACCEPTABILITY"
+  | "IMPROVE_TASTE"
+  | "IMPROVE_TEXTURE"
+  | "FINE_TUNE"
+  | "FAST_ITERATION";
+type AttributeDimension = "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
 
 interface AttributeRow {
   name: string;
-  dimension: string;
+  dimension: AttributeDimension;
+  isJarTarget: boolean;
+  isCustom: boolean;
+  actionable: boolean;
+}
+
+interface ProfileAttributeRow {
+  name: string;
+  dimension: AttributeDimension;
 }
 
 interface SampleSetupRow {
@@ -39,7 +54,7 @@ interface CategoryProfile {
   key: string;
   label: string;
   categoryCode: "BEVERAGE" | "SNACK" | "DESSERT" | "FUNCTIONAL_FOOD" | "DAIRY" | "BAKERY";
-  attributes: AttributeRow[];
+  attributes: ProfileAttributeRow[];
 }
 
 const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
@@ -53,9 +68,11 @@ const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple
 const DESCRIPTIVE_METHODS = ["QDA", "Spectrum Method", "Similarity Measures"];
 
 const CONSUMER_OBJECTIVES: Array<{ value: ConsumerObjective; label: string; max: number; defaultTarget: number }> = [
-  { value: "MARKET_READINESS", label: "Market Readiness (readiness check)", max: 110, defaultTarget: 100 },
-  { value: "REFINEMENT", label: "Refinement (refinement check)", max: 60, defaultTarget: 50 },
-  { value: "PROTOTYPING", label: "Prototyping (prototype check)", max: 35, defaultTarget: 30 },
+  { value: "CHECK_ACCEPTABILITY", label: "Check acceptability", max: 110, defaultTarget: 80 },
+  { value: "IMPROVE_TASTE", label: "Improve taste", max: 60, defaultTarget: 50 },
+  { value: "IMPROVE_TEXTURE", label: "Improve texture", max: 60, defaultTarget: 50 },
+  { value: "FINE_TUNE", label: "Fine-tune", max: 60, defaultTarget: 50 },
+  { value: "FAST_ITERATION", label: "FAST iteration", max: 35, defaultTarget: 30 },
 ];
 
 const DEFAULT_MARKET_QUESTIONS = [
@@ -232,6 +249,7 @@ const EMPTY_SAMPLE_SETUP: SampleSetupRow = {
 };
 
 const STUDY_TIMEZONE = "Asia/Manila";
+const ATTRIBUTE_DIMENSIONS: AttributeDimension[] = ["Taste", "Texture", "Aftertaste", "Mouthfeel"];
 
 export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
@@ -242,7 +260,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
   const [sensoryStudyType, setSensoryStudyType] = useState<SensoryStudyType>("CONSUMER_TEST");
   const [sensoryMethod, setSensoryMethod] = useState("Triangle Test");
-  const [consumerObjective, setConsumerObjective] = useState<ConsumerObjective>("PROTOTYPING");
+  const [consumerObjective, setConsumerObjective] = useState<ConsumerObjective>("FAST_ITERATION");
 
   const [region, setRegion] = useState<Region | "">("");
   const [facilityType, setFacilityType] = useState<string>("");
@@ -250,7 +268,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
   const [productName, setProductName] = useState("");
   const [profileKey, setProfileKey] = useState(CATEGORY_PROFILES[0].key);
-  const [attributes, setAttributes] = useState<AttributeRow[]>(CATEGORY_PROFILES[0].attributes);
+  const [attributes, setAttributes] = useState<AttributeRow[]>(
+    createAttributeRowsFromProfile(CATEGORY_PROFILES[0].attributes)
+  );
+  const [customAttributeName, setCustomAttributeName] = useState("");
+  const [customAttributeType, setCustomAttributeType] = useState<AttributeDimension>("Taste");
+  const [customAttributeActionable, setCustomAttributeActionable] = useState(false);
   const [testingStartDate, setTestingStartDate] = useState(() => getTodayDateInput());
   const [testingDurationDays, setTestingDurationDays] = useState(1);
   const [sessionSlots, setSessionSlots] = useState<SessionSlotDraft[]>([
@@ -309,7 +332,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   );
 
   useEffect(() => {
-    setAttributes(selectedProfile.attributes);
+    setAttributes(createAttributeRowsFromProfile(selectedProfile.attributes));
+    setCustomAttributeName("");
+    setCustomAttributeType("Taste");
+    setCustomAttributeActionable(false);
   }, [selectedProfile]);
 
   useEffect(() => {
@@ -363,13 +389,104 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     setSensoryMethod("Consumer Test");
   }, [sensoryStudyType]);
 
-  const updateAttribute = (index: number, value: string) => {
+  useEffect(() => {
+    if (studyMode !== "SENSORY" || sensoryStudyType !== "CONSUMER_TEST") {
+      return;
+    }
+    setAttributes((previous) => applyObjectiveJarDefaults(previous, consumerObjective));
+  }, [consumerObjective, sensoryStudyType, studyMode]);
+
+  const updateAttributeName = (index: number, value: string) => {
     setAttributes((previous) =>
       previous.map((row, rowIndex) => {
         if (rowIndex !== index) return row;
         return { ...row, name: value };
       })
     );
+  };
+
+  const updateAttributeDimension = (index: number, value: AttributeDimension) => {
+    setAttributes((previous) =>
+      previous.map((row, rowIndex) => {
+        if (rowIndex !== index) return row;
+        return { ...row, dimension: value };
+      })
+    );
+  };
+
+  const toggleJarTarget = (index: number) => {
+    setAttributes((previous) => {
+      const current = previous[index];
+      if (!current) return previous;
+
+      const selectedCount = previous.filter((row) => row.isJarTarget).length;
+      if (!current.isJarTarget && selectedCount >= 3) {
+        setError("Only the TOP 3 attributes can be selected for JAR.");
+        return previous;
+      }
+
+      setError(null);
+      return previous.map((row, rowIndex) =>
+        rowIndex === index ? { ...row, isJarTarget: !row.isJarTarget } : row
+      );
+    });
+  };
+
+  const removeAttribute = (index: number) => {
+    setAttributes((previous) => {
+      if (previous.length <= 1) {
+        return previous;
+      }
+      return previous.filter((_, rowIndex) => rowIndex !== index);
+    });
+  };
+
+  const addCustomAttribute = () => {
+    const trimmed = customAttributeName.trim();
+    if (!trimmed) {
+      setError("Custom attribute name is required.");
+      return;
+    }
+    const words = trimmed.split(/\s+/).filter(Boolean);
+    if (words.length > 2) {
+      setError("Custom attribute name must be at most 2 words.");
+      return;
+    }
+    if (!customAttributeActionable) {
+      setError("Confirm that the custom attribute is actionable.");
+      return;
+    }
+
+    setAttributes((previous) => {
+      if (previous.some((row) => row.isCustom)) {
+        setError("Only one custom attribute can be added per test.");
+        return previous;
+      }
+      if (previous.length >= 5) {
+        setError("Maximum of 5 attributes reached. Remove one before adding a custom attribute.");
+        return previous;
+      }
+      if (previous.some((row) => row.name.trim().toLowerCase() === trimmed.toLowerCase())) {
+        setError("Attribute already exists in the list.");
+        return previous;
+      }
+
+      setError(null);
+      return [
+        ...previous,
+        {
+          name: trimmed,
+          dimension: customAttributeType,
+          isJarTarget: false,
+          isCustom: true,
+          actionable: true,
+        },
+      ];
+    });
+
+    setCustomAttributeName("");
+    setCustomAttributeType("Taste");
+    setCustomAttributeActionable(false);
   };
 
   const updateSampleSetup = (index: number, field: keyof SampleSetupRow, value: string) => {
@@ -455,6 +572,14 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && consumerLimit && targetResponses > consumerLimit) {
       setError(`Target responses exceed the ${consumerLimit} maximum for this consumer test objective.`);
       return;
+    }
+
+    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
+      const planValidation = validateObjectiveSelection(attributes, consumerObjective);
+      if (!planValidation.valid) {
+        setError(planValidation.error);
+        return;
+      }
     }
 
     let sessionPayload: Array<{
@@ -558,7 +683,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         productName: studyMode === "SENSORY" ? productName : undefined,
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
         categoryLabel: studyMode === "SENSORY" ? selectedProfile.label : undefined,
-        attributes: studyMode === "SENSORY" ? attributes : [],
+        attributes:
+          studyMode === "SENSORY"
+            ? attributes.map((attribute) => ({
+                name: attribute.name.trim(),
+                dimension: attribute.dimension,
+                isJarTarget: attribute.isJarTarget,
+                isCustom: attribute.isCustom,
+                actionable: attribute.isCustom ? attribute.actionable : true,
+              })).filter((attribute) => attribute.name.length > 0)
+            : [],
         testingStartDate: studyMode === "SENSORY" ? testingStartDate : undefined,
         testingDurationDays: studyMode === "SENSORY" ? Math.max(1, Math.floor(testingDurationDays)) : undefined,
         sessionSlots: studyMode === "SENSORY" ? sessionPayload : [],
@@ -753,34 +887,126 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               </div>
 
               <div className="space-y-2">
-                <p className="text-sm font-medium text-gray-700">Attributes (5 auto-loaded, last 2 editable)</p>
+                <div className="rounded-lg border border-[#dbe3ec] bg-[#f8fafc] p-3">
+                  <p className="text-sm font-semibold text-[#0f172a]">Choose what to test</p>
+                  <p className="mt-1 text-xs text-[#64748b]">
+                    Select up to 3 attributes that you most want to improve in this test.
+                    Testing too many attributes at once can make results unclear.
+                  </p>
+                  <p className="mt-2 text-xs text-[#64748b]">
+                    What is JAR (Just-About-Right)? JAR helps you see whether an attribute is too low, too high, or just right for most consumers.
+                  </p>
+                  <p className="mt-1 text-xs text-[#64748b]">
+                    Why can I only select 3? Limiting attributes helps ensure participants give reliable feedback and makes it easier to identify what truly affects liking.
+                  </p>
+                </div>
                 <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
                   <table className="w-full min-w-[560px] text-sm">
                     <thead className="bg-[#f8fafc]">
                       <tr>
                         <th className="px-4 py-2 text-left">Attribute</th>
                         <th className="px-4 py-2 text-left">Type</th>
+                        <th className="px-4 py-2 text-left">Top 3 JAR</th>
+                        <th className="px-4 py-2 text-left">Action</th>
                       </tr>
                     </thead>
                     <tbody>
                       {attributes.map((attribute, index) => {
-                        const editable = index >= 3;
                         return (
                           <tr key={`${attribute.name}-${index}`} className="border-t">
                             <td className="px-4 py-2">
                               <input
                                 value={attribute.name}
-                                onChange={(event) => updateAttribute(index, event.target.value)}
-                                readOnly={!editable}
-                                className={`app-input ${editable ? "bg-white" : "bg-[#f8fafc]"}`}
+                                onChange={(event) => updateAttributeName(index, event.target.value)}
+                                className="app-input bg-white"
                               />
+                              {attribute.isCustom && (
+                                <p className="mt-1 text-[11px] font-medium text-[#c2410c]">Custom attribute added</p>
+                              )}
                             </td>
-                            <td className="px-4 py-2 text-gray-700">{attribute.dimension}</td>
+                            <td className="px-4 py-2 text-gray-700">
+                              <select
+                                value={attribute.dimension}
+                                onChange={(event) => updateAttributeDimension(index, event.target.value as AttributeDimension)}
+                                className="app-select"
+                              >
+                                {ATTRIBUTE_DIMENSIONS.map((dimension) => (
+                                  <option key={`${attribute.name}-${dimension}`} value={dimension}>
+                                    {dimension}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                            <td className="px-4 py-2 text-gray-700">
+                              <label className="inline-flex items-center gap-2">
+                                <input
+                                  type="checkbox"
+                                  checked={attribute.isJarTarget}
+                                  onChange={() => toggleJarTarget(index)}
+                                />
+                                <span className="text-xs">Optimize</span>
+                              </label>
+                            </td>
+                            <td className="px-4 py-2 text-gray-700">
+                              <button
+                                type="button"
+                                onClick={() => removeAttribute(index)}
+                                disabled={attributes.length <= 1}
+                                className="rounded-md border border-[#fecaca] px-2.5 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                Remove
+                              </button>
+                            </td>
                           </tr>
                         );
                       })}
                     </tbody>
                   </table>
+                </div>
+                <p className="text-xs text-[#64748b]">
+                  Selected for JAR: {attributes.filter((attribute) => attribute.isJarTarget).length}/3
+                </p>
+                <div className="rounded-lg border border-[#e2e8f0] bg-white p-3">
+                  <p className="text-sm font-semibold text-[#0f172a]">Add custom attribute (max 1)</p>
+                  <p className="mt-1 text-xs text-[#64748b]">
+                    Make sure this is something you can realistically adjust in your formulation.
+                  </p>
+                  <div className="mt-3 grid gap-2 md:grid-cols-[1.2fr_1fr]">
+                    <input
+                      value={customAttributeName}
+                      onChange={(event) => setCustomAttributeName(event.target.value)}
+                      placeholder="Attribute name (max 2 words)"
+                      className="app-input"
+                    />
+                    <select
+                      value={customAttributeType}
+                      onChange={(event) => setCustomAttributeType(event.target.value as AttributeDimension)}
+                      className="app-select"
+                    >
+                      {ATTRIBUTE_DIMENSIONS.map((dimension) => (
+                        <option key={`custom-${dimension}`} value={dimension}>
+                          {dimension}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="mt-3 inline-flex items-center gap-2 text-xs text-[#334155]">
+                    <input
+                      type="checkbox"
+                      checked={customAttributeActionable}
+                      onChange={(event) => setCustomAttributeActionable(event.target.checked)}
+                    />
+                    This attribute is actionable and can be adjusted in formulation.
+                  </label>
+                  <div className="mt-3">
+                    <button
+                      type="button"
+                      onClick={addCustomAttribute}
+                      className="rounded-md border border-[#ed7f2a] px-3 py-1 text-xs font-semibold text-[#c2410c] hover:bg-[#fff6ed]"
+                    >
+                      Add Custom Attribute
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -944,9 +1170,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
                 Questionnaire Logic generated on create:
                 <ul className="list-disc pl-5 mt-2 space-y-1">
-                  <li>Overall Liking (9-point hedonic scale)</li>
-                  <li>Attribute Liking for each attribute</li>
-                  <li>JAR for each attribute</li>
+                  <li>Overall Acceptability (9-point hedonic scale, mandatory)</li>
+                  <li>JAR only for selected TOP attributes (max 3)</li>
+                  <li>5-point standardized JAR scale: Much too low → Much too high</li>
+                  <li>Reporting collapses to Too Low (1-2), JAR (3), Too High (4-5)</li>
                   <li>Open-ended improvement question</li>
                 </ul>
               </div>
@@ -1037,6 +1264,98 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       </div>
     </div>
   );
+}
+
+function createAttributeRowsFromProfile(profileAttributes: ProfileAttributeRow[]) {
+  return profileAttributes.slice(0, 5).map((attribute, index) => ({
+    name: attribute.name,
+    dimension: attribute.dimension,
+    isJarTarget: index < 2,
+    isCustom: false,
+    actionable: true,
+  }));
+}
+
+function applyObjectiveJarDefaults(attributes: AttributeRow[], objective: ConsumerObjective) {
+  const next = attributes.map((attribute) => ({ ...attribute, isJarTarget: false }));
+  if (objective === "CHECK_ACCEPTABILITY") {
+    return next;
+  }
+
+  if (objective === "IMPROVE_TASTE") {
+    const firstTasteIndex = next.findIndex((attribute) => attribute.dimension === "Taste");
+    if (firstTasteIndex >= 0) next[firstTasteIndex].isJarTarget = true;
+    return next;
+  }
+
+  if (objective === "IMPROVE_TEXTURE") {
+    const firstTextureIndex = next.findIndex((attribute) => attribute.dimension === "Texture");
+    if (firstTextureIndex >= 0) next[firstTextureIndex].isJarTarget = true;
+    return next;
+  }
+
+  if (objective === "FINE_TUNE") {
+    next.slice(0, 2).forEach((attribute) => {
+      attribute.isJarTarget = true;
+    });
+    return next;
+  }
+
+  next.slice(0, 2).forEach((attribute) => {
+    attribute.isJarTarget = true;
+  });
+  return next;
+}
+
+function validateObjectiveSelection(attributes: AttributeRow[], objective: ConsumerObjective) {
+  if (attributes.length === 0) {
+    return { valid: false, error: "Select at least one candidate attribute." };
+  }
+  if (attributes.length > 5) {
+    return { valid: false, error: "A maximum of 5 attributes may be selected per test." };
+  }
+
+  const customAttributes = attributes.filter((attribute) => attribute.isCustom);
+  if (customAttributes.length > 1) {
+    return { valid: false, error: "Only one custom attribute is allowed per test." };
+  }
+
+  for (const custom of customAttributes) {
+    const words = custom.name.trim().split(/\s+/).filter(Boolean);
+    if (words.length > 2) {
+      return { valid: false, error: "Custom attribute name must be at most 2 words." };
+    }
+    if (!custom.actionable) {
+      return { valid: false, error: "Custom attributes must be marked actionable." };
+    }
+  }
+
+  const jarTargets = attributes.filter((attribute) => attribute.isJarTarget);
+  if (jarTargets.length > 3) {
+    return { valid: false, error: "Only the TOP 3 attributes can be selected for JAR questions." };
+  }
+
+  if (objective === "CHECK_ACCEPTABILITY" && jarTargets.length !== 0) {
+    return { valid: false, error: "Check acceptability requires Overall Acceptability only (no JAR attributes)." };
+  }
+  if (objective === "IMPROVE_TASTE") {
+    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Taste") {
+      return { valid: false, error: "Improve taste requires exactly 1 Taste JAR attribute." };
+    }
+  }
+  if (objective === "IMPROVE_TEXTURE") {
+    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Texture") {
+      return { valid: false, error: "Improve texture requires exactly 1 Texture JAR attribute." };
+    }
+  }
+  if (objective === "FINE_TUNE" && jarTargets.length !== 2) {
+    return { valid: false, error: "Fine-tune requires exactly 2 JAR attributes." };
+  }
+  if (objective === "FAST_ITERATION" && (jarTargets.length < 1 || jarTargets.length > 2)) {
+    return { valid: false, error: "FAST iteration requires 1 to 2 JAR attributes." };
+  }
+
+  return { valid: true, error: "" };
 }
 
 function FieldLabel({ text }: { text: string }) {
@@ -1139,4 +1458,3 @@ function formatDateLabel(dateInput: string) {
     year: "numeric",
   }).format(value);
 }
-

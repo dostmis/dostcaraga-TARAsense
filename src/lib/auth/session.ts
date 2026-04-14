@@ -1,6 +1,8 @@
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { AppRole, parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
+import { prisma } from "@/lib/db";
+import { SESSION_TOKEN_COOKIE_KEY, verifySessionToken } from "@/lib/auth/session-token";
 
 const ROLE_COOKIE_KEY = "tara_role";
 const USER_COOKIE_KEY = "tara_uid";
@@ -26,14 +28,27 @@ export async function getCurrentRole(): Promise<AppRole | null> {
 
 export async function getCurrentSession(): Promise<AuthSession | null> {
   const store = await cookies();
-  const userId = store.get(USER_COOKIE_KEY)?.value ?? "";
-  const role = parseRole(store.get(ROLE_COOKIE_KEY)?.value ?? "");
-
-  if (!userId || !role) {
+  const token = store.get(SESSION_TOKEN_COOKIE_KEY)?.value ?? "";
+  const verified = verifySessionToken(token);
+  if (!verified) {
     return null;
   }
 
-  return { userId, role };
+  const user = await prisma.user.findUnique({
+    where: { id: verified.userId },
+    select: { id: true, role: true },
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  const role = parseRole(user.role);
+  if (!role) {
+    return null;
+  }
+
+  return { userId: user.id, role };
 }
 
 export async function getCurrentGuestSession(): Promise<GuestSession | null> {
@@ -97,6 +112,7 @@ export function clearGuestSessionCookies(store: Awaited<ReturnType<typeof cookie
 }
 
 export const SESSION_KEYS = {
+  token: SESSION_TOKEN_COOKIE_KEY,
   userId: USER_COOKIE_KEY,
   role: ROLE_COOKIE_KEY,
   guestParticipantId: GUEST_PARTICIPANT_COOKIE_KEY,

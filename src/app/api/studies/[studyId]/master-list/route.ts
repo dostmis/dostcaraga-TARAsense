@@ -10,7 +10,7 @@ type RouteContext = {
 export async function GET(_: Request, context: RouteContext) {
   try {
     const session = await getCurrentSession();
-    if (!session || session.role === "CONSUMER") {
+    if (!session || (session.role !== "ADMIN" && session.role !== "MSME" && session.role !== "FIC")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -54,7 +54,7 @@ export async function GET(_: Request, context: RouteContext) {
     if (!study) {
       return NextResponse.json({ error: "Study not found" }, { status: 404 });
     }
-    if (session.role === "MSME" && study.creatorId !== session.userId) {
+    if (session.role !== "ADMIN" && study.creatorId !== session.userId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -65,8 +65,6 @@ export async function GET(_: Request, context: RouteContext) {
       "Randomize Code",
       "Sample Codes",
       "Panelist Name",
-      "Email",
-      "Phone",
       "Address",
       "Organization",
       "Occupation",
@@ -89,8 +87,6 @@ export async function GET(_: Request, context: RouteContext) {
           row.randomizeCode ?? "Unassigned",
           parseSampleCodes(row.sampleCodes).map((entry) => `S${entry.sample}:${entry.code}`).join(" | "),
           row.panelist.name,
-          row.panelist.email,
-          row.panelist.phone ?? "",
           row.panelist.location,
           row.panelist.organization ?? "",
           row.panelist.occupation,
@@ -132,6 +128,14 @@ function parseOfferedSessions(value: unknown) {
 }
 
 function escapeCsv(value: string) {
-  const escaped = value.replace(/"/g, "\"\"");
+  const safeValue = neutralizeCsvFormula(value);
+  const escaped = safeValue.replace(/"/g, "\"\"");
   return `"${escaped}"`;
+}
+
+function neutralizeCsvFormula(value: string) {
+  if (/^[\s]*[=+\-@]/.test(value)) {
+    return `'${value}`;
+  }
+  return value;
 }

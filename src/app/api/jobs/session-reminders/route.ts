@@ -9,11 +9,14 @@ const REMINDER_HOUR = 8;
 export async function POST(request: Request) {
   try {
     const cronSecret = process.env.CRON_SECRET;
-    if (cronSecret) {
-      const incoming = request.headers.get("x-cron-secret");
-      if (incoming !== cronSecret) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    if (!cronSecret) {
+      console.error("CRON_SECRET is missing. Refusing to run reminder job.");
+      return NextResponse.json({ error: "Server misconfiguration" }, { status: 503 });
+    }
+
+    const incoming = request.headers.get("x-cron-secret");
+    if (incoming !== cronSecret) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const timezone = process.env.REMINDER_TIMEZONE || DEFAULT_TIMEZONE;
@@ -104,6 +107,7 @@ export async function POST(request: Request) {
 }
 
 function getTzDateKey(date: Date, timeZone: string) {
+  // Using Intl.DateTimeFormat for consistent cross-platform timezone handling
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,
     year: "numeric",
@@ -117,6 +121,7 @@ function getTzDateKey(date: Date, timeZone: string) {
 }
 
 function getTzHour(date: Date, timeZone: string) {
+  // Using Intl.DateTimeFormat for consistent cross-platform timezone handling
   const formatted = new Intl.DateTimeFormat("en-GB", {
     timeZone,
     hour: "2-digit",

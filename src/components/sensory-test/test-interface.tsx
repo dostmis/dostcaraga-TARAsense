@@ -11,7 +11,14 @@ interface SensoryAttribute {
   id: string;
   name: string;
   type: AttributeType;
-  jarOptions?: { low?: string; mid?: string; high?: string } | null;
+  jarOptions?: {
+    low?: string;
+    midLow?: string;
+    mid?: string;
+    midHigh?: string;
+    high?: string;
+    labels?: string[];
+  } | null;
 }
 
 interface TestInterfaceProps {
@@ -181,30 +188,45 @@ export function SensoryTestInterface({
 
     if (currentAttr.type === "JAR") {
       const options = currentAttr.jarOptions ?? {
-        low: "Too Low",
-        mid: "Just Right",
-        high: "Too High",
+        low: "Much too low",
+        midLow: "Slightly too low",
+        mid: "Just about right",
+        midHigh: "Slightly too high",
+        high: "Much too high",
       };
 
       return (
         <div className="space-y-3">
           {[
-            { key: "too_low", label: options.low ?? "Too Low" },
-            { key: "just_right", label: options.mid ?? "Just Right" },
-            { key: "too_high", label: options.high ?? "Too High" },
+            { key: 1, label: options.low ?? "Much too low" },
+            { key: 2, label: options.midLow ?? "Slightly too low" },
+            { key: 3, label: options.mid ?? "Just about right" },
+            { key: 4, label: options.midHigh ?? "Slightly too high" },
+            { key: 5, label: options.high ?? "Much too high" },
           ].map((opt) => (
             <button
               key={opt.key}
-              onClick={() => handleValueChange({ type: "JAR", value: opt.key })}
+              onClick={() =>
+                handleValueChange({
+                  type: "JAR_5PT",
+                  rawValue: opt.key,
+                  bucket: collapseJarBucket(opt.key),
+                })
+              }
               className={`w-full rounded-lg border px-4 py-3 text-left transition-all ${
-                (currentResponses[currentAttr.name] as { value?: string } | undefined)?.value === opt.key
+                (currentResponses[currentAttr.name] as { rawValue?: number } | undefined)?.rawValue === opt.key
                   ? "border-[#fdba74] bg-[#fff7ed]"
                   : "border-[#e2e8f0] bg-white hover:border-[#fdba74]"
               }`}
             >
-              <p className="font-medium text-[#0f172a]">{opt.label}</p>
+              <p className="font-medium text-[#0f172a]">
+                {opt.key}. {opt.label}
+              </p>
             </button>
           ))}
+          <p className="text-xs text-[#64748b]">
+            Reporting rule: 1-2 = TOO LOW, 3 = JAR, 4-5 = TOO HIGH.
+          </p>
         </div>
       );
     }
@@ -330,7 +352,7 @@ function buildMultiSamplePayload(
 ) {
   const overallScores: number[] = [];
   const numericBuckets: Record<string, number[]> = {};
-  const jarBuckets: Record<string, Record<string, number>> = {};
+  const jarBuckets: Record<string, Record<number, number>> = {};
   const textBuckets: Record<string, string[]> = {};
 
   attributes.forEach((attribute) => {
@@ -338,7 +360,7 @@ function buildMultiSamplePayload(
       numericBuckets[attribute.name] = [];
     }
     if (attribute.type === "JAR") {
-      jarBuckets[attribute.name] = { too_low: 0, just_right: 0, too_high: 0 };
+      jarBuckets[attribute.name] = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
     }
     if (attribute.type === "OPEN_ENDED") {
       textBuckets[attribute.name] = [];
@@ -358,9 +380,10 @@ function buildMultiSamplePayload(
         return;
       }
       if (attribute.type === "JAR" && value && typeof value === "object") {
-        const jar = value as { value?: string };
-        if (jar.value && jarBuckets[attribute.name][jar.value] !== undefined) {
-          jarBuckets[attribute.name][jar.value] += 1;
+        const jar = value as { rawValue?: number; value?: number };
+        const rawValue = typeof jar.rawValue === "number" ? jar.rawValue : jar.value;
+        if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue >= 1 && rawValue <= 5) {
+          jarBuckets[attribute.name][rawValue] += 1;
         }
         return;
       }
@@ -385,9 +408,13 @@ function buildMultiSamplePayload(
     }
     if (attribute.type === "JAR") {
       const bucket = jarBuckets[attribute.name];
-      const top = Object.entries(bucket).sort((left, right) => right[1] - left[1])[0];
-      if (top && top[1] > 0) {
-        aggregatedAttributes[attribute.name] = { type: "JAR", value: top[0] };
+      const rawValue = chooseRepresentativeJarValue(bucket);
+      if (rawValue !== null) {
+        aggregatedAttributes[attribute.name] = {
+          type: "JAR_5PT",
+          rawValue,
+          bucket: collapseJarBucket(rawValue),
+        };
       }
       return;
     }
@@ -407,4 +434,25 @@ function buildMultiSamplePayload(
 
 function roundToTwo(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+function chooseRepresentativeJarValue(bucket: Record<number, number>) {
+  const sorted = Object.entries(bucket)
+    .map(([raw, count]) => ({ raw: Number(raw), count }))
+    .sort((left, right) => {
+      if (right.count !== left.count) return right.count - left.count;
+      return Math.abs(left.raw - 3) - Math.abs(right.raw - 3);
+    });
+
+  const top = sorted[0];
+  if (!top || top.count <= 0) {
+    return null;
+  }
+  return top.raw;
+}
+
+function collapseJarBucket(rawValue: number) {
+  if (rawValue <= 2) return "too_low";
+  if (rawValue === 3) return "just_right";
+  return "too_high";
 }
