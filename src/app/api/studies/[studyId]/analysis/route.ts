@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { getCurrentSession } from "@/lib/auth/session";
+import { canAccessStudyByRole } from "@/lib/study-access";
 
 type RouteContext = {
   params: Promise<{ studyId: string }>;
@@ -20,15 +21,35 @@ export async function GET(request: Request, context: RouteContext) {
 
     const study = await prisma.study.findUnique({
       where: { id: studyId },
-      include: {
-        analysis: true,
+      select: {
+        id: true,
+        creatorId: true,
+        location: true,
+        analysis: {
+          select: { id: true },
+        },
       },
     });
 
     if (!study) {
       return NextResponse.json({ error: "Study not found" }, { status: 404 });
     }
-    if (session.role === "MSME" && study.creatorId !== session.userId) {
+    const currentUser =
+      session.role === "FIC"
+        ? await prisma.user.findUnique({
+            where: { id: session.userId },
+            select: { assignedFacility: true },
+          })
+        : null;
+    if (
+      !canAccessStudyByRole({
+        role: session.role,
+        userId: session.userId,
+        studyCreatorId: study.creatorId,
+        studyLocation: study.location,
+        ficAssignedFacility: currentUser?.assignedFacility,
+      })
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

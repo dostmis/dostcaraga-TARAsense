@@ -16,6 +16,7 @@ import {
   normalizeDateValue,
   parseStudySessionSchedule,
 } from "@/lib/study-schedule";
+import { lockStudyRow, runSerializableTransaction } from "@/lib/db-transaction";
 
 export async function participateInStudy(formData: FormData) {
   const session = await getCurrentSession();
@@ -62,7 +63,9 @@ export async function participateInStudy(formData: FormData) {
     redirect("/consumer/dashboard?view=available&error=Please+select+an+available+session+before+participating");
   }
 
-  const transactionResult = await prisma.$transaction(async (tx) => {
+  const transactionResult = await runSerializableTransaction(async (tx) => {
+    await lockStudyRow(tx, study.id);
+
     const existing = await tx.studyParticipant.findFirst({
       where: {
         studyId: study.id,
@@ -143,7 +146,7 @@ export async function participateInStudy(formData: FormData) {
       type: "created" as const,
       assignment: assigned,
     };
-  });
+  }, { label: "participateInStudy" });
 
   if (transactionResult.type === "existing") {
     if (transactionResult.status === "COMPLETED") {
@@ -392,15 +395,69 @@ export async function confirmParticipantSession(formData: FormData) {
     redirect(withFeedback(redirectTo, "error", "Consumer+has+not+selected+a+session+yet"));
   }
 
-  await prisma.studyParticipant.update({
-    where: { id: participant.id },
-    data: {
-      status: "CONFIRMED",
-      confirmedAt: new Date(),
-      sessionAt: participant.requestedSessionAt,
-      reminderSentAt: null,
-    },
-  });
+  const confirmedSessionResult = await runSerializableTransaction(async (tx) => {
+    await lockStudyRow(tx, studyId);
+
+    const latestParticipant = await tx.studyParticipant.findFirst({
+      where: { id: participant.id, studyId },
+      select: {
+        id: true,
+        requestedSessionAt: true,
+        study: {
+          select: {
+            targetDemographics: true,
+          },
+        },
+      },
+    });
+
+    if (!latestParticipant?.requestedSessionAt) {
+      return { ok: false as const, reason: "missing-requested" as const };
+    }
+
+    const requestedIso = normalizeDateValue(latestParticipant.requestedSessionAt);
+    if (!requestedIso) {
+      return { ok: false as const, reason: "invalid-requested" as const };
+    }
+
+    const sessionSchedule = parseStudySessionSchedule(latestParticipant.study.targetDemographics);
+    const targetSlot = sessionSchedule?.slots.find((slot) => normalizeDateValue(slot.startsAt) === requestedIso);
+
+    if (targetSlot) {
+      const requestedSessionAt = new Date(requestedIso);
+      const occupiedCount = await tx.studyParticipant.count({
+        where: {
+          studyId,
+          id: { not: participant.id },
+          status: { notIn: ["CANCELLED", "DECLINED"] },
+          OR: [{ requestedSessionAt }, { sessionAt: requestedSessionAt }],
+        },
+      });
+
+      if (occupiedCount >= targetSlot.capacity) {
+        return { ok: false as const, reason: "session-full" as const };
+      }
+    }
+
+    await tx.studyParticipant.update({
+      where: { id: participant.id },
+      data: {
+        status: "CONFIRMED",
+        confirmedAt: new Date(),
+        sessionAt: latestParticipant.requestedSessionAt,
+        reminderSentAt: null,
+      },
+    });
+
+    return { ok: true as const };
+  }, { label: "confirmParticipantSession" });
+
+  if (!confirmedSessionResult.ok) {
+    if (confirmedSessionResult.reason === "session-full") {
+      redirect(withFeedback(redirectTo, "error", "Selected+session+is+already+full.+Please+send+new+options"));
+    }
+    redirect(withFeedback(redirectTo, "error", "Consumer+session+selection+is+no+longer+valid"));
+  }
 
   if (participant.panelist.userId) {
     const noOfSamples = getNoOfSamples(participant.study.targetDemographics);

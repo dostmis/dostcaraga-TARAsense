@@ -61,14 +61,14 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
     : null;
 
   const participant = verified && participantId
-    ? await prisma.studyParticipant.findFirst({
-        where: {
-          id: participantId,
-          studyId: study.id,
-          status: { in: ["SELECTED", "CONFIRMED"] },
-          ...(isConsumer
-            ? {
-                panelistId: panelist?.id ?? "__no-panelist__",
+      ? await prisma.studyParticipant.findFirst({
+          where: {
+            id: participantId,
+            studyId: study.id,
+            status: { in: ["SELECTED", "CONFIRMED", "COMPLETED", "DECLINED"] },
+            ...(isConsumer
+              ? {
+                  panelistId: panelist?.id ?? "__no-panelist__",
               }
             : {
                 source: "WALK_IN_GUEST",
@@ -92,6 +92,9 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
   }
 
   if (participant?.status === "COMPLETED") {
+    redirect(`/test/completed?studyId=${study.id}`);
+  }
+  if (participant?.status === "DECLINED") {
     redirect(`/test/completed?studyId=${study.id}`);
   }
 
@@ -222,4 +225,3 @@ function renderSampleCodes(sampleCodesValue: unknown, fallbackCode: string | nul
   }
   return [{ sample: 1, code: fallbackCode ?? "N/A" }];
 }
-

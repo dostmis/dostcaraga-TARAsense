@@ -11,6 +11,7 @@ import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar"
 import { formatPanelistNumber } from "@/lib/participant-assignment";
 import { CalendarDays, ClipboardCheck, Clock3, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
 import { isMissingColumnError, logSchemaDriftWarning } from "@/lib/db-schema-drift";
+import { Prisma } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 const FIC_TIMEZONE = "Asia/Manila";
@@ -42,8 +43,41 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const { error, message, q } = params;
   const activeView = parseFicView(params.view);
+  const normalizedQuery = (q ?? "").trim().toLowerCase();
+  const shouldLoadQueueStudies = activeView === "queue";
+  const shouldLoadCalendarSessions = activeView === "calendar";
+  const now = new Date();
+  const ficAssignment =
+    session.role === "FIC"
+      ? await prisma.user.findUnique({
+          where: { id: session.userId },
+          select: { assignedRegion: true, assignedFacility: true },
+        })
+      : null;
+  const ficStudyWhere: Prisma.StudyWhereInput =
+    session.role === "FIC"
+      ? {
+          location: ficAssignment?.assignedFacility
+            ? { equals: ficAssignment.assignedFacility, mode: "insensitive" as const }
+            : { equals: "__UNASSIGNED_FIC_FACILITY__", mode: "insensitive" as const },
+        }
+      : {
+          OR: [
+            {
+              targetDemographics: {
+                path: ["coordinationMode"],
+                equals: "FIC_ASSISTED",
+              },
+            },
+            { location: { contains: "fic", mode: "insensitive" as const } },
+          ],
+        };
+  const assignmentMessage =
+    session.role === "FIC" && !ficAssignment?.assignedFacility
+      ? "Your FIC account has not been assigned to a facility yet. Ask an admin to set your region and facility."
+      : null;
 
-  let studies: Array<{
+  let studiesForQueue: Array<{
     id: string;
     title: string;
     productName: string;
@@ -52,7 +86,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     creator: { name: string; organization: string | null };
     _count: { responses: number; participants: number };
   }> = [];
-  let participantSessions: Array<{
+  let participantSessionsForCalendar: Array<{
     id: string;
     panelistNumber: number | null;
     status: string;
@@ -67,60 +101,100 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     };
     panelist: { name: string };
   }> = [];
+  let uploadedStudyCount = 0;
+  let ficStudyCount = 0;
+  let activeStudyCount = 0;
+  let totalResponseCount = 0;
+  let upcomingSessionCount = 0;
+  let pendingSessionCount = 0;
 
   try {
-    [studies, participantSessions] = await Promise.all([
-      prisma.study.findMany({
-        orderBy: { createdAt: "desc" },
-        select: {
-          id: true,
-          title: true,
-          productName: true,
-          location: true,
-          status: true,
-          creator: { select: { name: true, organization: true } },
-          _count: { select: { responses: true, participants: true } },
-        },
-        take: 20,
-      }),
-      prisma.studyParticipant.findMany({
-        where: {
-          OR: [{ sessionAt: { not: null } }, { requestedSessionAt: { not: null } }],
-          status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
-          study: {
-            location: {
-              contains: "fic",
-              mode: "insensitive",
-            },
-          },
-        },
-        select: {
-          id: true,
-          panelistNumber: true,
-          status: true,
-          sessionAt: true,
-          requestedSessionAt: true,
-          study: {
+    [
+      studiesForQueue,
+      participantSessionsForCalendar,
+      uploadedStudyCount,
+      ficStudyCount,
+      activeStudyCount,
+      totalResponseCount,
+      upcomingSessionCount,
+      pendingSessionCount,
+    ] = await Promise.all([
+      shouldLoadQueueStudies
+        ? prisma.study.findMany({
+            where: ficStudyWhere,
+            orderBy: { createdAt: "desc" },
             select: {
               id: true,
               title: true,
               productName: true,
               location: true,
-              creator: {
+              status: true,
+              creator: { select: { name: true, organization: true } },
+              _count: { select: { responses: true, participants: true } },
+            },
+            take: 20,
+          })
+        : Promise.resolve([]),
+      shouldLoadCalendarSessions
+        ? prisma.studyParticipant.findMany({
+            where: {
+              OR: [{ sessionAt: { not: null } }, { requestedSessionAt: { not: null } }],
+              status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
+              study: ficStudyWhere,
+            },
+            select: {
+              id: true,
+              panelistNumber: true,
+              status: true,
+              sessionAt: true,
+              requestedSessionAt: true,
+              study: {
+                select: {
+                  id: true,
+                  title: true,
+                  productName: true,
+                  location: true,
+                  creator: {
+                    select: {
+                      name: true,
+                      organization: true,
+                    },
+                  },
+                },
+              },
+              panelist: {
                 select: {
                   name: true,
-                  organization: true,
                 },
               },
             },
-          },
-          panelist: {
-            select: {
-              name: true,
-            },
-          },
+            take: 300,
+          })
+        : Promise.resolve([]),
+      prisma.study.count(),
+      prisma.study.count({
+        where: ficStudyWhere,
+      }),
+      prisma.study.count({
+        where: {
+          status: { in: ["ACTIVE", "RECRUITING"] },
         },
-        take: 300,
+      }),
+      prisma.sensoryResponse.count(),
+      prisma.studyParticipant.count({
+        where: {
+          status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
+          study: ficStudyWhere,
+          OR: [{ sessionAt: { gte: now } }, { requestedSessionAt: { gte: now } }],
+        },
+      }),
+      prisma.studyParticipant.count({
+        where: {
+          status: { in: ["WAITLIST", "SELECTED", "CONFIRMED"] },
+          sessionAt: null,
+          requestedSessionAt: { gte: now },
+          study: ficStudyWhere,
+        },
       }),
     ]);
   } catch (error) {
@@ -131,9 +205,8 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     throw error;
   }
 
-  const normalizedQuery = (q ?? "").trim().toLowerCase();
   const filteredStudies = normalizedQuery
-    ? studies.filter((study) => {
+    ? studiesForQueue.filter((study) => {
         const entry = [
           study.title,
           study.productName,
@@ -146,10 +219,10 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           .toLowerCase();
         return entry.includes(normalizedQuery);
       })
-    : studies;
+    : studiesForQueue;
 
   const filteredParticipantSessions = normalizedQuery
-    ? participantSessions.filter((row) => {
+    ? participantSessionsForCalendar.filter((row) => {
         const entry = [
           row.study.title,
           row.study.productName,
@@ -164,7 +237,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           .toLowerCase();
         return entry.includes(normalizedQuery);
       })
-    : participantSessions;
+    : participantSessionsForCalendar;
 
   const calendarEvents = filteredParticipantSessions
     .map<CalendarEvent | null>((row) => {
@@ -194,13 +267,6 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     (event) => getDateKeyInTimezone(event.scheduledAt, FIC_TIMEZONE) >= todayKey
   );
   const calendarGroups = groupCalendarByDate(upcomingCalendarEvents, FIC_TIMEZONE);
-  const pendingCalendarCount = upcomingCalendarEvents.filter(
-    (event) => event.sessionState === "PENDING_CONFIRMATION"
-  ).length;
-
-  const ficRelevant = filteredStudies.filter((study) => study.location.toLowerCase().includes("fic"));
-  const activeStudies = filteredStudies.filter((study) => study.status === "ACTIVE" || study.status === "RECRUITING").length;
-  const totalResponses = filteredStudies.reduce((sum, study) => sum + study._count.responses, 0);
 
   return (
     <DashboardShell
@@ -217,24 +283,24 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           label: "Facility Queue",
           href: "/fic/dashboard?view=queue",
           icon: ClipboardCheck,
-          badge: `${ficRelevant.length}`,
+          badge: `${ficStudyCount}`,
           active: activeView === "queue",
         },
         {
           label: "FIC Calendar",
           href: "/fic/dashboard?view=calendar",
           icon: CalendarDays,
-          badge: `${upcomingCalendarEvents.length}`,
+          badge: `${upcomingSessionCount}`,
           active: activeView === "calendar",
         },
       ]}
       stats={[
-        { label: "Booking Notifications", value: `${ficRelevant.length}`, helper: "Studies tagged for FIC facilities", icon: MapPin, tone: "amber" },
-        { label: "Upcoming Sessions", value: `${upcomingCalendarEvents.length}`, helper: "Requested + confirmed session slots", icon: CalendarDays, tone: "sky" },
-        { label: "Pending Confirmation", value: `${pendingCalendarCount}`, helper: "Waiting MSME session confirmation", icon: Clock3, tone: "amber" },
-        { label: "Uploaded Studies", value: `${studies.length}`, helper: "Visible MSME study submissions", icon: TestTube2, tone: "sky" },
-        { label: "Active Studies", value: `${activeStudies}`, helper: "Recruiting or currently running", icon: LayoutDashboard, tone: "mint" },
-        { label: "Total Responses", value: `${totalResponses}`, helper: "Responses across visible studies", icon: ClipboardCheck, tone: "slate" },
+        { label: "Booking Notifications", value: `${ficStudyCount}`, helper: "Studies tagged for FIC facilities", icon: MapPin, tone: "amber" },
+        { label: "Upcoming Sessions", value: `${upcomingSessionCount}`, helper: "Requested + confirmed session slots", icon: CalendarDays, tone: "sky" },
+        { label: "Pending Confirmation", value: `${pendingSessionCount}`, helper: "Waiting MSME session confirmation", icon: Clock3, tone: "amber" },
+        { label: "Uploaded Studies", value: `${uploadedStudyCount}`, helper: "Visible MSME study submissions", icon: TestTube2, tone: "sky" },
+        { label: "Active Studies", value: `${activeStudyCount}`, helper: "Recruiting or currently running", icon: LayoutDashboard, tone: "mint" },
+        { label: "Total Responses", value: `${totalResponseCount}`, helper: "Responses across visible studies", icon: ClipboardCheck, tone: "slate" },
       ]}
       sidebarFooter={
         <form action={logout}>
@@ -244,6 +310,12 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         </form>
       }
     >
+      {assignmentMessage && (
+        <section className="rounded-xl border border-[#f5c2c7] bg-[#fff1f2] p-4 text-sm text-[#9f1239]">
+          {assignmentMessage}
+        </section>
+      )}
+
       {activeView === "dashboard" && (
         <CollapsibleSection title="System Messages" id="system-messages" defaultOpen={false}>
           <NotificationPanel userId={session.userId} redirectTo="/fic/dashboard?view=dashboard" />

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { logout, reviewRoleApplication } from "@/app/actions/auth-actions";
+import { logout, reassignFicFacility, reviewRoleApplication } from "@/app/actions/auth-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { NotificationPanel } from "@/components/notifications/notification-panel";
@@ -8,6 +8,7 @@ import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
+import { FACILITY_REGION_ROWS, REGIONS } from "@/lib/facility-constants";
 
 export const dynamic = "force-dynamic";
 
@@ -24,22 +25,48 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
   const params = await searchParams;
   const { error, message, q } = params;
   const activeView = parseAdminView(params.view);
+  const normalizedQuery = (q ?? "").trim().toLowerCase();
+  const shouldLoadRequests = activeView === "role-requests";
+  const shouldLoadFicAssignments = activeView === "role-requests";
 
-  const [studies, users, panelists, requests] = await Promise.all([
+  const [studies, users, panelists, pendingRequests, approvedRequests, rejectedRequests, requests, ficUsers] = await Promise.all([
     prisma.study.count(),
     prisma.user.count(),
     prisma.panelist.count(),
-    prisma.roleUpgradeRequest.findMany({
-      orderBy: { createdAt: "desc" },
-      include: {
-        user: {
-          select: { name: true, email: true, role: true, organization: true },
-        },
-      },
-      take: 50,
-    }),
+    prisma.roleUpgradeRequest.count({ where: { status: "PENDING" } }),
+    prisma.roleUpgradeRequest.count({ where: { status: "APPROVED" } }),
+    prisma.roleUpgradeRequest.count({ where: { status: "REJECTED" } }),
+    shouldLoadRequests
+      ? prisma.roleUpgradeRequest.findMany({
+          orderBy: { createdAt: "desc" },
+          include: {
+            user: {
+              select: { name: true, email: true, role: true, organization: true },
+            },
+          },
+          take: 50,
+        })
+      : Promise.resolve([]),
+    shouldLoadFicAssignments
+      ? prisma.user.findMany({
+          where: {
+            role: { in: ["FIC", "FIC_MANAGER"] },
+          },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            role: true,
+            assignedRegion: true,
+            assignedFacility: true,
+            assignmentUpdatedAt: true,
+          },
+          orderBy: [{ name: "asc" }],
+          take: 200,
+        })
+      : Promise.resolve([]),
   ]);
-  const normalizedQuery = (q ?? "").trim().toLowerCase();
+
   const filteredRequests = normalizedQuery
     ? requests.filter((request) => {
         const entry = [
@@ -56,10 +83,6 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
         return entry.includes(normalizedQuery);
       })
     : requests;
-
-  const pendingRequests = filteredRequests.filter((request) => request.status === "PENDING").length;
-  const approvedRequests = filteredRequests.filter((request) => request.status === "APPROVED").length;
-  const rejectedRequests = filteredRequests.filter((request) => request.status === "REJECTED").length;
 
   return (
     <DashboardShell
@@ -98,10 +121,6 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
         </form>
       }
     >
-      <CollapsibleSection title="System Messages" id="system-messages" defaultOpen={false}>
-        <NotificationPanel userId={session.userId} redirectTo="/admin/dashboard" />
-      </CollapsibleSection>
-
       <TimedToast
         title={error ? "System Error" : "System Message"}
         message={error ? decodeURIComponent(error) : message ? decodeURIComponent(message) : undefined}
@@ -172,6 +191,31 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                     <form action={reviewRoleApplication}>
                       <input type="hidden" name="requestId" value={request.id} />
                       <input type="hidden" name="decision" value="APPROVE" />
+                      <input type="hidden" name="redirectTo" value="/admin/dashboard?view=role-requests" />
+                      {request.targetRole === "FIC" && (
+                        <>
+                          <select name="assignedRegion" className="app-select min-w-[180px]" required defaultValue="">
+                            <option value="" disabled>
+                              Select Region
+                            </option>
+                            {REGIONS.map((region) => (
+                              <option key={`approve-region-${request.id}-${region}`} value={region}>
+                                {region}
+                              </option>
+                            ))}
+                          </select>
+                          <select name="assignedFacility" className="app-select min-w-[220px]" required defaultValue="">
+                            <option value="" disabled>
+                              Select Facility
+                            </option>
+                            {FACILITY_REGION_ROWS.map((row) => (
+                              <option key={`approve-facility-${request.id}-${row.facility}`} value={row.facility}>
+                                {row.facility} ({row.region})
+                              </option>
+                            ))}
+                          </select>
+                        </>
+                      )}
                       <button
                         type="submit"
                         className="inline-flex items-center justify-center rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
@@ -182,6 +226,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                     <form action={reviewRoleApplication}>
                       <input type="hidden" name="requestId" value={request.id} />
                       <input type="hidden" name="decision" value="REJECT" />
+                      <input type="hidden" name="redirectTo" value="/admin/dashboard?view=role-requests" />
                       <button
                         type="submit"
                         className="inline-flex items-center justify-center rounded-lg bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-700"
@@ -193,6 +238,86 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                 )}
               </article>
             ))}
+          </section>
+
+          <section className="space-y-4 rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <h2 className="text-xl font-semibold text-[#2e231c]">FIC Region and Facility Assignment</h2>
+            {ficUsers.length === 0 && <p className="text-sm text-[#6f5b4f]">No FIC users found.</p>}
+
+            {ficUsers.length > 0 && (
+              <>
+                <form action={reassignFicFacility} className="flex flex-wrap items-center gap-2 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
+                  <input type="hidden" name="redirectTo" value="/admin/dashboard?view=role-requests" />
+                  <select name="ficUserId" className="app-select min-w-[280px]" required defaultValue="">
+                    <option value="" disabled>
+                      Select FIC User
+                    </option>
+                    {ficUsers.map((ficUser) => (
+                      <option key={`reassign-fic-user-${ficUser.id}`} value={ficUser.id}>
+                        {ficUser.name} ({ficUser.email})
+                      </option>
+                    ))}
+                  </select>
+                  <select name="assignedRegion" className="app-select min-w-[180px]" required defaultValue="">
+                    <option value="" disabled>
+                      Select Region
+                    </option>
+                    {REGIONS.map((region) => (
+                      <option key={`reassign-region-${region}`} value={region}>
+                        {region}
+                      </option>
+                    ))}
+                  </select>
+                  <select name="assignedFacility" className="app-select min-w-[240px]" required defaultValue="">
+                    <option value="" disabled>
+                      Select Facility
+                    </option>
+                    {FACILITY_REGION_ROWS.map((row) => (
+                      <option key={`reassign-facility-${row.facility}`} value={row.facility}>
+                        {row.facility} ({row.region})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    className="inline-flex items-center justify-center rounded-lg bg-[#2e231c] px-4 py-2 text-sm font-medium text-white hover:bg-[#20170f]"
+                  >
+                    Save Assignment
+                  </button>
+                </form>
+
+                <div className="overflow-x-auto rounded-xl border border-[#eadfd6] bg-[#fffdfb]">
+                  <table className="min-w-full divide-y divide-[#eadfd6] text-sm">
+                    <thead className="bg-[#faf6f2] text-left text-[#6f5b4f]">
+                      <tr>
+                        <th className="px-4 py-2 font-medium">FIC User</th>
+                        <th className="px-4 py-2 font-medium">Role</th>
+                        <th className="px-4 py-2 font-medium">Current Assignment</th>
+                        <th className="px-4 py-2 font-medium">Last Updated</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#f1e5db] text-[#2e231c]">
+                      {ficUsers.map((ficUser) => (
+                        <tr key={`assignment-row-${ficUser.id}`}>
+                          <td className="px-4 py-2">
+                            <p className="font-medium">{ficUser.name}</p>
+                            <p className="text-xs text-[#8c776a]">{ficUser.email}</p>
+                          </td>
+                          <td className="px-4 py-2">{ficUser.role}</td>
+                          <td className="px-4 py-2">
+                            {ficUser.assignedFacility ?? "Unassigned"}
+                            {ficUser.assignedRegion ? `, ${ficUser.assignedRegion}` : ""}
+                          </td>
+                          <td className="px-4 py-2 text-xs text-[#8c776a]">
+                            {ficUser.assignmentUpdatedAt ? new Date(ficUser.assignmentUpdatedAt).toLocaleString() : "Not set yet"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
           </section>
         </>
       )}

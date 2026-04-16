@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { getFicCalendar, setAvailability, bulkSetAvailability } from '@/lib/services/fic-availability-service';
 import type { FicAvailability } from '@/lib/services/fic-availability-service';
+import { formatLocalDateKey } from '@/lib/date-time';
 
 interface CalendarGridProps {
   ficUserId: string;
@@ -25,11 +26,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
   const [selectedDates, setSelectedDates] = useState<Set<string>>(new Set());
 
   // Load calendar data
-  useEffect(() => {
-    loadCalendar();
-  }, [ficUserId, year, month]);
-
-  const loadCalendar = async () => {
+  const loadCalendar = useCallback(async () => {
     setLoading(true);
     setError(null);
 
@@ -39,8 +36,8 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
 
       const availabilityData = await getFicCalendar(
         ficUserId,
-        formatDateString(startDate),
-        formatDateString(endDate)
+        formatLocalDateKey(startDate),
+        formatLocalDateKey(endDate)
       );
 
       const availabilityMap = new Map(
@@ -55,7 +52,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
       // Previous month days (padding)
       for (let i = startPadding - 1; i >= 0; i--) {
         const prevDate = new Date(year, month, -i);
-        const dateString = formatDateString(prevDate);
+        const dateString = formatLocalDateKey(prevDate);
         days.push({
           date: dateString,
           dayOfMonth: prevDate.getDate(),
@@ -67,7 +64,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
       // Current month days
       for (let day = 1; day <= lastDay.getDate(); day++) {
         const date = new Date(year, month, day);
-        const dateString = formatDateString(date);
+        const dateString = formatLocalDateKey(date);
         days.push({
           date: dateString,
           dayOfMonth: day,
@@ -79,7 +76,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
       // Next month days (filling to 42 cells = 6 rows)
       while (days.length % 7 !== 0) {
         const nextDate = new Date(year, month + 1, days.length - startPadding - lastDay.getDate() + 1);
-        const dateString = formatDateString(nextDate);
+        const dateString = formatLocalDateKey(nextDate);
         days.push({
           date: dateString,
           dayOfMonth: nextDate.getDate(),
@@ -95,11 +92,11 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
     } finally {
       setLoading(false);
     }
-  };
+  }, [ficUserId, month, year]);
 
-  const formatDateString = (date: Date): string => {
-    return date.toISOString().split('T')[0];
-  };
+  useEffect(() => {
+    void loadCalendar();
+  }, [loadCalendar]);
 
   const handleDayClick = async (date: string, currentStatus: boolean) => {
     if (bulkMode) {
@@ -268,7 +265,7 @@ export function CalendarGrid({ ficUserId, year, month }: CalendarGridProps) {
         ))}
 
         {/* Days */}
-        {calendarDays.map((day, index) => {
+        {calendarDays.map((day) => {
           const status = getDayStatus(day);
           const isSelected = selectedDates.has(day.date);
           

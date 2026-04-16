@@ -47,34 +47,78 @@ export async function MsmeDashboard({
   q?: string;
 }) {
   const activeView = parseMsmeView(view);
-  let studies: StudySummary[] = [];
+  const normalizedQuery = (q ?? "").trim().toLowerCase();
+  let historyStudies: StudySummary[] = [];
   let dbError: string | null = null;
+  let totalStudies = 0;
+  let ficBookings = 0;
+  let totalResponses = 0;
+  let activeStudies = 0;
 
   try {
-    studies = (await prisma.study.findMany({
-      where: { creatorId: userId },
-      orderBy: { createdAt: "desc" },
-      include: {
-        participants: {
-          orderBy: { selectionOrder: "asc" },
-          select: { id: true, status: true, panelist: { select: { name: true } } },
+    [totalStudies, ficBookings, totalResponses, activeStudies] = await Promise.all([
+      prisma.study.count({
+        where: { creatorId: userId },
+      }),
+      prisma.study.count({
+        where: {
+          creatorId: userId,
+          OR: [
+            {
+              targetDemographics: {
+                path: ["coordinationMode"],
+                equals: "FIC_ASSISTED",
+              },
+            },
+            {
+              location: {
+                contains: "fic",
+                mode: "insensitive",
+              },
+            },
+          ],
         },
-        _count: {
-          select: {
-            responses: true,
-            participants: true,
+      }),
+      prisma.sensoryResponse.count({
+        where: {
+          study: {
+            creatorId: userId,
           },
         },
-      },
-      take: 20,
-    })) as unknown as StudySummary[];
+      }),
+      prisma.study.count({
+        where: {
+          creatorId: userId,
+          status: { in: ["ACTIVE", "RECRUITING"] },
+        },
+      }),
+    ]);
+
+    if (activeView === "history") {
+      historyStudies = (await prisma.study.findMany({
+        where: { creatorId: userId },
+        orderBy: { createdAt: "desc" },
+        include: {
+          participants: {
+            orderBy: { selectionOrder: "asc" },
+            select: { id: true, status: true, panelist: { select: { name: true } } },
+          },
+          _count: {
+            select: {
+              responses: true,
+              participants: true,
+            },
+          },
+        },
+        take: 20,
+      })) as unknown as StudySummary[];
+    }
   } catch (error) {
     dbError = extractDatabaseError(error);
   }
 
-  const normalizedQuery = (q ?? "").trim().toLowerCase();
   const filteredStudies = normalizedQuery
-    ? studies.filter((study) => {
+    ? historyStudies.filter((study) => {
         const searchable = [
           study.title,
           study.productName,
@@ -88,12 +132,7 @@ export async function MsmeDashboard({
           .toLowerCase();
         return searchable.includes(normalizedQuery);
       })
-    : studies;
-
-  const totalStudies = filteredStudies.length;
-  const ficBookings = filteredStudies.filter((study) => study.location.toLowerCase().includes("fic")).length;
-  const totalResponses = filteredStudies.reduce((sum, study) => sum + study._count.responses, 0);
-  const activeStudies = filteredStudies.filter((study) => study.status === "ACTIVE" || study.status === "RECRUITING").length;
+    : historyStudies;
 
   return (
     <DashboardShell
@@ -159,9 +198,9 @@ export async function MsmeDashboard({
 
       {activeView === "history" && !dbError && filteredStudies.length === 0 && (
         <section className="rounded-2xl border border-[#e4d7cc] bg-white p-8 text-center">
-          <h2 className="text-xl font-semibold text-[#2e231c]">{studies.length === 0 ? "No studies yet" : "No matching studies"}</h2>
+          <h2 className="text-xl font-semibold text-[#2e231c]">{historyStudies.length === 0 ? "No studies yet" : "No matching studies"}</h2>
           <p className="mt-2 text-[#6f5b4f]">
-            {studies.length === 0
+            {historyStudies.length === 0
               ? "Create your first study to start your MSME workflow."
               : "Try another search term to find your study."}
           </p>

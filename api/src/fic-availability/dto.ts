@@ -41,6 +41,12 @@ export class GetAvailableFicsQuery {
   @IsDateString()
   endDate!: string;
 
+  @ApiProperty({ example: 'Agusan del Norte', required: false })
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  region?: string;
+
   @ApiProperty({ example: 'FIC CSU Main Campus', required: false })
   @IsString()
   @IsOptional()

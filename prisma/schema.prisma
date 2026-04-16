@@ -14,6 +14,10 @@ model User {
   name         String
   role         UserRole @default(CONSUMER)
   organization String?
+  assignedRegion String?
+  assignedFacility String?
+  assignmentUpdatedAt DateTime?
+  assignmentUpdatedById String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -24,6 +28,11 @@ model User {
   reviewedRequests RoleUpgradeRequest[] @relation("RequestReviewer")
   notifications    Notification[]
   ficAvailability  FicAvailability[]
+  ficAssignmentHistory FicAssignmentHistory[]
+
+  @@index([role])
+  @@index([role, organization])
+  @@index([role, assignedRegion, assignedFacility])
 }
 
 enum UserRole {
@@ -52,6 +61,7 @@ model RoleUpgradeRequest {
 
   @@index([status, targetRole])
   @@index([userId, status])
+  @@index([createdAt])
 }
 
 enum RequestStatus {
@@ -76,6 +86,7 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([userId, isRead])
+  @@index([userId, isRead, createdAt])
 }
 
 enum NotificationLevel {
@@ -127,6 +138,7 @@ model Panelist {
 
   @@index([age, gender])
   @@index([isActive])
+  @@index([isGuest])
 }
 
 enum Gender {
@@ -183,6 +195,9 @@ model Study {
   updatedAt DateTime @updatedAt
 
   @@index([status, creatorId])
+  @@index([creatorId, createdAt])
+  @@index([status, createdAt])
+  @@index([location, status])
 }
 
 enum ProductCategory {
@@ -263,6 +278,12 @@ model StudyParticipant {
   @@index([studyId, randomizeCode])
   @@index([studyId, status])
   @@index([studyId, source])
+  @@index([studyId, selectionOrder])
+  @@index([studyId, requestedSessionAt])
+  @@index([studyId, sessionAt])
+  @@index([studyId, status, requestedSessionAt])
+  @@index([studyId, status, sessionAt])
+  @@index([panelistId, status])
 }
 
 enum ParticipationSource {
@@ -323,6 +344,7 @@ model SensoryResponse {
 
   @@unique([studyId, participantId])
   @@index([studyId, submittedAt])
+  @@index([participantId, submittedAt])
 }
 
 model StudyAnalysis {
@@ -458,4 +480,20 @@ model FicAvailability {
   @@unique([ficUserId, date])
   @@index([ficUserId, date])
   @@index([date, isAvailable, isLocked])
+  @@index([ficUserId, isAvailable, isLocked, date])
+}
+
+model FicAssignmentHistory {
+  id               String   @id @default(cuid())
+  ficUserId        String
+  ficUser          User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+  changedById      String?
+  previousRegion   String?
+  previousFacility String?
+  assignedRegion   String
+  assignedFacility String
+  createdAt        DateTime @default(now())
+
+  @@index([ficUserId, createdAt])
+  @@index([changedById, createdAt])
 }

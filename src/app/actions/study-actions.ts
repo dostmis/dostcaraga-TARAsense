@@ -9,9 +9,19 @@ import { verifyPassword } from "@/lib/auth/password";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 
-const MAX_STUDY_ATTRIBUTES = 25;
+const MAX_STUDY_ATTRIBUTES_STRICT = 5;
+const MAX_STUDY_ATTRIBUTES_IMPORT = 25;
 const MAX_ATTRIBUTE_NAME_LENGTH = 120;
+type SopMode = "STRICT_NEW_STUDY" | "IMPORT_COMPLETED_STUDY";
+
+class StudyCreationConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "StudyCreationConflictError";
+  }
+}
 
 const CreateStudySchema = z.object({
   title: z.string().min(3),
@@ -27,6 +37,13 @@ const CreateStudySchema = z.object({
     experience: z.string().optional()
   }).passthrough(),
   stratificationVar: z.enum(["gender", "age_group", "none"]),
+  sopMode: z.enum(["STRICT_NEW_STUDY", "IMPORT_COMPLETED_STUDY"]).optional(),
+  ficBooking: z.object({
+    ficUserId: z.string().min(1),
+    region: z.string().min(1),
+    facility: z.string().min(1),
+    bookingDates: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).min(1).max(62),
+  }).optional(),
   attributes: z.array(z.object({
     name: z.string(),
     type: z.enum(["OVERALL_LIKING", "ATTRIBUTE_LIKING", "JAR", "OPEN_ENDED"]),
@@ -58,6 +75,8 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
   try {
     // Validate
     const validated = CreateStudySchema.parse(data);
+    const sopMode: SopMode = validated.sopMode ?? "STRICT_NEW_STUDY";
+    const normalizedFicBooking = normalizeFicBooking(validated.ficBooking);
     const normalizedAttributes = validated.attributes.map((attribute) => ({
       ...attribute,
       name: attribute.name.trim(),
@@ -78,7 +97,9 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
             }
           : undefined,
     }));
-    const attributeValidationError = validateSensoryAttributeSetup(normalizedAttributes);
+    
+    // Enforce JAR SOP validation
+    const attributeValidationError = validateSensoryAttributeSetup(normalizedAttributes, sopMode);
     if (attributeValidationError) {
       return { success: false, error: attributeValidationError };
     }
@@ -110,6 +131,10 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
           status: "RECRUITING"
         }
       });
+
+      if (normalizedFicBooking) {
+        await reserveFicBookingDates(tx, createdStudy.id, normalizedFicBooking);
+      }
 
       await tx.sensoryAttribute.createMany({
         data: normalizedAttributes.map((attr, idx) => ({
@@ -154,8 +179,116 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
     revalidatePath("/dashboard");
     return { success: true, studyId: study.id };
   } catch (error) {
+    if (error instanceof StudyCreationConflictError) {
+      return { success: false, error: error.message };
+    }
     console.error("Create study error:", error);
     return { success: false, error: "Failed to create study" };
+  }
+}
+
+function normalizeFicBooking(booking: z.infer<typeof CreateStudySchema>["ficBooking"]) {
+  if (!booking) {
+    return null;
+  }
+
+  const uniqueDates = Array.from(
+    new Set(
+      booking.bookingDates
+        .map((date) => date.trim())
+        .filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date))
+    )
+  ).sort((left, right) => left.localeCompare(right));
+
+  if (uniqueDates.length === 0) {
+    return null;
+  }
+
+  return {
+    ficUserId: booking.ficUserId.trim(),
+    region: booking.region.trim(),
+    facility: booking.facility.trim(),
+    bookingDates: uniqueDates,
+  };
+}
+
+async function reserveFicBookingDates(
+  tx: Prisma.TransactionClient,
+  studyId: string,
+  booking: { ficUserId: string; region: string; facility: string; bookingDates: string[] }
+) {
+  if (!isValidRegion(booking.region) || !isFacilityInRegion(booking.region, booking.facility)) {
+    throw new StudyCreationConflictError("Selected region and facility are invalid.");
+  }
+
+  const ficUser = await tx.user.findFirst({
+    where: {
+      id: booking.ficUserId,
+      role: { in: ["FIC", "FIC_MANAGER"] },
+      assignedRegion: booking.region,
+      assignedFacility: booking.facility,
+    },
+    select: { id: true, name: true, assignedRegion: true, assignedFacility: true },
+  });
+  if (!ficUser) {
+    throw new StudyCreationConflictError("Selected FIC assignee is invalid for the selected region/facility.");
+  }
+
+  const availabilityRows = await tx.ficAvailability.findMany({
+    where: {
+      ficUserId: booking.ficUserId,
+      date: { in: booking.bookingDates },
+    },
+    select: {
+      date: true,
+      isAvailable: true,
+      isLocked: true,
+      lockedById: true,
+    },
+  });
+  const availabilityByDate = new Map(availabilityRows.map((row) => [row.date, row]));
+
+  const missingDates = booking.bookingDates.filter((date) => !availabilityByDate.has(date));
+  const unavailableDates = booking.bookingDates.filter((date) => {
+    const row = availabilityByDate.get(date);
+    if (!row) {
+      return false;
+    }
+    return !row.isAvailable;
+  });
+  const lockedDates = booking.bookingDates.filter((date) => {
+    const row = availabilityByDate.get(date);
+    if (!row) {
+      return false;
+    }
+    return row.isLocked && row.lockedById !== studyId;
+  });
+
+  const blockedDates = Array.from(new Set([...missingDates, ...unavailableDates, ...lockedDates])).sort();
+  if (blockedDates.length > 0) {
+    const preview = blockedDates.slice(0, 6).join(", ");
+    const suffix = blockedDates.length > 6 ? ` (+${blockedDates.length - 6} more)` : "";
+    throw new StudyCreationConflictError(
+      `Selected FIC dates are unavailable: ${preview}${suffix}. Choose different schedule dates.`
+    );
+  }
+
+  const lockResult = await tx.ficAvailability.updateMany({
+    where: {
+      ficUserId: booking.ficUserId,
+      date: { in: booking.bookingDates },
+      isAvailable: true,
+      OR: [{ isLocked: false }, { lockedById: studyId }],
+    },
+    data: {
+      isLocked: true,
+      lockedById: studyId,
+      lockedAt: new Date(),
+    },
+  });
+
+  if (lockResult.count !== booking.bookingDates.length) {
+    throw new StudyCreationConflictError("Some selected FIC dates were booked by another study. Please refresh and retry.");
   }
 }
 
@@ -172,16 +305,22 @@ function validateSensoryAttributeSetup(
       high: string;
       labels?: string[];
     };
-  }>
+    isCustom?: boolean;
+  }>,
+  sopMode: SopMode
 ) {
+  const maxStudyAttributes = sopMode === "IMPORT_COMPLETED_STUDY" ? MAX_STUDY_ATTRIBUTES_IMPORT : MAX_STUDY_ATTRIBUTES_STRICT;
+  const customCount = attributes.filter((attribute) => Boolean(attribute.isCustom)).length;
+
   if (attributes.length === 0) {
     return "At least one sensory attribute is required.";
   }
-  if (attributes.length > MAX_STUDY_ATTRIBUTES) {
-    return `Too many sensory attributes. Maximum is ${MAX_STUDY_ATTRIBUTES}.`;
+  if (attributes.length > maxStudyAttributes) {
+    return `Too many sensory attributes. Maximum is ${maxStudyAttributes}.`;
   }
 
   let overallCount = 0;
+  let jarCount = 0;
   const seenNames = new Set<string>();
 
   for (const attribute of attributes) {
@@ -203,6 +342,7 @@ function validateSensoryAttributeSetup(
     }
 
     if (attribute.type === "JAR") {
+      jarCount += 1;
       if (!attribute.jarOptions) {
         return `JAR options are required for "${attribute.name}".`;
       }
@@ -223,10 +363,18 @@ function validateSensoryAttributeSetup(
         return `Invalid attribute type "${attribute.attributeType}" for "${attribute.name}".`;
       }
     }
+    
+    if (sopMode === "STRICT_NEW_STUDY" && attribute.isCustom && customCount > 1) {
+      return "Only one custom attribute is allowed per study.";
+    }
   }
 
   if (overallCount !== 1) {
     return "Exactly one OVERALL_LIKING question is required.";
+  }
+
+  if (sopMode === "STRICT_NEW_STUDY" && jarCount > 3) {
+    return "Maximum 3 JAR attributes allowed. Please select only 3 JAR attributes as part of the top 5 total attributes.";
   }
 
   return null;
@@ -411,6 +559,14 @@ export async function deleteStudyWithPassword(formData: FormData) {
   }
 
   await prisma.$transaction(async (tx) => {
+    await tx.ficAvailability.updateMany({
+      where: { lockedById: studyId },
+      data: {
+        isLocked: false,
+        lockedById: null,
+        lockedAt: null,
+      },
+    });
     await tx.sensoryResponse.deleteMany({ where: { studyId } });
     await tx.studyAnalysis.deleteMany({ where: { studyId } });
     await tx.studyParticipant.deleteMany({ where: { studyId } });

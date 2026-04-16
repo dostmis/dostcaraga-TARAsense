@@ -4,11 +4,11 @@ import { randomBytes } from "crypto";
 import { cookies } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { prisma } from "@/lib/db";
 import { notifyUser } from "@/lib/notifications";
 import { ensureParticipantAssignment } from "@/lib/participant-assignment";
 import { normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { applyGuestSessionCookies } from "@/lib/auth/session";
+import { lockStudyRow, runSerializableTransaction } from "@/lib/db-transaction";
 
 export async function registerWalkInGuest(formData: FormData) {
   const studyId = String(formData.get("studyId") ?? "").trim();
@@ -41,7 +41,9 @@ export async function registerWalkInGuest(formData: FormData) {
     redirect(withFeedback(studyId, slotId, "error", "Select+a+valid+gender"));
   }
 
-  const result = await prisma.$transaction(async (tx) => {
+  const result = await runSerializableTransaction(async (tx) => {
+    await lockStudyRow(tx, studyId);
+
     const study = await tx.study.findUnique({
       where: { id: studyId },
       select: {
@@ -156,7 +158,7 @@ export async function registerWalkInGuest(formData: FormData) {
       selectedSession: selectedSlot.startsAt,
       guestCode,
     };
-  });
+  }, { label: "registerWalkInGuest" });
 
   if (!result.ok) {
     redirect(withFeedback(studyId, slotId, "error", result.error));

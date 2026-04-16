@@ -8,6 +8,7 @@ import { parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { clearGuestSessionCookies, getCurrentSession, SESSION_KEYS } from "@/lib/auth/session";
 import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/session-token";
 import { notifyRole, notifyUser } from "@/lib/notifications";
+import { normalizeRegionFacility } from "@/lib/facility-constants";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 
@@ -195,10 +196,11 @@ export async function reviewRoleApplication(formData: FormData) {
     redirect("/login?error=Admin+login+required");
   }
 
+  const redirectTo = resolveAdminRedirectTarget(formData.get("redirectTo"));
   const requestId = String(formData.get("requestId") ?? "");
   const decision = String(formData.get("decision") ?? "").toUpperCase();
   if (!requestId || (decision !== "APPROVE" && decision !== "REJECT")) {
-    redirect("/admin/dashboard?error=Invalid+review+request");
+    redirect(withFeedback(redirectTo, "error", "Invalid review request"));
   }
 
   const request = await prisma.roleUpgradeRequest.findUnique({
@@ -212,28 +214,77 @@ export async function reviewRoleApplication(formData: FormData) {
   });
 
   if (!request || request.status !== "PENDING") {
-    redirect("/admin/dashboard?error=Request+is+not+pending");
+    redirect(withFeedback(redirectTo, "error", "Request is not pending"));
   }
 
   if (decision === "APPROVE") {
-    await prisma.$transaction([
-      prisma.roleUpgradeRequest.update({
+    const now = new Date();
+    const assignment =
+      request.targetRole === "FIC"
+        ? normalizeRegionFacility(String(formData.get("assignedRegion") ?? ""), String(formData.get("assignedFacility") ?? ""))
+        : null;
+
+    if (request.targetRole === "FIC" && !assignment) {
+      redirect(withFeedback(redirectTo, "error", "A valid region and facility assignment is required for FIC approval."));
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.roleUpgradeRequest.update({
         where: { id: requestId },
         data: {
           status: "APPROVED",
           adminId: session.userId,
-          reviewedAt: new Date(),
+          reviewedAt: now,
         },
-      }),
-      prisma.user.update({
+      });
+
+      const previousAssignment = await tx.user.findUnique({
         where: { id: request.userId },
-        data: { role: request.targetRole },
-      }),
-    ]);
+        select: {
+          assignedRegion: true,
+          assignedFacility: true,
+        },
+      });
+      if (!previousAssignment) {
+        throw new Error("Target user no longer exists.");
+      }
+
+      await tx.user.update({
+        where: { id: request.userId },
+        data: {
+          role: request.targetRole,
+          ...(assignment
+            ? {
+                assignedRegion: assignment.region,
+                assignedFacility: assignment.facility,
+                assignmentUpdatedAt: now,
+                assignmentUpdatedById: session.userId,
+              }
+            : {}),
+        },
+      });
+
+      if (assignment) {
+        await tx.ficAssignmentHistory.create({
+          data: {
+            ficUserId: request.userId,
+            changedById: session.userId,
+            previousRegion: previousAssignment.assignedRegion,
+            previousFacility: previousAssignment.assignedFacility,
+            assignedRegion: assignment.region,
+            assignedFacility: assignment.facility,
+            createdAt: now,
+          },
+        });
+      }
+    });
 
     await notifyUser(request.userId, {
       title: "Role application approved",
-      message: `Your request for ${request.targetRole} access has been approved.`,
+      message:
+        request.targetRole === "FIC" && assignment
+          ? `Your request for ${request.targetRole} access has been approved. Assigned to ${assignment.facility}, ${assignment.region}.`
+          : `Your request for ${request.targetRole} access has been approved.`,
       level: "SUCCESS",
       category: "ROLE",
       actionUrl: ROLE_DASHBOARD_PATH[parseRole(request.targetRole) ?? "CONSUMER"],
@@ -243,10 +294,10 @@ export async function reviewRoleApplication(formData: FormData) {
       message: `You approved a ${request.targetRole} access request.`,
       level: "INFO",
       category: "ROLE",
-      actionUrl: "/admin/dashboard",
+      actionUrl: redirectTo,
     });
 
-    redirect("/admin/dashboard?message=Application+approved");
+    redirect(withFeedback(redirectTo, "message", "Application approved"));
   }
 
   await prisma.roleUpgradeRequest.update({
@@ -270,10 +321,102 @@ export async function reviewRoleApplication(formData: FormData) {
     message: `You rejected a ${request.targetRole} access request.`,
     level: "INFO",
     category: "ROLE",
-    actionUrl: "/admin/dashboard",
+    actionUrl: redirectTo,
   });
 
-  redirect("/admin/dashboard?message=Application+rejected");
+  redirect(withFeedback(redirectTo, "message", "Application rejected"));
+}
+
+export async function reassignFicFacility(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session || session.role !== "ADMIN") {
+    redirect("/login?error=Admin+login+required");
+  }
+
+  const redirectTo = resolveAdminRedirectTarget(formData.get("redirectTo"));
+  const ficUserId = String(formData.get("ficUserId") ?? "").trim();
+  const assignment = normalizeRegionFacility(
+    String(formData.get("assignedRegion") ?? ""),
+    String(formData.get("assignedFacility") ?? "")
+  );
+
+  if (!ficUserId || !assignment) {
+    redirect(withFeedback(redirectTo, "error", "Valid FIC user, region, and facility are required."));
+  }
+
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    const ficUser = await tx.user.findUnique({
+      where: { id: ficUserId },
+      select: {
+        id: true,
+        role: true,
+        assignedRegion: true,
+        assignedFacility: true,
+      },
+    });
+
+    if (!ficUser || (ficUser.role !== "FIC" && ficUser.role !== "FIC_MANAGER")) {
+      return { ok: false as const, reason: "invalid-fic-user" as const };
+    }
+
+    const assignmentChanged =
+      ficUser.assignedRegion !== assignment.region || ficUser.assignedFacility !== assignment.facility;
+
+    if (!assignmentChanged) {
+      return { ok: true as const, assignmentChanged: false };
+    }
+
+    await tx.user.update({
+      where: { id: ficUser.id },
+      data: {
+        assignedRegion: assignment.region,
+        assignedFacility: assignment.facility,
+        assignmentUpdatedAt: now,
+        assignmentUpdatedById: session.userId,
+      },
+    });
+
+    await tx.ficAssignmentHistory.create({
+      data: {
+        ficUserId: ficUser.id,
+        changedById: session.userId,
+        previousRegion: ficUser.assignedRegion,
+        previousFacility: ficUser.assignedFacility,
+        assignedRegion: assignment.region,
+        assignedFacility: assignment.facility,
+        createdAt: now,
+      },
+    });
+
+    return { ok: true as const, assignmentChanged: true };
+  });
+
+  if (!result.ok) {
+    redirect(withFeedback(redirectTo, "error", "Selected account is not an FIC user."));
+  }
+
+  if (!result.assignmentChanged) {
+    redirect(withFeedback(redirectTo, "message", "FIC assignment already matches the selected region and facility."));
+  }
+
+  await notifyUser(ficUserId, {
+    title: "FIC assignment updated",
+    message: `Your assignment is now ${assignment.facility}, ${assignment.region}.`,
+    level: "INFO",
+    category: "ROLE",
+    actionUrl: "/fic/dashboard?view=dashboard",
+  });
+
+  await notifyUser(session.userId, {
+    title: "FIC assignment saved",
+    message: `Updated FIC assignment to ${assignment.facility}, ${assignment.region}.`,
+    level: "SUCCESS",
+    category: "ROLE",
+    actionUrl: redirectTo,
+  });
+
+  redirect(withFeedback(redirectTo, "message", "FIC assignment updated"));
 }
 
 export async function logout() {
@@ -309,4 +452,18 @@ function setSessionCookie(store: Awaited<ReturnType<typeof cookies>>, userId: st
 function clearLegacySessionCookies(store: Awaited<ReturnType<typeof cookies>>) {
   store.delete(SESSION_KEYS.userId);
   store.delete(SESSION_KEYS.role);
+}
+
+function resolveAdminRedirectTarget(value: FormDataEntryValue | null) {
+  const raw = String(value ?? "").trim();
+  if (raw.startsWith("/admin/dashboard")) {
+    return raw;
+  }
+  return "/admin/dashboard?view=role-requests";
+}
+
+function withFeedback(path: string, key: "error" | "message", value: string) {
+  const target = new URL(path, "http://localhost");
+  target.searchParams.set(key, value);
+  return `${target.pathname}${target.search}`;
 }

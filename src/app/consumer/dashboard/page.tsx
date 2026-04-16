@@ -27,65 +27,139 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
   const params = await searchParams;
   const { error, message, q } = params;
   const activeView = parseConsumerView(params.view);
+  const normalizedQuery = (q ?? "").trim().toLowerCase();
+  const shouldLoadAvailableStudies = activeView === "available";
+  const shouldLoadCompletedStudies = activeView === "completed";
+  const shouldLoadApplications = activeView === "applications";
 
-  const [availableStudies, applications] = await Promise.all([
-    prisma.study.findMany({
+  const [openStudyCount, completedStudyCount, pendingApplications, approvedApplications] = await Promise.all([
+    prisma.study.count({
       where: {
         status: { in: ["RECRUITING", "ACTIVE"] },
       },
-      orderBy: { createdAt: "desc" },
-      include: {
-        participants: {
-          select: {
-            id: true,
-            status: true,
-            panelistNumber: true,
-            offeredSessions: true,
-            requestedSessionAt: true,
-            sessionAt: true,
-            panelist: {
+    }),
+    prisma.studyParticipant.count({
+      where: {
+        status: "COMPLETED",
+        panelist: { userId: session.userId },
+      },
+    }),
+    prisma.roleUpgradeRequest.count({
+      where: {
+        userId: session.userId,
+        status: "PENDING",
+      },
+    }),
+    prisma.roleUpgradeRequest.count({
+      where: {
+        userId: session.userId,
+        status: "APPROVED",
+      },
+    }),
+  ]);
+
+  const [availableStudies, completedStudiesRaw, applications] = await Promise.all([
+    shouldLoadAvailableStudies
+      ? prisma.study.findMany({
+          where: {
+            status: { in: ["RECRUITING", "ACTIVE"] },
+          },
+          orderBy: { createdAt: "desc" },
+          include: {
+            participants: {
               select: {
-                userId: true,
+                id: true,
+                status: true,
+                panelistNumber: true,
+                offeredSessions: true,
+                requestedSessionAt: true,
+                sessionAt: true,
+                panelist: {
+                  select: {
+                    userId: true,
+                  },
+                },
+              },
+            },
+            _count: {
+              select: {
+                sensoryAttributes: true,
               },
             },
           },
-        },
-        _count: {
-          select: {
-            sensoryAttributes: true,
+          take: 20,
+        })
+      : Promise.resolve([]),
+    shouldLoadCompletedStudies
+      ? prisma.study.findMany({
+          where: {
+            participants: {
+              some: {
+                status: "COMPLETED",
+                panelist: { userId: session.userId },
+              },
+            },
           },
-        },
-      },
-      take: 20,
-    }),
-    prisma.roleUpgradeRequest.findMany({
-      where: { userId: session.userId },
-      orderBy: { createdAt: "desc" },
-      take: 20,
-    }),
+          orderBy: { updatedAt: "desc" },
+          include: {
+            participants: {
+              where: { panelist: { userId: session.userId } },
+              select: {
+                id: true,
+                status: true,
+                panelistNumber: true,
+                offeredSessions: true,
+                requestedSessionAt: true,
+                sessionAt: true,
+                panelist: {
+                  select: {
+                    userId: true,
+                  },
+                },
+              },
+            },
+            _count: {
+              select: {
+                sensoryAttributes: true,
+              },
+            },
+          },
+          take: 20,
+        })
+      : Promise.resolve([]),
+    shouldLoadApplications
+      ? prisma.roleUpgradeRequest.findMany({
+          where: { userId: session.userId },
+          orderBy: { createdAt: "desc" },
+          take: 20,
+        })
+      : Promise.resolve([]),
   ]);
-  const normalizedQuery = (q ?? "").trim().toLowerCase();
-  const filteredStudies = normalizedQuery
+
+  const openStudies = (normalizedQuery
     ? availableStudies.filter((study) => {
         const entry = [study.title, study.productName, study.category, study.stage, study.status].join(" ").toLowerCase();
         return entry.includes(normalizedQuery);
       })
-    : availableStudies;
+    : availableStudies
+  ).filter((study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status !== "COMPLETED");
+
+  const completedStudies = (normalizedQuery
+    ? completedStudiesRaw.filter((study) => {
+        const entry = [study.title, study.productName, study.category, study.stage, study.status].join(" ").toLowerCase();
+        return entry.includes(normalizedQuery);
+      })
+    : completedStudiesRaw
+  ).filter(
+    (study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status === "COMPLETED"
+  );
+
   const filteredApplications = normalizedQuery
     ? applications.filter((application) => {
         const entry = [application.targetRole, application.status, application.reason ?? ""].join(" ").toLowerCase();
         return entry.includes(normalizedQuery);
       })
     : applications;
-
-  const pendingApplications = filteredApplications.filter((app) => app.status === "PENDING").length;
-  const approvedApplications = filteredApplications.filter((app) => app.status === "APPROVED").length;
-  const completedStudies = filteredStudies.filter(
-    (study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status === "COMPLETED"
-  );
-  const openStudies = filteredStudies.filter(
-    (study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status !== "COMPLETED"
-  );
 
   return (
     <DashboardShell
@@ -102,14 +176,14 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
           label: "Available Surveys",
           href: "/consumer/dashboard?view=available",
           icon: Compass,
-          badge: `${openStudies.length}`,
+          badge: `${openStudyCount}`,
           active: activeView === "available",
         },
         {
           label: "Completed Surveys",
           href: "/consumer/dashboard?view=completed",
           icon: ClipboardList,
-          badge: `${completedStudies.length}`,
+          badge: `${completedStudyCount}`,
           active: activeView === "completed",
         },
         {
@@ -121,10 +195,10 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
         },
       ]}
       stats={[
-        { label: "Study Notifications", value: `${openStudies.length}`, helper: "Active studies you can join", icon: Compass, tone: "sky" },
+        { label: "Study Notifications", value: `${openStudyCount}`, helper: "Active studies you can join", icon: Compass, tone: "sky" },
         { label: "Pending Applications", value: `${pendingApplications}`, helper: "Awaiting admin review", icon: ShieldCheck, tone: "amber" },
         { label: "Approved Upgrades", value: `${approvedApplications}`, helper: "Role requests approved", icon: ClipboardList, tone: "mint" },
-        { label: "Completed Surveys", value: `${completedStudies.length}`, helper: "Surveys you already submitted", icon: FileText, tone: "slate" },
+        { label: "Completed Surveys", value: `${completedStudyCount}`, helper: "Surveys you already submitted", icon: FileText, tone: "slate" },
       ]}
       sidebarFooter={
         <form action={logout}>

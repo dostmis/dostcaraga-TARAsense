@@ -23,6 +23,10 @@ model User {
   name         String
   role         UserRole @default(CONSUMER)
   organization String?
+  assignedRegion String?
+  assignedFacility String?
+  assignmentUpdatedAt DateTime?
+  assignmentUpdatedById String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -30,6 +34,7 @@ model User {
   auditLogs     AuditLog[]   @relation("AuditActor")
   uploadedFiles StoredFile[] @relation("FileUploader")
   ficAvailability FicAvailability[]
+  ficAssignmentHistory FicAssignmentHistory[]
 }
 
 model RefreshToken {
@@ -90,4 +95,19 @@ model FicAvailability {
   @@unique([ficUserId, date])
   @@index([ficUserId, date])
   @@index([date, isAvailable, isLocked])
+}
+
+model FicAssignmentHistory {
+  id               String   @id @default(cuid())
+  ficUserId        String
+  ficUser          User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+  changedById      String?
+  previousRegion   String?
+  previousFacility String?
+  assignedRegion   String
+  assignedFacility String
+  createdAt        DateTime @default(now())
+
+  @@index([ficUserId, createdAt])
+  @@index([changedById, createdAt])
 }

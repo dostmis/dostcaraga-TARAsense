@@ -5,6 +5,8 @@ import { createStudy } from "@/app/actions/study-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
 import { notifyRole, notifyUser } from "@/lib/notifications";
+import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
+import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 import { z } from "zod";
 
 const PrismaCategorySchema = z.enum([
@@ -26,6 +28,7 @@ const BuilderSessionSlotSchema = z.object({
 
 const BuilderPayloadSchema = z.object({
   studyMode: z.enum(["MARKET", "SENSORY"]),
+  coordinationMode: z.enum(["FIC_ASSISTED", "SELF_MANAGED_PUBLIC"]).default("FIC_ASSISTED"),
   marketStudyType: z
     .enum([
       "PACKAGING_EVALUATION",
@@ -47,7 +50,12 @@ const BuilderPayloadSchema = z.object({
     .optional(),
   studyTitle: z.string().min(3),
   purpose: z.string().min(3),
-  facilityType: z.string().min(1),
+  region: z.string().optional(),
+  facilityType: z.string().optional(),
+  publicVenueName: z.string().optional(),
+  publicCityMunicipality: z.string().optional(),
+  publicAddressDetails: z.string().optional(),
+  ficUserId: z.string().min(1).optional(),
   numberOfSamples: z.number().int().min(1),
   targetResponses: z.number().int().min(1),
   productName: z.string().optional(),
@@ -90,9 +98,29 @@ const OBJECTIVE_LIMITS: Record<
   FAST_ITERATION: 35,
 };
 
+type ResolvedLocationContext =
+  | {
+      coordinationMode: "FIC_ASSISTED";
+      location: string;
+      region: string;
+      facilityType: string;
+    }
+  | {
+      coordinationMode: "SELF_MANAGED_PUBLIC";
+      location: string;
+      publicVenueName: string;
+      publicCityMunicipality: string;
+      publicAddressDetails: string;
+    };
+
 export async function createStudyFromBuilder(payload: unknown) {
   try {
     const validated = BuilderPayloadSchema.parse(payload);
+    const locationContext = resolveLocationContext(validated);
+    if (!locationContext.ok) {
+      return { success: false, error: locationContext.error };
+    }
+
     const session = await getCurrentSession();
     if (!session) {
       return { success: false, error: "Login required." };
@@ -110,13 +138,13 @@ export async function createStudyFromBuilder(payload: unknown) {
     }
 
     if (validated.studyMode === "MARKET") {
-      const result = await createMarketStudy(validated, creator.id);
-      await pushStudyNotifications(validated, creator.id, session.role, result);
+      const result = await createMarketStudy(validated, creator.id, locationContext.value);
+      scheduleStudyNotifications(validated, creator.id, session.role, result);
       return result;
     }
 
-    const result = await createSensoryStudy(validated, creator.id);
-    await pushStudyNotifications(validated, creator.id, session.role, result);
+    const result = await createSensoryStudy(validated, creator.id, locationContext.value);
+    scheduleStudyNotifications(validated, creator.id, session.role, result);
     return result;
   } catch (error) {
     console.error("Create study from builder failed:", error);
@@ -133,7 +161,59 @@ export async function createStudyFromBuilder(payload: unknown) {
   }
 }
 
-async function createMarketStudy(payload: z.infer<typeof BuilderPayloadSchema>, creatorId: string) {
+function resolveLocationContext(payload: z.infer<typeof BuilderPayloadSchema>) {
+  if (payload.coordinationMode === "FIC_ASSISTED") {
+    const region = String(payload.region ?? "").trim();
+    const facilityType = String(payload.facilityType ?? "").trim();
+
+    if (!region || !facilityType) {
+      return { ok: false as const, error: "Select region and facility for FIC-assisted coordination." };
+    }
+
+    if (!isValidRegion(region) || !isFacilityInRegion(region, facilityType)) {
+      return { ok: false as const, error: "Selected region and facility combination is invalid." };
+    }
+
+    return {
+      ok: true as const,
+      value: {
+        coordinationMode: "FIC_ASSISTED" as const,
+        location: facilityType,
+        region,
+        facilityType,
+      },
+    };
+  }
+
+  const publicVenueName = String(payload.publicVenueName ?? "").trim();
+  const publicCityMunicipality = String(payload.publicCityMunicipality ?? "").trim();
+  const publicAddressDetails = String(payload.publicAddressDetails ?? "").trim();
+
+  if (!publicVenueName || !publicCityMunicipality) {
+    return { ok: false as const, error: "Venue name and city/municipality are required for self-managed public studies." };
+  }
+
+  const location = publicAddressDetails
+    ? `${publicVenueName}, ${publicAddressDetails}, ${publicCityMunicipality}`
+    : `${publicVenueName}, ${publicCityMunicipality}`;
+
+  return {
+    ok: true as const,
+    value: {
+      coordinationMode: "SELF_MANAGED_PUBLIC" as const,
+      location,
+      publicVenueName,
+      publicCityMunicipality,
+      publicAddressDetails,
+    },
+  };
+}
+
+async function createMarketStudy(
+  payload: z.infer<typeof BuilderPayloadSchema>,
+  creatorId: string,
+  locationContext: ResolvedLocationContext
+) {
   if (!payload.marketStudyType) {
     return { success: false, error: "Select a market study type." };
   }
@@ -148,9 +228,19 @@ async function createMarketStudy(payload: z.infer<typeof BuilderPayloadSchema>, 
       description: payload.purpose,
       targetDemographics: {
         studyMode: "MARKET",
+        coordinationMode: locationContext.coordinationMode,
         marketStudyType: payload.marketStudyType,
         numberOfSamples: payload.numberOfSamples,
-        facilityType: payload.facilityType,
+        ...(locationContext.coordinationMode === "FIC_ASSISTED"
+          ? {
+              region: locationContext.region,
+              facilityType: locationContext.facilityType,
+            }
+          : {
+              publicVenueName: locationContext.publicVenueName,
+              publicCityMunicipality: locationContext.publicCityMunicipality,
+              publicAddressDetails: locationContext.publicAddressDetails,
+            }),
       },
       screeningCriteria: {
         questions: payload.questions,
@@ -158,7 +248,7 @@ async function createMarketStudy(payload: z.infer<typeof BuilderPayloadSchema>, 
       },
       stratificationVar: null,
       sampleSize: payload.targetResponses,
-      location: payload.facilityType,
+      location: locationContext.location,
       status: "DRAFT",
     },
   });
@@ -170,7 +260,11 @@ async function createMarketStudy(payload: z.infer<typeof BuilderPayloadSchema>, 
   };
 }
 
-async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>, creatorId: string) {
+async function createSensoryStudy(
+  payload: z.infer<typeof BuilderPayloadSchema>,
+  creatorId: string,
+  locationContext: ResolvedLocationContext
+) {
   if (!payload.sensoryStudyType) {
     return { success: false, error: "Select a sensory study type." };
   }
@@ -205,6 +299,7 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
   if (!scheduleResult.success) {
     return { success: false, error: scheduleResult.error };
   }
+  const bookingDates = extractBookingDatesFromSchedule(payload.testingStartDate, scheduleResult.value.slots);
 
   const totalScheduleCapacity = scheduleResult.value.slots.reduce(
     (sum, slot) => sum + slot.capacity,
@@ -217,6 +312,47 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
     };
   }
 
+  const requiresFicBooking = locationContext.coordinationMode === "FIC_ASSISTED";
+  let selectedFic:
+    | {
+        id: string;
+        name: string;
+        assignedRegion: string | null;
+        assignedFacility: string | null;
+      }
+    | null = null;
+  if (requiresFicBooking) {
+    if (!("region" in locationContext) || !("facilityType" in locationContext)) {
+      return { success: false, error: "Select a valid FIC region and facility." };
+    }
+    if (!payload.ficUserId) {
+      return { success: false, error: "Select a FIC assignee before setting a final schedule." };
+    }
+
+    selectedFic = await prisma.user.findFirst({
+      where: {
+        id: payload.ficUserId,
+        role: { in: ["FIC", "FIC_MANAGER"] },
+        assignedRegion: locationContext.region,
+        assignedFacility: locationContext.facilityType,
+      },
+      select: {
+        id: true,
+        name: true,
+        assignedRegion: true,
+        assignedFacility: true,
+      },
+    });
+    if (!selectedFic) {
+      return { success: false, error: "Selected FIC assignee is invalid for the chosen facility." };
+    }
+
+    const bookingStatus = await checkFicBookingDates(payload.ficUserId, bookingDates);
+    if (!bookingStatus.ok) {
+      return { success: false, error: bookingStatus.error };
+    }
+  }
+
   await ensurePanelists(Math.max(payload.targetResponses * 2, 40));
 
   const stage = mapStage(payload.sensoryStudyType, objective);
@@ -226,6 +362,15 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
   }
 
   const attributeQuestions = buildSensoryQuestionnaire(planResult.rows);
+  const ficBookingPayload =
+    selectedFic && locationContext.coordinationMode === "FIC_ASSISTED"
+      ? {
+          ficUserId: selectedFic.id,
+          region: locationContext.region,
+          facility: locationContext.facilityType,
+          bookingDates,
+        }
+      : undefined;
 
   const studyResult = await createStudy(
     {
@@ -234,22 +379,36 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
       category: payload.categoryCode,
       stage,
       sampleSize: payload.targetResponses,
-      location: payload.facilityType,
+      location: locationContext.location,
       targetDemographics: {
         ageRange: [18, 55],
         genders: ["MALE", "FEMALE", "NON_BINARY"],
         lifestyles: [],
         experience: "regular-consumer",
         studyMode: "SENSORY",
+        coordinationMode: locationContext.coordinationMode,
         sensoryStudyType: payload.sensoryStudyType,
         sensoryMethod: payload.sensoryMethod,
         consumerObjective: objective,
         categoryLabel: payload.categoryLabel,
         numberOfSamples: payload.numberOfSamples,
+        ...(locationContext.coordinationMode === "FIC_ASSISTED"
+          ? {
+              region: locationContext.region,
+              facilityType: locationContext.facilityType,
+            }
+          : {
+              publicVenueName: locationContext.publicVenueName,
+              publicCityMunicipality: locationContext.publicCityMunicipality,
+              publicAddressDetails: locationContext.publicAddressDetails,
+            }),
         sessionSchedule: scheduleResult.value,
+        ...(selectedFic ? { ficBookingDates: bookingDates, ficAssignee: selectedFic } : {}),
         sensoryAttributePlan: planResult.rows,
       },
       stratificationVar: "gender",
+      sopMode: "STRICT_NEW_STUDY",
+      ficBooking: ficBookingPayload,
       attributes: attributeQuestions,
       screeningQuestions: [
         {
@@ -286,6 +445,72 @@ async function createSensoryStudy(payload: z.infer<typeof BuilderPayloadSchema>,
     studyId: studyResult.studyId,
     redirectPath: `/studies/${studyResult.studyId}/form`,
   };
+}
+
+function extractBookingDatesFromSchedule(
+  startDate: string | undefined,
+  slots: Array<{
+    dayOffset: number;
+  }>
+) {
+  if (!startDate) {
+    return [] as string[];
+  }
+  const baseDate = new Date(`${startDate}T00:00:00`);
+  if (Number.isNaN(baseDate.getTime())) {
+    return [] as string[];
+  }
+
+  return Array.from(
+    new Set(
+      slots.map((slot) => {
+        const date = new Date(baseDate);
+        date.setDate(baseDate.getDate() + slot.dayOffset);
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, "0");
+        const day = String(date.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      })
+    )
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+async function checkFicBookingDates(ficUserId: string, bookingDates: string[]) {
+  if (bookingDates.length === 0) {
+    return { ok: false as const, error: "No session dates were detected for FIC booking." };
+  }
+
+  const rows = await prisma.ficAvailability.findMany({
+    where: {
+      ficUserId,
+      date: { in: bookingDates },
+    },
+    select: {
+      date: true,
+      isAvailable: true,
+      isLocked: true,
+    },
+  });
+  const byDate = new Map(rows.map((row) => [row.date, row]));
+
+  const invalidDates = bookingDates.filter((date) => {
+    const row = byDate.get(date);
+    if (!row) {
+      return true;
+    }
+    return !row.isAvailable || row.isLocked;
+  });
+
+  if (invalidDates.length > 0) {
+    const preview = invalidDates.slice(0, 6).join(", ");
+    const suffix = invalidDates.length > 6 ? ` (+${invalidDates.length - 6} more)` : "";
+    return {
+      ok: false as const,
+      error: `Selected FIC availability does not include these date(s): ${preview}${suffix}.`,
+    };
+  }
+
+  return { ok: true as const };
 }
 
 function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
@@ -451,7 +676,6 @@ function validateSensoryAttributePlan(
   objective: "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION" | undefined
 ) {
   const rows = attributes
-    .slice(0, 5)
     .map((attribute) => ({
       name: attribute.name.trim(),
       dimension: attribute.dimension,
@@ -591,6 +815,7 @@ async function pushStudyNotifications(
     metadata: {
       studyId: result.studyId,
       studyMode: payload.studyMode,
+      coordinationMode: payload.coordinationMode,
       facilityType: payload.facilityType,
     },
   });
@@ -610,23 +835,43 @@ async function pushStudyNotifications(
     });
   }
 
-  if (/fic/i.test(payload.facilityType)) {
+  if (payload.coordinationMode === "FIC_ASSISTED") {
     await notifyRole("FIC", {
       title: "New MSME booking to FIC",
-      message: `${payload.studyTitle} was booked with facility type: ${payload.facilityType}.`,
+      message: `${payload.studyTitle} was submitted for FIC-assisted coordination at ${payload.facilityType ?? "assigned facility"}.`,
       level: "WARNING",
       category: "STUDY",
       actionUrl: `/dashboard/${result.studyId}`,
-      metadata: { studyId: result.studyId, facilityType: payload.facilityType },
-    });
-  } else {
-    await notifyRole("FIC", {
-      title: "New MSME study uploaded",
-      message: `${payload.studyTitle} was created and is available for review.`,
-      level: "INFO",
-      category: "STUDY",
-      actionUrl: `/studies/${result.studyId}/form`,
-      metadata: { studyId: result.studyId },
+      metadata: { studyId: result.studyId, facilityType: payload.facilityType, coordinationMode: payload.coordinationMode },
     });
   }
+}
+
+function scheduleStudyNotifications(
+  payload: z.infer<typeof BuilderPayloadSchema>,
+  creatorId: string,
+  creatorRole: "MSME" | "ADMIN",
+  result: { success: boolean; studyId?: string }
+) {
+  if (!result.success || !result.studyId) {
+    return;
+  }
+
+  const traceId = createWorkflowTraceId("create-study");
+  runInBackground(
+    "create-study-notifications",
+    async () => {
+      await pushStudyNotifications(payload, creatorId, creatorRole, result);
+    },
+    {
+      traceId,
+      metadata: {
+        studyId: result.studyId,
+        creatorId,
+        creatorRole,
+        studyMode: payload.studyMode,
+        coordinationMode: payload.coordinationMode,
+      },
+    }
+  );
 }

@@ -7,8 +7,17 @@ import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
 import { createStudyAndImportFromFile } from "@/app/actions/study-import-actions";
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
 import type { Region } from "@/lib/facility-constants";
+import {
+  getAvailableFics,
+  getFacilityAvailabilityOverview,
+  getFicCalendar,
+  type AvailableFic,
+  type FacilityAssignedFic,
+  type FicAvailability,
+} from "@/lib/services/fic-availability-service";
 
 type StudyMode = "MARKET" | "SENSORY";
+type CoordinationMode = "FIC_ASSISTED" | "SELF_MANAGED_PUBLIC";
 type MarketStudyType =
   | "PACKAGING_EVALUATION"
   | "PRICE_SENSITIVITY"
@@ -73,6 +82,8 @@ interface CategoryProfile {
   categoryCode: "BEVERAGE" | "SNACK" | "DESSERT" | "FUNCTIONAL_FOOD" | "DAIRY" | "BAKERY";
   attributes: ProfileAttributeRow[];
 }
+
+type FicDateStatus = "AVAILABLE" | "UNAVAILABLE" | "LOCKED";
 
 const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
   { value: "PACKAGING_EVALUATION", label: "Packaging Evaluation" },
@@ -273,6 +284,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [isPending, startTransition] = useTransition();
 
   const [studyMode, setStudyMode] = useState<StudyMode>("SENSORY");
+  const [coordinationMode, setCoordinationMode] = useState<CoordinationMode>("FIC_ASSISTED");
   const [marketStudyType, setMarketStudyType] = useState<MarketStudyType>("PACKAGING_EVALUATION");
 
   const [sensoryStudyType, setSensoryStudyType] = useState<SensoryStudyType>("CONSUMER_TEST");
@@ -281,6 +293,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
   const [region, setRegion] = useState<Region | "">("");
   const [facilityType, setFacilityType] = useState<string>("");
+  const [publicVenueName, setPublicVenueName] = useState("");
+  const [publicCityMunicipality, setPublicCityMunicipality] = useState("");
+  const [publicAddressDetails, setPublicAddressDetails] = useState("");
   const [targetResponses, setTargetResponses] = useState(30);
 
   const [productName, setProductName] = useState("");
@@ -303,6 +318,18 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [error, setError] = useState<string | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importResult, setImportResult] = useState<ImportCreateResult | null>(null);
+  const [assignedFicUsers, setAssignedFicUsers] = useState<FacilityAssignedFic[]>([]);
+  const [ficOptions, setFicOptions] = useState<AvailableFic[]>([]);
+  const [selectedFicUserId, setSelectedFicUserId] = useState("");
+  const [ficCalendarRows, setFicCalendarRows] = useState<FicAvailability[]>([]);
+  const [facilityAvailabilityByDate, setFacilityAvailabilityByDate] = useState<Map<string, number>>(new Map());
+  const [facilityOverviewLoading, setFacilityOverviewLoading] = useState(false);
+  const [facilityOverviewError, setFacilityOverviewError] = useState<string | null>(null);
+  const [ficOptionsLoading, setFicOptionsLoading] = useState(false);
+  const [ficCalendarLoading, setFicCalendarLoading] = useState(false);
+  const [ficError, setFicError] = useState<string | null>(null);
+  const [facilityCalendarYear, setFacilityCalendarYear] = useState(() => new Date().getFullYear());
+  const [facilityCalendarMonth, setFacilityCalendarMonth] = useState(() => new Date().getMonth());
 
   // Cascade region/facility logic
   useEffect(() => {
@@ -319,6 +346,205 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       }
     }
   }, [facilityType, region]);
+
+  useEffect(() => {
+    if (coordinationMode === "SELF_MANAGED_PUBLIC") {
+      setRegion("");
+      setFacilityType("");
+      setSelectedFicUserId("");
+      setAssignedFicUsers([]);
+      setFicOptions([]);
+      setFicCalendarRows([]);
+      setFicError(null);
+      setFacilityOverviewError(null);
+      setFacilityAvailabilityByDate(new Map());
+      return;
+    }
+
+    setPublicVenueName("");
+    setPublicCityMunicipality("");
+    setPublicAddressDetails("");
+  }, [coordinationMode]);
+
+  const requiresFicBooking = useMemo(
+    () => studyMode === "SENSORY" && coordinationMode === "FIC_ASSISTED",
+    [coordinationMode, studyMode]
+  );
+  const scheduleDateRange = useMemo(() => {
+    if (!testingStartDate) {
+      return null;
+    }
+    const duration = Math.max(1, Math.floor(testingDurationDays));
+    return {
+      startDate: testingStartDate,
+      endDate: addDaysToDateInput(testingStartDate, duration - 1),
+      duration,
+    };
+  }, [testingDurationDays, testingStartDate]);
+  const facilityCalendarRange = useMemo(() => {
+    const start = new Date(facilityCalendarYear, facilityCalendarMonth, 1);
+    const end = new Date(facilityCalendarYear, facilityCalendarMonth + 1, 0);
+    return {
+      startDate: formatDateInputFromDate(start),
+      endDate: formatDateInputFromDate(end),
+    };
+  }, [facilityCalendarMonth, facilityCalendarYear]);
+
+  useEffect(() => {
+    const parsed = parseDateInput(testingStartDate);
+    if (!parsed) {
+      return;
+    }
+    setFacilityCalendarYear(parsed.getFullYear());
+    setFacilityCalendarMonth(parsed.getMonth());
+  }, [testingStartDate]);
+
+  useEffect(() => {
+    if (!requiresFicBooking || !region || !facilityType) {
+      setAssignedFicUsers([]);
+      setFacilityAvailabilityByDate(new Map());
+      setFacilityOverviewError(null);
+      setFacilityOverviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setFacilityOverviewLoading(true);
+    setFacilityOverviewError(null);
+    setAssignedFicUsers([]);
+    setFacilityAvailabilityByDate(new Map());
+
+    void getFacilityAvailabilityOverview(
+      facilityCalendarRange.startDate,
+      facilityCalendarRange.endDate,
+      region,
+      facilityType
+    )
+      .then((overview) => {
+        if (cancelled) {
+          return;
+        }
+        if (!overview) {
+          setAssignedFicUsers([]);
+          setFacilityAvailabilityByDate(new Map());
+          setFacilityOverviewError("Failed to load facility availability.");
+          return;
+        }
+
+        setAssignedFicUsers(overview.assignedFics);
+        setFacilityAvailabilityByDate(
+          new Map(overview.availabilityByDate.map((row) => [row.date, row.availableFicCount]))
+        );
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setAssignedFicUsers([]);
+        setFacilityAvailabilityByDate(new Map());
+        setFacilityOverviewError("Failed to load facility availability.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFacilityOverviewLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [facilityCalendarRange.endDate, facilityCalendarRange.startDate, facilityType, region, requiresFicBooking]);
+
+  useEffect(() => {
+    if (!requiresFicBooking || !scheduleDateRange || !region || !facilityType) {
+      setFicOptions([]);
+      setFicCalendarRows([]);
+      setFicError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setFicOptionsLoading(true);
+    setFicError(null);
+    setFicOptions([]);
+
+    void getAvailableFics(scheduleDateRange.startDate, scheduleDateRange.endDate, region, facilityType)
+      .then((rows) => {
+        if (cancelled) {
+          return;
+        }
+        setFicOptions(rows);
+        if (rows.length === 0) {
+          setFicError("No assigned FIC user has availability in the selected testing window.");
+        }
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setFicOptions([]);
+        setFicError("Failed to load FIC availability options.");
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFicOptionsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [facilityType, region, requiresFicBooking, scheduleDateRange]);
+
+  useEffect(() => {
+    if (!requiresFicBooking) {
+      setSelectedFicUserId("");
+      return;
+    }
+
+    setSelectedFicUserId((previous) => {
+      if (previous && assignedFicUsers.some((fic) => fic.id === previous)) {
+        return previous;
+      }
+      if (ficOptions.length > 0) {
+        return ficOptions[0].id;
+      }
+      return assignedFicUsers[0]?.id ?? "";
+    });
+  }, [assignedFicUsers, ficOptions, requiresFicBooking]);
+
+  useEffect(() => {
+    if (!requiresFicBooking || !scheduleDateRange || !selectedFicUserId) {
+      setFicCalendarRows([]);
+      return;
+    }
+
+    let cancelled = false;
+    setFicCalendarLoading(true);
+
+    void getFicCalendar(selectedFicUserId, scheduleDateRange.startDate, scheduleDateRange.endDate)
+      .then((rows) => {
+        if (!cancelled) {
+          setFicCalendarRows(rows);
+          setFicError(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFicCalendarRows([]);
+          setFicError("Failed to load selected FIC calendar data.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setFicCalendarLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [requiresFicBooking, scheduleDateRange, selectedFicUserId]);
 
   const selectedProfile = useMemo(
     () => CATEGORY_PROFILES.find((profile) => profile.key === profileKey) ?? CATEGORY_PROFILES[0],
@@ -348,6 +574,100 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         0
       ),
     [sessionSlots]
+  );
+
+  const ficCalendarByDate = useMemo(() => {
+    return ficCalendarRows.reduce<Map<string, FicAvailability>>((accumulator, row) => {
+      accumulator.set(row.date, row);
+      return accumulator;
+    }, new Map());
+  }, [ficCalendarRows]);
+  const getFicDateStatus = (dateKey: string): FicDateStatus => {
+    if (!requiresFicBooking) {
+      return "AVAILABLE";
+    }
+    const row = ficCalendarByDate.get(dateKey);
+    if (row?.isLocked) {
+      return "LOCKED";
+    }
+    if (row?.isAvailable) {
+      return "AVAILABLE";
+    }
+    return "UNAVAILABLE";
+  };
+  const blockedScheduleDates = useMemo(() => {
+    return sessionSlotsByDay
+      .map((day) => day.date)
+      .filter((dateKey) => {
+        if (!requiresFicBooking) {
+          return false;
+        }
+        const row = ficCalendarByDate.get(dateKey);
+        return !row || row.isLocked || !row.isAvailable;
+      });
+  }, [sessionSlotsByDay, requiresFicBooking, ficCalendarByDate]);
+  const rangeAvailabilityByFicId = useMemo(
+    () => new Map(ficOptions.map((row) => [row.id, row])),
+    [ficOptions]
+  );
+  const assignedFicById = useMemo(
+    () => new Map(assignedFicUsers.map((row) => [row.id, row])),
+    [assignedFicUsers]
+  );
+  const selectedFic = useMemo(
+    () => assignedFicById.get(selectedFicUserId) ?? rangeAvailabilityByFicId.get(selectedFicUserId) ?? null,
+    [assignedFicById, rangeAvailabilityByFicId, selectedFicUserId]
+  );
+  const todayDateKey = useMemo(() => getTodayDateInput(), []);
+  const facilityCalendarDays = useMemo(() => {
+    const firstDay = new Date(facilityCalendarYear, facilityCalendarMonth, 1);
+    const lastDay = new Date(facilityCalendarYear, facilityCalendarMonth + 1, 0);
+    const days: Array<{
+      date: string;
+      dayOfMonth: number;
+      availableFicCount: number;
+      isCurrentMonth: boolean;
+    }> = [];
+
+    for (let padding = firstDay.getDay() - 1; padding >= 0; padding -= 1) {
+      const date = new Date(facilityCalendarYear, facilityCalendarMonth, -padding);
+      const dateKey = formatDateInputFromDate(date);
+      days.push({
+        date: dateKey,
+        dayOfMonth: date.getDate(),
+        availableFicCount: facilityAvailabilityByDate.get(dateKey) ?? 0,
+        isCurrentMonth: false,
+      });
+    }
+
+    for (let day = 1; day <= lastDay.getDate(); day += 1) {
+      const date = new Date(facilityCalendarYear, facilityCalendarMonth, day);
+      const dateKey = formatDateInputFromDate(date);
+      days.push({
+        date: dateKey,
+        dayOfMonth: day,
+        availableFicCount: facilityAvailabilityByDate.get(dateKey) ?? 0,
+        isCurrentMonth: true,
+      });
+    }
+
+    while (days.length % 7 !== 0) {
+      const day = days.length - firstDay.getDay() - lastDay.getDate() + 1;
+      const date = new Date(facilityCalendarYear, facilityCalendarMonth + 1, day);
+      const dateKey = formatDateInputFromDate(date);
+      days.push({
+        date: dateKey,
+        dayOfMonth: date.getDate(),
+        availableFicCount: facilityAvailabilityByDate.get(dateKey) ?? 0,
+        isCurrentMonth: false,
+      });
+    }
+
+    return days;
+  }, [facilityAvailabilityByDate, facilityCalendarMonth, facilityCalendarYear]);
+  const selectedStartDateFacilityAvailability = useMemo(
+    () => facilityAvailabilityByDate.get(testingStartDate) ?? 0,
+    [facilityAvailabilityByDate, testingStartDate]
   );
 
   useEffect(() => {
@@ -524,6 +844,14 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   };
 
   const addSessionSlot = (dayOffset: number) => {
+    if (requiresFicBooking) {
+      const targetDate = addDaysToDateInput(testingStartDate, dayOffset);
+      if (getFicDateStatus(targetDate) !== "AVAILABLE") {
+        setError("Cannot add a session on a date that is unavailable in the selected FIC calendar.");
+        return;
+      }
+    }
+
     setSessionSlots((previous) => {
       const nextIndex = previous.filter((slot) => slot.dayOffset === dayOffset).length;
       return [...previous, createSessionSlotDraft(dayOffset, nextIndex)];
@@ -573,14 +901,28 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     event.preventDefault();
     setError(null);
 
-    if (!region) {
-      setError("Please select a region.");
-      return;
-    }
-
-    if (!facilityType) {
-      setError("Please select a facility type.");
-      return;
+    if (coordinationMode === "FIC_ASSISTED") {
+      if (!region) {
+        setError("Please select a region.");
+        return;
+      }
+      if (!facilityType) {
+        setError("Please select a facility type.");
+        return;
+      }
+      if (requiresFicBooking && !selectedFicUserId) {
+        setError("Select a FIC assignee before setting a final schedule.");
+        return;
+      }
+    } else {
+      if (!publicVenueName.trim()) {
+        setError("Please enter a public venue name.");
+        return;
+      }
+      if (!publicCityMunicipality.trim()) {
+        setError("Please enter city/municipality for the public venue.");
+        return;
+      }
     }
 
     if (!Number.isInteger(targetResponses) || targetResponses < 1) {
@@ -681,6 +1023,22 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         );
         return;
       }
+
+      if (requiresFicBooking) {
+        const bookingDates = Array.from(
+          new Set(
+            sessionPayload.map((slot) => addDaysToDateInput(testingStartDate, slot.dayOffset))
+          )
+        ).sort((left, right) => left.localeCompare(right));
+
+        const blockedDates = bookingDates.filter((dateKey) => getFicDateStatus(dateKey) !== "AVAILABLE");
+        if (blockedDates.length > 0) {
+          setError(
+            `Selected FIC is unavailable for these date(s): ${blockedDates.slice(0, 6).join(", ")}${blockedDates.length > 6 ? ` (+${blockedDates.length - 6} more)` : ""}.`
+          );
+          return;
+        }
+      }
     }
 
     startTransition(async () => {
@@ -700,13 +1058,19 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
       const payload = {
         studyMode,
+        coordinationMode,
         marketStudyType: studyMode === "MARKET" ? marketStudyType : undefined,
         sensoryStudyType: studyMode === "SENSORY" ? sensoryStudyType : undefined,
         sensoryMethod: studyMode === "SENSORY" ? sensoryMethod : undefined,
         consumerObjective: studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" ? consumerObjective : undefined,
         studyTitle: generatedStudyTitle,
         purpose: generatedPurpose,
-        facilityType,
+        region: coordinationMode === "FIC_ASSISTED" ? region : undefined,
+        facilityType: coordinationMode === "FIC_ASSISTED" ? facilityType : undefined,
+        publicVenueName: coordinationMode === "SELF_MANAGED_PUBLIC" ? publicVenueName.trim() : undefined,
+        publicCityMunicipality: coordinationMode === "SELF_MANAGED_PUBLIC" ? publicCityMunicipality.trim() : undefined,
+        publicAddressDetails: coordinationMode === "SELF_MANAGED_PUBLIC" ? publicAddressDetails.trim() : undefined,
+        ficUserId: studyMode === "SENSORY" && requiresFicBooking ? selectedFicUserId : undefined,
         numberOfSamples: Math.max(1, sampleSetupCount),
         targetResponses,
         productName: studyMode === "SENSORY" ? productName : undefined,
@@ -753,6 +1117,19 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     setError(null);
     if (!importFile) {
       setImportResult({ success: false, error: "Choose an Excel/CSV file first." });
+      return;
+    }
+
+    // Validate file extension
+    const validExtensions = [".xlsx", ".xls", ".csv"];
+    const fileName = importFile.name.toLowerCase();
+    const isValidExtension = validExtensions.some(ext => fileName.endsWith(ext));
+    
+    if (!isValidExtension) {
+      setImportResult({ 
+        success: false, 
+        error: "Invalid file type. Please upload an Excel (.xlsx, .xls) or CSV (.csv) file." 
+      });
       return;
     }
 
@@ -875,6 +1252,98 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 <span>Sensory Study</span>
               </label>
             </div>
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900">Study Coordination</h2>
+            <div className="grid md:grid-cols-2 gap-4">
+              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
+                <input
+                  type="radio"
+                  checked={coordinationMode === "FIC_ASSISTED"}
+                  onChange={() => setCoordinationMode("FIC_ASSISTED")}
+                />
+                <span>Coordinate with FIC</span>
+              </label>
+              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
+                <input
+                  type="radio"
+                  checked={coordinationMode === "SELF_MANAGED_PUBLIC"}
+                  onChange={() => setCoordinationMode("SELF_MANAGED_PUBLIC")}
+                />
+                <span>Self-managed Public Recruitment</span>
+              </label>
+            </div>
+
+            {coordinationMode === "FIC_ASSISTED" ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <FieldLabel text="Region" />
+                  <select
+                    value={region}
+                    onChange={(event) => setRegion(event.target.value as Region | "")}
+                    className="app-select"
+                    required
+                  >
+                    <option value="">Select Region</option>
+                    {REGIONS.map((regionOption) => (
+                      <option key={regionOption} value={regionOption}>
+                        {regionOption}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="Facility Type" />
+                  <select
+                    value={facilityType}
+                    onChange={(event) => setFacilityType(event.target.value)}
+                    className="app-select"
+                    required
+                    disabled={!region}
+                  >
+                    <option value="">{region ? "Select Facility" : "Select Region First"}</option>
+                    {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
+                      <option key={facilityOption} value={facilityOption}>
+                        {facilityOption}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <FieldLabel text="Public Venue Name" />
+                  <input
+                    value={publicVenueName}
+                    onChange={(event) => setPublicVenueName(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g., City Mall Atrium"
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="City / Municipality" />
+                  <input
+                    value={publicCityMunicipality}
+                    onChange={(event) => setPublicCityMunicipality(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g., Butuan City"
+                    required
+                  />
+                </div>
+                <div className="space-y-1 md:col-span-2">
+                  <FieldLabel text="Address Details (Optional)" />
+                  <input
+                    value={publicAddressDetails}
+                    onChange={(event) => setPublicAddressDetails(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g., near entrance gate 2"
+                  />
+                </div>
+              </div>
+            )}
           </section>
 
           {studyMode === "MARKET" && (
@@ -1126,40 +1595,125 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
 
-              <div className="grid md:grid-cols-2 gap-4">
-                <FieldLabel text="Region" />
-                <select
-                  value={region}
-                  onChange={(event) => setRegion(event.target.value as Region | "")}
-                  className="app-select"
-                  required
-                >
-                  <option value="">Select Region</option>
-                  {REGIONS.map((regionOption) => (
-                    <option key={regionOption} value={regionOption}>
-                      {regionOption}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {requiresFicBooking && (
+                <div className="space-y-3 rounded-xl border border-[#c7d2fe] bg-[#eef2ff] p-4">
+                  <div className="grid md:grid-cols-2 gap-4">
+                    <div className="space-y-1">
+                      <FieldLabel text="Assigned FIC User" />
+                      <select
+                        value={selectedFicUserId}
+                        onChange={(event) => setSelectedFicUserId(event.target.value)}
+                        className="app-select"
+                        required
+                        disabled={facilityOverviewLoading || assignedFicUsers.length === 0}
+                      >
+                        <option value="">
+                          {facilityOverviewLoading ? "Loading assigned FIC users..." : "Select FIC assignee"}
+                        </option>
+                        {assignedFicUsers.map((fic) => {
+                          const rangeAvailability = rangeAvailabilityByFicId.get(fic.id);
+                          const rangeAvailableCount = rangeAvailability?.availableDates.length ?? 0;
+                          const rangeWindowDays = scheduleDateRange?.duration ?? 0;
+                          const availabilityLabel =
+                            rangeWindowDays > 0
+                              ? `${rangeAvailableCount}/${rangeWindowDays} day(s) available in selected window`
+                              : `${fic.availableDateCount} day(s) available this month`;
 
-              <div className="grid md:grid-cols-2 gap-4">
-                <FieldLabel text="Facility Type" />
-                <select
-                  value={facilityType}
-                  onChange={(event) => setFacilityType(event.target.value)}
-                  className="app-select"
-                  required
-                  disabled={!region}
-                >
-                  <option value="">{region ? "Select Facility" : "Select Region First"}</option>
-                  {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
-                    <option key={facilityOption} value={facilityOption}>
-                      {facilityOption}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                          return (
+                            <option key={fic.id} value={fic.id}>
+                              {fic.name} ({availabilityLabel})
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                    <div className="rounded-lg border border-[#dbeafe] bg-white p-3 text-xs text-[#1e3a8a]">
+                      <p className="font-semibold">FIC Calendar Rules</p>
+                      <p className="mt-1">Select Region + Facility first, then choose one assigned FIC user.</p>
+                      <p className="mt-1">MSME can schedule sessions only on dates marked Available by selected FIC.</p>
+                      <p className="mt-1">Locked dates are already booked by other studies.</p>
+                    </div>
+                  </div>
+
+                  {(facilityOverviewError || ficError || ficCalendarLoading || ficOptionsLoading) && (
+                    <p className="text-xs font-medium text-[#b45309]">
+                      {facilityOverviewError
+                        ? facilityOverviewError
+                        : ficCalendarLoading
+                          ? "Loading selected FIC calendar..."
+                          : ficOptionsLoading
+                            ? "Checking selected testing window against assigned FIC calendars..."
+                            : ficError}
+                    </p>
+                  )}
+                  {!facilityOverviewLoading && !facilityOverviewError && assignedFicUsers.length === 0 && (
+                    <p className="text-xs font-medium text-[#b45309]">
+                      No FIC user is currently assigned to this facility. Ask admin to assign at least one FIC user first.
+                    </p>
+                  )}
+
+                  {assignedFicUsers.length > 0 && (
+                    <div className="rounded-lg border border-[#dbeafe] bg-white p-3">
+                      <p className="text-xs font-semibold text-[#1e3a8a]">
+                        Assigned FIC users for {facilityType} ({region})
+                      </p>
+                      <div className="mt-2 grid gap-2 md:grid-cols-2">
+                        {assignedFicUsers.map((fic) => {
+                          const rangeAvailability = rangeAvailabilityByFicId.get(fic.id);
+                          const rangeAvailableCount = rangeAvailability?.availableDates.length ?? 0;
+                          const isActive = fic.id === selectedFicUserId;
+                          return (
+                            <button
+                              key={`assigned-fic-card-${fic.id}`}
+                              type="button"
+                              onClick={() => setSelectedFicUserId(fic.id)}
+                              className={`rounded-lg border p-2 text-left text-xs transition-colors ${
+                                isActive
+                                  ? "border-[#60a5fa] bg-[#eff6ff] text-[#1e3a8a]"
+                                  : "border-[#dbeafe] bg-[#f8fbff] text-[#1f2937] hover:border-[#93c5fd]"
+                              }`}
+                            >
+                              <p className="font-semibold">{fic.name}</p>
+                              <p className="mt-0.5 text-[11px] text-[#64748b]">{fic.email}</p>
+                              <p className="mt-1">
+                                Window availability: {rangeAvailableCount}/{scheduleDateRange?.duration ?? 0} day(s)
+                              </p>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+
+                  {selectedFic && scheduleDateRange && (
+                    <div className="rounded-lg border border-[#dbeafe] bg-white p-3">
+                      <p className="text-xs font-semibold text-[#1e3a8a]">
+                        Availability for {selectedFic.name} ({scheduleDateRange.startDate} to {scheduleDateRange.endDate})
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {sessionSlotsByDay.map((day) => {
+                          const status = getFicDateStatus(day.date);
+                          const style =
+                            status === "AVAILABLE"
+                              ? "border-[#bbf7d0] bg-[#f0fdf4] text-[#166534]"
+                              : status === "LOCKED"
+                                ? "border-[#fecaca] bg-[#fef2f2] text-[#991b1b]"
+                                : "border-[#fde68a] bg-[#fffbeb] text-[#92400e]";
+
+                          return (
+                            <span
+                              key={`fic-availability-${day.date}`}
+                              className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${style}`}
+                            >
+                              {day.date}: {status === "AVAILABLE" ? "Available" : status === "LOCKED" ? "Locked" : "Unavailable"}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="grid md:grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -1189,6 +1743,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     Total session capacity: {totalSessionCapacity}
                   </span>
                 </div>
+                {requiresFicBooking && blockedScheduleDates.length > 0 && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-800">
+                    Selected FIC cannot host sessions on: {blockedScheduleDates.join(", ")}. Update dates or choose another FIC.
+                  </p>
+                )}
 
                 <div className="grid md:grid-cols-3 gap-4">
                   <div className="space-y-1">
@@ -1198,8 +1757,14 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       value={testingStartDate}
                       onChange={(event) => setTestingStartDate(event.target.value)}
                       className="app-input"
+                      min={todayDateKey}
                       required
                     />
+                    {requiresFicBooking && selectedStartDateFacilityAvailability === 0 && (
+                      <p className="text-[11px] text-amber-700">
+                        No assigned FIC is available on this start date. Pick an available date from the facility calendar below.
+                      </p>
+                    )}
                   </div>
                   <div className="space-y-1">
                     <FieldLabel text="Testing Duration (Days)" />
@@ -1219,16 +1784,119 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   </div>
                 </div>
 
+                {requiresFicBooking && (
+                  <div className="rounded-lg border border-[#dbeafe] bg-white p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-sm font-semibold text-[#1e3a8a]">
+                        Facility Availability Calendar ({facilityType})
+                      </p>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const month = facilityCalendarMonth === 0 ? 11 : facilityCalendarMonth - 1;
+                            const year = facilityCalendarMonth === 0 ? facilityCalendarYear - 1 : facilityCalendarYear;
+                            setFacilityCalendarYear(year);
+                            setFacilityCalendarMonth(month);
+                          }}
+                          className="rounded-md border border-[#bfdbfe] bg-[#eff6ff] px-2 py-1 text-xs font-medium text-[#1d4ed8] hover:bg-[#dbeafe]"
+                        >
+                          Prev
+                        </button>
+                        <span className="text-xs font-medium text-[#1e3a8a]">
+                          {new Date(facilityCalendarYear, facilityCalendarMonth, 1).toLocaleString("en-US", {
+                            month: "long",
+                            year: "numeric",
+                          })}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const month = facilityCalendarMonth === 11 ? 0 : facilityCalendarMonth + 1;
+                            const year = facilityCalendarMonth === 11 ? facilityCalendarYear + 1 : facilityCalendarYear;
+                            setFacilityCalendarYear(year);
+                            setFacilityCalendarMonth(month);
+                          }}
+                          className="rounded-md border border-[#bfdbfe] bg-[#eff6ff] px-2 py-1 text-xs font-medium text-[#1d4ed8] hover:bg-[#dbeafe]"
+                        >
+                          Next
+                        </button>
+                      </div>
+                    </div>
+                    <p className="mt-1 text-[11px] text-[#475569]">
+                      Click a date with available capacity to set your testing start date. Indicator shows how many assigned FIC users can host that date.
+                    </p>
+
+                    <div className="mt-3 grid grid-cols-7 gap-1">
+                      {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
+                        <div key={`facility-calendar-header-${label}`} className="py-1 text-center text-[11px] font-semibold text-[#64748b]">
+                          {label}
+                        </div>
+                      ))}
+                      {facilityCalendarDays.map((day) => {
+                        const isPast = day.date < todayDateKey;
+                        const isSelected = day.date === testingStartDate;
+                        const disabled = !day.isCurrentMonth || isPast || day.availableFicCount === 0;
+                        const baseClasses = "flex aspect-square flex-col items-center justify-center rounded-md border text-[11px] transition-colors";
+                        const statusClasses = disabled
+                          ? "border-[#e2e8f0] bg-[#f8fafc] text-[#94a3b8]"
+                          : "border-[#bbf7d0] bg-[#f0fdf4] text-[#166534] hover:bg-[#dcfce7]";
+
+                        return (
+                          <button
+                            key={`facility-calendar-day-${day.date}`}
+                            type="button"
+                            disabled={disabled}
+                            onClick={() => setTestingStartDate(day.date)}
+                            className={`${baseClasses} ${statusClasses} ${isSelected ? "ring-2 ring-[#2563eb]" : ""}`}
+                          >
+                            <span className="font-semibold">{day.dayOfMonth}</span>
+                            <span>{day.availableFicCount > 0 ? `${day.availableFicCount} FIC` : "-"}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-3 text-[11px] text-[#475569]">
+                      <span className="inline-flex items-center gap-1">
+                        <span className="h-3 w-3 rounded-sm border border-[#bbf7d0] bg-[#f0fdf4]" />
+                        Available facility date
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="h-3 w-3 rounded-sm border border-[#e2e8f0] bg-[#f8fafc]" />
+                        No available FIC / not selectable
+                      </span>
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-4">
-                  {sessionSlotsByDay.map((day) => (
-                    <div key={`session-day-${day.dayOffset}`} className="rounded-lg border border-[#dbe3ec] bg-white p-3">
+                  {sessionSlotsByDay.map((day) => {
+                    const dayStatus = getFicDateStatus(day.date);
+                    const dayBlocked = requiresFicBooking && dayStatus !== "AVAILABLE";
+
+                    return (
+                      <div key={`session-day-${day.dayOffset}`} className="rounded-lg border border-[#dbe3ec] bg-white p-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="text-sm font-semibold text-[#0f172a]">
                           Day {day.dayOffset + 1} ({formatDateLabel(day.date)})
                         </p>
+                        {requiresFicBooking && (
+                          <span
+                            className={
+                              dayStatus === "AVAILABLE"
+                                ? "rounded-full bg-[#dcfce7] px-2.5 py-1 text-[11px] font-medium text-[#166534]"
+                                : dayStatus === "LOCKED"
+                                  ? "rounded-full bg-[#fee2e2] px-2.5 py-1 text-[11px] font-medium text-[#991b1b]"
+                                  : "rounded-full bg-[#fef3c7] px-2.5 py-1 text-[11px] font-medium text-[#92400e]"
+                            }
+                          >
+                            {dayStatus === "AVAILABLE" ? "FIC Available" : dayStatus === "LOCKED" ? "FIC Locked" : "FIC Unavailable"}
+                          </span>
+                        )}
                         <button
                           type="button"
                           onClick={() => addSessionSlot(day.dayOffset)}
+                          disabled={dayBlocked}
                           className="rounded-md border border-[#ed7f2a] px-3 py-1 text-xs font-semibold text-[#c2410c] hover:bg-[#fff6ed]"
                         >
                           Add Session
@@ -1243,6 +1911,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               onChange={(event) => updateSessionSlot(slot.id, "label", event.target.value)}
                               className="app-input"
                               placeholder="Session label (e.g., Morning)"
+                              disabled={dayBlocked}
                               required
                             />
                             <input
@@ -1250,6 +1919,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               value={slot.startTime}
                               onChange={(event) => updateSessionSlot(slot.id, "startTime", event.target.value)}
                               className="app-input"
+                              disabled={dayBlocked}
                               required
                             />
                             <input
@@ -1257,6 +1927,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               value={slot.endTime}
                               onChange={(event) => updateSessionSlot(slot.id, "endTime", event.target.value)}
                               className="app-input"
+                              disabled={dayBlocked}
                               required
                             />
                             <input
@@ -1265,6 +1936,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               value={slot.capacity}
                               onChange={(event) => updateSessionSlot(slot.id, "capacity", event.target.value)}
                               className="app-input"
+                              disabled={dayBlocked}
                               required
                             />
                             <button
@@ -1278,8 +1950,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                           </div>
                         ))}
                       </div>
-                    </div>
-                  ))}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -1490,6 +2163,35 @@ function getTodayDateInput() {
   const month = String(today.getMonth() + 1).padStart(2, "0");
   const day = String(today.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function formatDateInputFromDate(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function parseDateInput(dateInput: string) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+    return null;
+  }
+  const [yearPart, monthPart, dayPart] = dateInput.split("-");
+  const year = Number(yearPart);
+  const month = Number(monthPart);
+  const day = Number(dayPart);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  const parsed = new Date(year, month - 1, day);
+  if (
+    parsed.getFullYear() !== year ||
+    parsed.getMonth() !== month - 1 ||
+    parsed.getDate() !== day
+  ) {
+    return null;
+  }
+  return parsed;
 }
 
 function addDaysToDateInput(dateInput: string, dayOffset: number) {

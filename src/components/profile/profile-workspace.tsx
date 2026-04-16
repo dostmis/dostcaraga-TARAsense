@@ -57,6 +57,8 @@ export async function ProfileWorkspace({
       email: true,
       role: true,
       organization: true,
+      assignedRegion: true,
+      assignedFacility: true,
       createdAt: true,
     },
   });
@@ -144,6 +146,18 @@ export async function ProfileWorkspace({
               <Field label="Organization">
                 <input name="organization" defaultValue={user.organization ?? ""} className="app-input" />
               </Field>
+
+              {role === "FIC" && (
+                <>
+                  <Field label="Assigned Region (Admin Managed)">
+                    <input value={user.assignedRegion ?? "Not assigned yet"} className="app-input bg-[#f5ede6]" disabled />
+                  </Field>
+
+                  <Field label="Assigned Facility (Admin Managed)">
+                    <input value={user.assignedFacility ?? "Not assigned yet"} className="app-input bg-[#f5ede6]" disabled />
+                  </Field>
+                </>
+              )}
 
               <Field label="Age">
                 <input type="number" name="age" min={10} max={100} defaultValue={panelist?.age ?? 25} className="app-input" required />

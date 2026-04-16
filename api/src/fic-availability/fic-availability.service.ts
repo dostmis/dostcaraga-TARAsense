@@ -37,19 +37,24 @@ export class FicAvailabilityService {
    * Get all FICs that are available for a date range
    */
   async getAvailableFics(query: GetAvailableFicsQuery) {
-    const { startDate, endDate, facility } = query;
+    const { startDate, endDate, region, facility } = query;
 
     // First, get all FIC users (role FIC or FIC_MANAGER)
     const fics = await this.prisma.user.findMany({
       where: {
         role: { in: [Role.FIC, Role.FIC_MANAGER] },
-        ...(facility && { organization: facility }),
+        assignedRegion: { not: null },
+        assignedFacility: { not: null },
+        ...(region && { assignedRegion: region }),
+        ...(facility && { assignedFacility: facility }),
       },
       select: {
         id: true,
         name: true,
         email: true,
         organization: true,
+        assignedRegion: true,
+        assignedFacility: true,
       },
     });
 

@@ -1,14 +1,11 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
+import { isValidDateKey } from "@/lib/date-time";
 
 type RouteContext = {
   params: Promise<{ ficUserId: string; date: string }>;
 };
-
-function isValidDateValue(value: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
 
 export async function PATCH(request: Request, context: RouteContext) {
   try {
@@ -22,7 +19,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
-    if (!isValidDateValue(date)) {
+    if (!isValidDateKey(date)) {
       return NextResponse.json({ error: "Invalid date format. Expected YYYY-MM-DD" }, { status: 400 });
     }
 

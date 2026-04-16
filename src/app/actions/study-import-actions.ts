@@ -6,6 +6,8 @@ import { createStudy } from "@/app/actions/study-actions";
 import { getCurrentSession } from "@/lib/auth/session";
 import { prisma } from "@/lib/db";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
+import { notifyUser } from "@/lib/notifications";
+import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import {
   DEFAULT_IMPORT_LIMITS,
   buildQuestionResponseRows,
@@ -253,17 +255,37 @@ export async function commitStudyImport(
     }
   });
 
-  try {
-    const engine = new SensoryAnalysisEngine();
-    await engine.analyzeStudy(studyId);
-  } catch (analysisError) {
-    console.error("Analyze study after import failed:", analysisError);
-  }
-
   await prisma.study.update({
     where: { id: studyId },
     data: { status: "COMPLETED" },
   });
+
+  const traceId = createWorkflowTraceId("import-study");
+  runInBackground(
+    "import-study-post-processing",
+    async () => {
+      await Promise.allSettled([
+        (async () => {
+          const engine = new SensoryAnalysisEngine();
+          await engine.analyzeStudy(studyId);
+        })(),
+        (async () => {
+          await notifyUser(study.creatorId, {
+            title: "Imported study analysis started",
+            message: `Imported responses for "${study.title}" were saved and analysis is now running.`,
+            level: "INFO",
+            category: "STUDY",
+            actionUrl: `/dashboard/${studyId}`,
+            metadata: { studyId, source: IMPORT_METADATA_SOURCE, importedAt: importedAt.toISOString() },
+          });
+        })(),
+      ]);
+    },
+    {
+      traceId,
+      metadata: { studyId, importedAt: importedAt.toISOString() },
+    }
+  );
 
   revalidatePath(`/dashboard/${studyId}`);
   revalidatePath(`/studies/${studyId}/form`);
@@ -449,6 +471,7 @@ export async function createImportReadyCloneFromFile(
       location: sourceStudy.location,
       targetDemographics: sourceTarget,
       stratificationVar: "none",
+      sopMode: "IMPORT_COMPLETED_STUDY",
       attributes: attributesPayload,
       screeningQuestions,
     },
@@ -582,6 +605,7 @@ export async function createStudyAndImportFromFile(formData: FormData): Promise<
         sampleLegend: hints.sampleLegend,
       },
       stratificationVar: "none",
+      sopMode: "IMPORT_COMPLETED_STUDY",
       attributes: [
         {
           name: "Overall Acceptability",

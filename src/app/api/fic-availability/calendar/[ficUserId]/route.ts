@@ -1,41 +1,31 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
+import { formatLocalDateKey, isValidDateKey } from "@/lib/date-time";
 
 type RouteContext = {
   params: Promise<{ ficUserId: string }>;
 };
-
-function isValidDateValue(value: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
 
 function getDefaultMonthRange() {
   const today = new Date();
   const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
   const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
 
-  const startDate = formatDate(startOfMonth);
-  const endDate = formatDate(endOfMonth);
+  const startDate = formatLocalDateKey(startOfMonth);
+  const endDate = formatLocalDateKey(endOfMonth);
   return { startDate, endDate };
-}
-
-function formatDate(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 export async function GET(request: Request, context: RouteContext) {
   try {
     const session = await getCurrentSession();
-    if (!session || (session.role !== "ADMIN" && session.role !== "FIC")) {
+    if (!session || (session.role !== "ADMIN" && session.role !== "FIC" && session.role !== "MSME")) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const { ficUserId } = await context.params;
-    if (session.role !== "ADMIN" && session.userId !== ficUserId) {
+    if (session.role === "FIC" && session.userId !== ficUserId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 
@@ -46,7 +36,7 @@ export async function GET(request: Request, context: RouteContext) {
     const startDate = requestedStartDate || defaultRange.startDate;
     const endDate = requestedEndDate || defaultRange.endDate;
 
-    if (!isValidDateValue(startDate) || !isValidDateValue(endDate)) {
+    if (!isValidDateKey(startDate) || !isValidDateKey(endDate)) {
       return NextResponse.json({ error: "startDate and endDate must be YYYY-MM-DD" }, { status: 400 });
     }
 

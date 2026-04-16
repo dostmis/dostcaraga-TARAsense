@@ -8,6 +8,7 @@ import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { Prisma } from "@prisma/client";
 import { notifyUser } from "@/lib/notifications";
 import { clearGuestSessionCookies, getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
+import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 
 const MAX_ATTRIBUTE_KEYS = 40;
 const MAX_SAMPLE_RESPONSES = 20;
@@ -218,36 +219,43 @@ export async function submitResponse(studyId: string, participantId: string, pay
       throw error;
     }
 
-    try {
-      const analysisEngine = new SensoryAnalysisEngine();
-      await analysisEngine.analyzeStudy(studyId);
-    } catch (analysisError) {
-      console.error("Analyze study after submission failed:", analysisError);
-    }
+    const traceId = createWorkflowTraceId("submit-response");
+    runInBackground(
+      "submit-response-post-processing",
+      async () => {
+        await Promise.allSettled([
+          (async () => {
+            const analysisEngine = new SensoryAnalysisEngine();
+            await analysisEngine.analyzeStudy(studyId);
+          })(),
+          (async () => {
+            await notifyUser(participant.study.creatorId, {
+              title: "New sensory response submitted",
+              message: `A participant submitted responses for "${participant.study.title}".`,
+              level: "INFO",
+              category: "SURVEY",
+              actionUrl: `/dashboard/${studyId}`,
+              metadata: { studyId, participantId },
+            });
 
-    try {
-      await notifyUser(participant.study.creatorId, {
-        title: "New sensory response submitted",
-        message: `A participant submitted responses for "${participant.study.title}".`,
-        level: "INFO",
-        category: "SURVEY",
-        actionUrl: `/dashboard/${studyId}`,
+            if (participant.panelist.userId) {
+              await notifyUser(participant.panelist.userId, {
+                title: "Survey submitted",
+                message: `Your responses for "${participant.study.title}" were submitted successfully.`,
+                level: "SUCCESS",
+                category: "SURVEY",
+                actionUrl: "/test/completed",
+                metadata: { studyId, participantId },
+              });
+            }
+          })(),
+        ]);
+      },
+      {
+        traceId,
         metadata: { studyId, participantId },
-      });
-
-      if (participant.panelist.userId) {
-        await notifyUser(participant.panelist.userId, {
-          title: "Survey submitted",
-          message: `Your responses for "${participant.study.title}" were submitted successfully.`,
-          level: "SUCCESS",
-          category: "SURVEY",
-          actionUrl: "/test/completed",
-          metadata: { studyId, participantId },
-        });
       }
-    } catch (notificationError) {
-      console.error("Submission notifications failed:", notificationError);
-    }
+    );
 
     revalidatePath(`/dashboard/${studyId}`);
     revalidatePath("/");

@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { bulkSetAvailability } from '@/lib/services/fic-availability-service';
+import { formatLocalDateKey } from '@/lib/date-time';
 
 interface FicCalendarControlsProps {
   ficUserId: string;
@@ -54,7 +55,7 @@ export function FicCalendarControls({
 
         if (dayOfWeek >= 1 && dayOfWeek <= 5) {
           dates.push({
-            date: date.toISOString().split('T')[0],
+            date: formatLocalDateKey(date),
             isAvailable: true,
           });
         }
@@ -68,7 +69,7 @@ export function FicCalendarControls({
       } else {
         setStatus({ type: 'error', message: result.errors?.[0]?.message || 'Some dates failed to update' });
       }
-    } catch (err) {
+    } catch {
       setStatus({ type: 'error', message: 'Failed to mark weekdays' });
     } finally {
       setWorking(false);
@@ -91,7 +92,7 @@ export function FicCalendarControls({
 
         if (dayOfWeek === 0 || dayOfWeek === 6) {
           dates.push({
-            date: date.toISOString().split('T')[0],
+            date: formatLocalDateKey(date),
             isAvailable: true,
           });
         }
@@ -105,7 +106,7 @@ export function FicCalendarControls({
       } else {
         setStatus({ type: 'error', message: result.errors?.[0]?.message || 'Some dates failed to update' });
       }
-    } catch (err) {
+    } catch {
       setStatus({ type: 'error', message: 'Failed to mark weekends' });
     } finally {
       setWorking(false);
@@ -125,7 +126,7 @@ export function FicCalendarControls({
       for (let day = 1; day <= daysInMonth; day++) {
         const date = new Date(year, month, day);
         dates.push({
-          date: date.toISOString().split('T')[0],
+          date: formatLocalDateKey(date),
           isAvailable: false,
         });
       }
@@ -138,7 +139,7 @@ export function FicCalendarControls({
       } else {
         setStatus({ type: 'error', message: result.errors?.[0]?.message || 'Some dates failed to update' });
       }
-    } catch (err) {
+    } catch {
       setStatus({ type: 'error', message: 'Failed to clear month' });
     } finally {
       setWorking(false);

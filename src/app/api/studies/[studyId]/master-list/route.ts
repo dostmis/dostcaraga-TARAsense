@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
 import { formatPanelistNumber, parseSampleCodes } from "@/lib/participant-assignment";
+import { canAccessStudyByRole } from "@/lib/study-access";
 
 type RouteContext = {
   params: Promise<{ studyId: string }>;
@@ -21,6 +22,7 @@ export async function GET(_: Request, context: RouteContext) {
         id: true,
         title: true,
         creatorId: true,
+        location: true,
         participants: {
           orderBy: [{ panelistNumber: "asc" }, { selectionOrder: "asc" }],
           select: {
@@ -54,7 +56,22 @@ export async function GET(_: Request, context: RouteContext) {
     if (!study) {
       return NextResponse.json({ error: "Study not found" }, { status: 404 });
     }
-    if (session.role !== "ADMIN" && study.creatorId !== session.userId) {
+    const currentUser =
+      session.role === "FIC"
+        ? await prisma.user.findUnique({
+            where: { id: session.userId },
+            select: { assignedFacility: true },
+          })
+        : null;
+    if (
+      !canAccessStudyByRole({
+        role: session.role,
+        userId: session.userId,
+        studyCreatorId: study.creatorId,
+        studyLocation: study.location,
+        ficAssignedFacility: currentUser?.assignedFacility,
+      })
+    ) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
     }
 

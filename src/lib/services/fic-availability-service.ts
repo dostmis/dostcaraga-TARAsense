@@ -74,8 +74,42 @@ export interface AvailableFic {
   name: string;
   email: string;
   organization?: string;
+  assignedRegion?: string | null;
+  assignedFacility?: string | null;
   availableDates: string[];
   availabilityPercentage: number;
+}
+
+export interface FacilityAssignedFic {
+  id: string;
+  name: string;
+  email: string;
+  organization?: string;
+  assignedRegion?: string | null;
+  assignedFacility?: string | null;
+  availableDateCount: number;
+  availabilityPercentage: number;
+}
+
+export interface FacilityAvailabilityByDate {
+  date: string;
+  availableFicCount: number;
+  totalAssignedFicCount: number;
+}
+
+export interface FacilityAvailabilityOverview {
+  startDate: string;
+  endDate: string;
+  region?: string | null;
+  facility?: string | null;
+  totalAssignedFicCount: number;
+  assignedFics: FacilityAssignedFic[];
+  availableFics: AvailableFic[];
+  availabilityByDate: FacilityAvailabilityByDate[];
+  ficAvailabilityByUser: Array<{
+    ficUserId: string;
+    availableDates: string[];
+  }>;
 }
 
 export interface BulkAvailabilityError {
@@ -98,6 +132,7 @@ type SessionSlotLike = {
 export async function getAvailableFics(
   startDate: string,
   endDate: string,
+  region?: string,
   facility?: string
 ): Promise<AvailableFic[]> {
   try {
@@ -105,6 +140,10 @@ export async function getAvailableFics(
       startDate,
       endDate,
     });
+
+    if (region) {
+      params.append('region', region);
+    }
     
     if (facility) {
       params.append('facility', facility);
@@ -120,6 +159,39 @@ export async function getAvailableFics(
     console.error('Error fetching available FICs:', error);
 
     return [];
+  }
+}
+
+/**
+ * Get facility-level FIC overview (assigned users + per-date capacity).
+ */
+export async function getFacilityAvailabilityOverview(
+  startDate: string,
+  endDate: string,
+  region: string,
+  facility: string
+): Promise<FacilityAvailabilityOverview | null> {
+  try {
+    if (!region || !facility) {
+      return null;
+    }
+
+    const params = new URLSearchParams({
+      startDate,
+      endDate,
+      region,
+      facility,
+      includeOverview: "1",
+    });
+
+    const response = await makeApiRequest(
+      `/fic-availability/available-fics?${params.toString()}`
+    );
+
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching facility availability overview:', error);
+    return null;
   }
 }
 

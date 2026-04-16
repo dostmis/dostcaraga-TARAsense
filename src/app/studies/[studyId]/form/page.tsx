@@ -9,6 +9,7 @@ import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/lib/participant-assignment";
 import { parseStudyRandomCodeBook } from "@/lib/random-codebook";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
+import { isFicTaggedStudyLocation } from "@/lib/study-access";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
 import { StudyImportPanel } from "@/components/studies/study-import-panel";
 
@@ -61,7 +62,22 @@ export default async function StudyFormPage({ params }: PageProps) {
   if (!study) {
     notFound();
   }
+  const ficUser =
+    session?.role === "FIC"
+      ? await prisma.user.findUnique({
+          where: { id: session.userId },
+          select: { assignedFacility: true },
+        })
+      : null;
   if (session?.role === "MSME" && study.creatorId !== session.userId) {
+    notFound();
+  }
+  if (
+    session?.role === "FIC" &&
+    (!isFicTaggedStudyLocation(study.location) ||
+      !ficUser?.assignedFacility ||
+      study.location.trim().toLowerCase() !== ficUser.assignedFacility.trim().toLowerCase())
+  ) {
     notFound();
   }
 

@@ -1,15 +1,12 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
+import { isValidDateKey } from "@/lib/date-time";
 
 type BulkEntry = {
   date: string;
   isAvailable: boolean;
 };
-
-function isValidDateValue(value: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(value);
-}
 
 export async function POST(request: Request) {
   try {
@@ -44,7 +41,7 @@ export async function POST(request: Request) {
     const errors: Array<{ date: string; error: string }> = [];
 
     for (const entry of payload.dates) {
-      if (!entry || !isValidDateValue(entry.date) || typeof entry.isAvailable !== "boolean") {
+      if (!entry || !isValidDateKey(entry.date) || typeof entry.isAvailable !== "boolean") {
         errors.push({
           date: entry?.date ?? "",
           error: "Invalid payload item. date must be YYYY-MM-DD and isAvailable must be boolean",
