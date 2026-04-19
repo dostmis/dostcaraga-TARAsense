@@ -24,6 +24,8 @@ export function canAccessStudyByRole(input: {
     if (!input.ficAssignedFacility) {
       return false;
     }
+    // Allow FIC users to access studies at their assigned facility
+    // Study location must match FIC user's assigned facility
     return input.studyLocation.trim().toLowerCase() === input.ficAssignedFacility.trim().toLowerCase();
   }
   return false;

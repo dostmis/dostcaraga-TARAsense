@@ -1434,7 +1434,13 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   <FieldLabel text="What do you want to do with this test?" />
                   <select
                     value={consumerObjective}
-                    onChange={(event) => setConsumerObjective(event.target.value as ConsumerObjective)}
+                    onChange={(event) => {
+                      const value = event.target.value as ConsumerObjective;
+                      // Validate that the selected value is one of the valid options
+                      if (CONSUMER_OBJECTIVES.some(obj => obj.value === value)) {
+                        setConsumerObjective(value);
+                      }
+                    }}
                     className="app-select"
                   >
                     {CONSUMER_OBJECTIVES.map((option) => (
