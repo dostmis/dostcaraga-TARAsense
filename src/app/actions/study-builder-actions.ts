@@ -113,7 +113,10 @@ type ResolvedLocationContext =
       publicAddressDetails: string;
     };
 
-export async function createStudyFromBuilder(payload: unknown) {
+export async function createStudyFromBuilder(
+  payload: unknown,
+  actor?: { userId: string; role: "MSME" | "ADMIN" | "FIC" | "CONSUMER" }
+) {
   try {
     const validated = BuilderPayloadSchema.parse(payload);
     const locationContext = resolveLocationContext(validated);
@@ -121,7 +124,7 @@ export async function createStudyFromBuilder(payload: unknown) {
       return { success: false, error: locationContext.error };
     }
 
-    const session = await getCurrentSession();
+    const session = actor ?? (await getCurrentSession());
     if (!session) {
       return { success: false, error: "Login required." };
     }

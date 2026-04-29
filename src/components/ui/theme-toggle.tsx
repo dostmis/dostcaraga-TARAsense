@@ -1,7 +1,7 @@
 "use client";
 
 import { Moon, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 
 type Theme = "light" | "dark";
 
@@ -21,30 +21,43 @@ function resolveInitialTheme(): Theme {
   return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
-function resolveThemeForRender(): Theme {
-  if (typeof window === "undefined") {
-    return "light";
-  }
+function subscribeToThemeChanges(onStoreChange: () => void) {
+  window.addEventListener("storage", onStoreChange);
+  window.addEventListener("tara-theme-change", onStoreChange);
+
+  return () => {
+    window.removeEventListener("storage", onStoreChange);
+    window.removeEventListener("tara-theme-change", onStoreChange);
+  };
+}
+
+function getThemeSnapshot(): Theme {
   return resolveInitialTheme();
 }
 
-export function ThemeToggle() {
-  const [theme, setTheme] = useState<Theme>(resolveThemeForRender);
+function getServerThemeSnapshot(): Theme {
+  return "light";
+}
 
-  useEffect(() => {
-    applyTheme(theme);
-    window.localStorage.setItem(STORAGE_KEY, theme);
-  }, [theme]);
+function setStoredTheme(theme: Theme) {
+  applyTheme(theme);
+  window.localStorage.setItem(STORAGE_KEY, theme);
+  window.dispatchEvent(new Event("tara-theme-change"));
+}
+
+export function ThemeToggle() {
+  const theme = useSyncExternalStore(subscribeToThemeChanges, getThemeSnapshot, getServerThemeSnapshot);
 
   const isDark = theme === "dark";
 
   return (
     <button
       type="button"
-      onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+      onClick={() => setStoredTheme(isDark ? "light" : "dark")}
       className="fixed bottom-4 right-4 z-[1200] inline-flex h-11 w-11 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] shadow-[0_8px_24px_rgba(15,23,42,0.14)] transition hover:scale-105 hover:border-[#f97316]"
       aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
       title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      suppressHydrationWarning
     >
       {isDark ? <Sun size={18} /> : <Moon size={18} />}
     </button>
