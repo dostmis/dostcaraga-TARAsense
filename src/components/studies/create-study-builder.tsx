@@ -1602,7 +1602,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               </div>
 
               {requiresFicBooking && (
-                <div className="space-y-3 rounded-xl border border-[#c7d2fe] bg-[#eef2ff] p-4">
+                <div className="space-y-3 rounded-xl border border-[#c7d2fe] bg-[#191b29] p-4">
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <FieldLabel text="Assigned FIC User" />

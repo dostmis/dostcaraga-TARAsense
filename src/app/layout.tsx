@@ -20,8 +20,7 @@ const themeInitScript = `
   try {
     const key = "tara-theme";
     const saved = localStorage.getItem(key);
-    const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    const theme = saved === "light" || saved === "dark" ? saved : (prefersDark ? "dark" : "light");
+    const theme = saved === "light" || saved === "dark" ? saved : "light";
     document.documentElement.classList.toggle("dark", theme === "dark");
     document.documentElement.style.colorScheme = theme;
   } catch (_) {}

@@ -266,10 +266,10 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
         <Stat title="Decision" value={(decisionFlag ?? "PENDING").replace(/_/g, " ")} />
       </section>
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+      <div className="grid min-w-0 grid-cols-1 gap-6 lg:grid-cols-2">
         <Card title="Consumer Reaction">
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-64 min-h-64 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={hedonicData}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} />
                 <XAxis dataKey="name" />
@@ -282,8 +282,8 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
         </Card>
 
         <Card title="Attribute Liking Scores">
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
+          <div className="h-64 min-h-64 min-w-0">
+            <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <BarChart data={attributeStats.filter((attribute) => attribute.type === "LIKING")} layout="vertical">
                 <CartesianGrid strokeDasharray="3 3" horizontal vertical={false} />
                 <XAxis type="number" domain={[0, 9]} />
@@ -300,10 +300,10 @@ export function ResultsDashboard({ studyId }: ResultsDashboardProps) {
             {attributeStats
               .filter((attribute) => attribute.type === "JAR")
               .map((attribute) => (
-                <div key={attribute.name} className="rounded-lg border border-[#e2e8f0] p-4">
+                <div key={attribute.name} className="min-w-0 rounded-lg border border-[#e2e8f0] p-4">
                   <h3 className="font-semibold text-[#0f172a]">{attribute.name}</h3>
-                  <div className="h-40">
-                    <ResponsiveContainer width="100%" height="100%">
+                  <div className="h-40 min-h-40 min-w-0">
+                    <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
                       <PieChart>
                         <Pie
                           data={[

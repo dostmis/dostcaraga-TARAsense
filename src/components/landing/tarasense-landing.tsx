@@ -84,6 +84,8 @@ const navGroups: NavGroup[] = [
   },
 ];
 
+const visibleNavGroups = navGroups.filter((group) => group.label !== "Solutions" && group.label !== "Platform");
+
 const logos: Logo[] = [
   { label: "Department of Science and Technology - Region XIII", src: "/TARAimage/DOST_Logo.png" },
   { label: "FIC CSU Main Campus", src: "/TARAimage/CSU-MAIN.png" },
@@ -198,6 +200,38 @@ const footerLinkHref: Record<string, string> = {
   "Trust center": "#proof",
 };
 
+function DostBrandLogo() {
+  return (
+    <span className="inline-flex h-12 w-[177px] items-center">
+      <Image
+        src="/TARAimage/DOST_Logo_with.png"
+        alt=""
+        width={214}
+        height={58}
+        className="tara-logo-light h-12 w-auto object-contain"
+        priority
+      />
+      <Image
+        src="/TARAimage/DOST_Logo_Inverse.png"
+        alt=""
+        width={214}
+        height={58}
+        className="tara-logo-dark h-12 w-auto object-contain"
+        priority
+      />
+    </span>
+  );
+}
+
+function TarasenseWordmark() {
+  return (
+    <span className="text-xl font-black tracking-tight" aria-label="TARAsense">
+      <span className="text-[#1746ff]">TARA</span>
+      <span className="text-[#f97316]">sense</span>
+    </span>
+  );
+}
+
 export function TarasenseLanding() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
@@ -239,52 +273,60 @@ export function TarasenseLanding() {
                 : "border-0 bg-transparent shadow-none"
             }`}
           >
-            <div className={`flex items-center justify-between gap-4 px-4 transition-all duration-500 md:px-6 ${compactHeader ? "py-3" : "py-4"}`}>
-              <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home">
-                <Image src="/TARAimage/DOST_Logo_with.png" alt="Department of Science and Technology" width={214} height={58} className="h-12 w-auto object-contain" priority />
-              </Link>
+            <div className={`relative flex items-center justify-between gap-4 px-4 transition-all duration-500 md:px-6 ${compactHeader ? "py-3" : "py-4"}`}>
+              <div className="flex min-w-0 items-center">
+                <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home">
+                  <DostBrandLogo />
+                </Link>
+              </div>
 
-              <nav className="hidden items-center gap-2 lg:flex" aria-label="Primary navigation">
-                {navGroups.map((group) => (
-                  <div
-                    key={group.label}
-                    className="relative"
-                    onMouseEnter={() => setActiveMenu(group.label)}
-                    onMouseLeave={() => setActiveMenu(null)}
-                  >
-                    <button
-                      type="button"
-                      className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
-                      aria-expanded={activeMenu === group.label}
-                      onFocus={() => setActiveMenu(group.label)}
+              <div className="absolute left-1/2 hidden -translate-x-1/2 items-center lg:flex">
+                <nav className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap" aria-label="Primary navigation">
+                  {visibleNavGroups.map((group) => (
+                    <div
+                      key={group.label}
+                      className="relative"
+                      onMouseEnter={() => setActiveMenu(group.label)}
+                      onMouseLeave={() => setActiveMenu(null)}
                     >
-                      {group.label}
-                      <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
-                    </button>
+                      <button
+                        type="button"
+                        className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
+                        aria-expanded={activeMenu === group.label}
+                        onFocus={() => setActiveMenu(group.label)}
+                      >
+                        {group.label}
+                        <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
+                      </button>
 
-                    {activeMenu === group.label && (
-                      <div className="absolute left-1/2 top-full z-30 mt-4 w-[34rem] -translate-x-1/2">
-                        <div className="glass-panel tara-menu-enter p-4">
-                          <div className="grid gap-3 md:grid-cols-3">
-                            {group.items.map((item) => (
-                              <a
-                                key={item.title}
-                                href="#solutions"
-                                className="rounded-[1.25rem] border border-transparent bg-surface p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-brand/20 hover:shadow-soft"
-                              >
-                                <p className="font-semibold text-foreground">{item.title}</p>
-                                <p className="mt-2 text-sm leading-6 text-muted-foreground">{item.description}</p>
-                              </a>
-                            ))}
+                      {activeMenu === group.label && (
+                        <div className="absolute left-1/2 top-full z-30 mt-4 w-[42rem] -translate-x-1/2 max-w-[calc(100vw-2rem)]">
+                          <div className="glass-panel tara-menu-enter p-4">
+                            <div className="grid min-w-0 gap-3 md:grid-cols-3">
+                              {group.items.map((item) => (
+                                <a
+                                  key={item.title}
+                                  href="#solutions"
+                                  className="min-w-0 rounded-[1.25rem] border border-transparent bg-surface p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-brand/20 hover:shadow-soft"
+                                >
+                                  <p className="break-words font-semibold text-foreground">{item.title}</p>
+                                  <p className="mt-2 whitespace-normal break-words text-sm leading-6 text-muted-foreground">{item.description}</p>
+                                </a>
+                              ))}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
-                ))}
-                <a href="#proof" className="link-accent rounded-full px-4 py-2 text-sm">Customers</a>
-                <a href="#footer" className="link-accent rounded-full px-4 py-2 text-sm">Company</a>
-              </nav>
+                      )}
+                    </div>
+                  ))}
+                  <a href="#proof" className="link-accent rounded-full px-4 py-2 text-sm">Customers</a>
+                  <a href="#footer" className="link-accent rounded-full px-4 py-2 text-sm">Company</a>
+                </nav>
+
+                <Link href="https://tarasense.dostcaraga.ph/" className="focus-ring rounded-full px-2 py-1" aria-label="TARAsense home">
+                  <TarasenseWordmark />
+                </Link>
+              </div>
 
               <div className="hidden items-center gap-3 lg:flex">
                 <Link href="/login" className="btn-nav">Sign in</Link>
@@ -309,7 +351,7 @@ export function TarasenseLanding() {
           <div className="flex min-h-dvh flex-col px-6 py-5 sm:px-8">
             <div className="flex items-center justify-between">
               <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home" onClick={() => setMenuOpen(false)}>
-                <Image src="/TARAimage/DOST_Logo_with.png" alt="Department of Science and Technology" width={214} height={58} className="h-12 w-auto object-contain" priority />
+                <DostBrandLogo />
               </Link>
               <button
                 type="button"
@@ -322,7 +364,7 @@ export function TarasenseLanding() {
             </div>
 
             <nav className="mt-10 flex flex-1 flex-col gap-8" aria-label="Mobile navigation">
-              {navGroups.map((group) => (
+              {visibleNavGroups.map((group) => (
                 <div key={group.label}>
                   <p className="text-xs font-semibold uppercase text-muted-foreground">{group.label}</p>
                   <div className="mt-3 grid gap-2">

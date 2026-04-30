@@ -18,7 +18,7 @@ function resolveInitialTheme(): Theme {
   if (saved === "light" || saved === "dark") {
     return saved;
   }
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light";
 }
 
 function subscribeToThemeChanges(onStoreChange: () => void) {

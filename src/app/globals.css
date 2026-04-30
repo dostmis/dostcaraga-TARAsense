@@ -433,6 +433,18 @@ html.dark .app-button-primary:hover {
   animation-play-state: paused;
 }
 
+.tara-logo-dark {
+  display: none;
+}
+
+html.dark .tara-logo-light {
+  display: none;
+}
+
+html.dark .tara-logo-dark {
+  display: block;
+}
+
 .btn-hero,
 .btn-secondary,
 .btn-nav,
@@ -817,7 +829,7 @@ html.dark .app-button-primary:hover {
   }
 }
 
-/* Dark mode compatibility for existing hex utility classes */
+/* Dark mode compatibility for existing dashboard hex utility classes */
 html.dark [class*="bg-white"] {
   background-color: var(--card) !important;
 }
@@ -833,28 +845,118 @@ html.dark .app-shell-nav::-webkit-scrollbar-thumb {
 html.dark [class~="bg-[#f8fafc]"],
 html.dark [class~="bg-[#fffaf4]"],
 html.dark [class~="bg-[#fffdfb]"],
-html.dark [class~="bg-[#faf4ee]"] {
-  background-color: #111827 !important;
+html.dark [class~="bg-[#faf4ee]"],
+html.dark [class~="bg-[#faf6f2]"],
+html.dark [class~="bg-[#f6ede5]"],
+html.dark [class~="bg-slate-100"] {
+  background-color: var(--background) !important;
 }
 
 html.dark [class~="bg-[#fff7ed]"],
 html.dark [class~="bg-[#fff0de]"],
-html.dark [class~="bg-[#ffedd5]"] {
-  background-color: rgba(249, 115, 22, 0.14) !important;
+html.dark [class~="bg-[#ffedd5]"],
+html.dark [class~="bg-[#fff7eb]"],
+html.dark [class~="bg-[#fff8ef]"],
+html.dark [class~="bg-[#fff6ed]"],
+html.dark [class~="bg-[#fff1f2]"],
+html.dark [class~="bg-amber-50"],
+html.dark [class~="bg-rose-50"] {
+  background-color: color-mix(in srgb, #ff8a3d 16%, var(--card)) !important;
+}
+
+html.dark [class~="bg-[#edf5ff]"],
+html.dark [class~="bg-[#eff6ff]"],
+html.dark [class~="bg-[#f8fbff]"],
+html.dark [class~="bg-blue-50"],
+html.dark [class~="bg-sky-50"] {
+  background-color: color-mix(in srgb, var(--brand) 18%, var(--card)) !important;
+}
+
+html.dark [class~="bg-[#e8f8ed]"],
+html.dark [class~="bg-[#f0fdf4]"],
+html.dark [class~="bg-[#dcfce7]"],
+html.dark [class~="bg-emerald-50"] {
+  background-color: color-mix(in srgb, var(--status-success) 16%, var(--card)) !important;
+}
+
+html.dark [class~="bg-[#fff7e9]"],
+html.dark [class~="bg-[#fffbeb]"],
+html.dark [class~="bg-[#fef3c7]"] {
+  background-color: color-mix(in srgb, var(--status-warning) 18%, var(--card)) !important;
+}
+
+html.dark [class~="bg-red-50"],
+html.dark [class~="bg-[#fef2f2]"],
+html.dark [class~="bg-[#fee2e2]"] {
+  background-color: color-mix(in srgb, var(--destructive) 18%, var(--card)) !important;
 }
 
 html.dark [class~="text-[#0f172a]"],
 html.dark [class~="text-[#334155]"],
 html.dark [class~="text-[#2f241d]"],
-html.dark [class~="text-[#2e231c]"] {
-  color: #e2e8f0 !important;
+html.dark [class~="text-[#2e231c]"],
+html.dark [class~="text-[#1e293b]"],
+html.dark [class~="text-gray-900"],
+html.dark [class~="text-slate-800"],
+html.dark [class~="text-slate-700"] {
+  color: var(--foreground) !important;
 }
 
 html.dark [class~="text-[#64748b]"],
 html.dark [class~="text-[#6f5b4f]"],
 html.dark [class~="text-[#5d493b]"],
-html.dark [class~="text-[#8d735f]"] {
-  color: #94a3b8 !important;
+html.dark [class~="text-[#8d735f]"],
+html.dark [class~="text-[#8c776a]"],
+html.dark [class~="text-[#475569]"],
+html.dark [class~="text-gray-500"],
+html.dark [class~="text-gray-600"],
+html.dark [class~="text-gray-700"] {
+  color: var(--muted-foreground) !important;
+}
+
+html.dark [class~="placeholder:text-[#64748b]"]::placeholder,
+html.dark [class~="placeholder:text-[#9b8471]"]::placeholder {
+  color: color-mix(in srgb, var(--muted-foreground) 72%, transparent) !important;
+}
+
+html.dark [class~="text-[#c2410c]"],
+html.dark [class~="text-[#ea580c]"],
+html.dark [class~="text-[#9a3412]"],
+html.dark [class~="text-[#9a5822]"],
+html.dark [class~="text-[#874715]"],
+html.dark [class~="text-[#5a4536]"],
+html.dark [class~="text-[#695446]"],
+html.dark [class~="text-amber-700"],
+html.dark [class~="text-rose-700"] {
+  color: #ffb27b !important;
+}
+
+html.dark [class~="text-[#1e4f8f]"],
+html.dark [class~="text-[#1e3a8a]"],
+html.dark [class~="text-[#1d4ed8]"],
+html.dark [class~="text-blue-700"] {
+  color: #aebcff !important;
+}
+
+html.dark [class~="text-[#1d7c4a]"],
+html.dark [class~="text-[#166534]"],
+html.dark [class~="text-green-600"],
+html.dark [class~="text-emerald-700"] {
+  color: #86efac !important;
+}
+
+html.dark [class~="text-[#8a5a00]"],
+html.dark [class~="text-[#92400e]"],
+html.dark [class~="text-[#b45309]"] {
+  color: #fbbf24 !important;
+}
+
+html.dark [class~="text-[#9f1239]"],
+html.dark [class~="text-[#991b1b]"],
+html.dark [class~="text-[#b91c1c]"],
+html.dark [class~="text-red-700"],
+html.dark [class~="text-red-800"] {
+  color: #fca5a5 !important;
 }
 
 html.dark [class~="border-[#e2e8f0]"],
@@ -864,8 +966,41 @@ html.dark [class~="border-[#e7ddd4]"],
 html.dark [class~="border-[#eadfd6]"],
 html.dark [class~="border-[#efe5dc]"],
 html.dark [class~="border-[#d8c7b8]"],
-html.dark [class~="border-[#d9ccbf]"] {
-  border-color: #334155 !important;
+html.dark [class~="border-[#d9ccbf]"],
+html.dark [class~="border-[#daccc0]"],
+html.dark [class~="border-slate-200"],
+html.dark [class~="border-[#dbeafe]"],
+html.dark [class~="border-[#bfdbfe]"] {
+  border-color: var(--divider) !important;
+}
+
+html.dark [class~="border-[#fed7aa]"],
+html.dark [class~="border-[#fdba74]"],
+html.dark [class~="border-[#ebd5bf]"],
+html.dark [class~="border-amber-200"],
+html.dark [class~="border-rose-200"] {
+  border-color: color-mix(in srgb, #ff8a3d 40%, var(--divider)) !important;
+}
+
+html.dark [class~="border-blue-200"],
+html.dark [class~="border-[#93c5fd]"],
+html.dark [class~="border-[#60a5fa]"] {
+  border-color: color-mix(in srgb, var(--brand) 48%, var(--divider)) !important;
+}
+
+html.dark [class~="border-emerald-200"],
+html.dark [class~="border-[#bbf7d0]"] {
+  border-color: color-mix(in srgb, var(--status-success) 44%, var(--divider)) !important;
+}
+
+html.dark [class~="border-red-200"],
+html.dark [class~="border-[#fecaca]"] {
+  border-color: color-mix(in srgb, var(--destructive) 48%, var(--divider)) !important;
+}
+
+html.dark .app-shell-sidebar [class*="from-[#fff7ed]"] {
+  background-image: none !important;
+  background-color: color-mix(in srgb, #ff8a3d 14%, var(--card)) !important;
 }
 
 .system-alert-pop {
