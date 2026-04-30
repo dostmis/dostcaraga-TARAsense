@@ -1,7 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Suspense } from "react";
+import { FloatingChatbot } from "@/components/chatbot/floating-chatbot";
 import { PageTransitionIndicator } from "@/components/ui/page-transition-indicator";
-import { ThemeToggle } from "@/components/ui/theme-toggle";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -42,7 +42,7 @@ export default function RootLayout({
           <PageTransitionIndicator />
         </Suspense>
         {children}
-        <ThemeToggle />
+        <FloatingChatbot />
       </body>
     </html>
   );

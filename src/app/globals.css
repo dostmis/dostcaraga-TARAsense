@@ -757,6 +757,12 @@ html.dark .tara-logo-dark {
   pointer-events: auto;
 }
 
+#app-mobile-sidebar-toggle:checked ~ .tara-chatbot-root {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(0.5rem);
+}
+
 .app-collapse-icon-open {
   display: none;
 }

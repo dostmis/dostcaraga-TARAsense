@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
   BrainCircuit,
@@ -236,15 +236,34 @@ export function TarasenseLanding() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [compactHeader, setCompactHeader] = useState(false);
+  const [headerHidden, setHeaderHidden] = useState(false);
   const [activeTestimonial, setActiveTestimonial] = useState(0);
+  const lastScrollYRef = useRef(0);
 
   useEffect(() => {
-    const onScroll = () => setCompactHeader(window.scrollY > 18);
+    const onScroll = () => {
+      const currentScrollY = window.scrollY;
+      const scrollDelta = currentScrollY - lastScrollYRef.current;
 
+      setCompactHeader(currentScrollY > 18);
+
+      if (menuOpen || currentScrollY < 96) {
+        setHeaderHidden(false);
+      } else if (Math.abs(scrollDelta) > 6) {
+        setHeaderHidden(scrollDelta > 0);
+        if (scrollDelta > 0) {
+          setActiveMenu(null);
+        }
+      }
+
+      lastScrollYRef.current = Math.max(currentScrollY, 0);
+    };
+
+    lastScrollYRef.current = window.scrollY;
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  }, [menuOpen]);
 
   useEffect(() => {
     const interval = window.setInterval(() => {
@@ -264,40 +283,37 @@ export function TarasenseLanding() {
       <div className="mesh-backdrop pointer-events-none absolute inset-0 -z-10 opacity-90" />
       <div className="bg-mesh pointer-events-none absolute inset-x-0 top-0 -z-10 h-[36rem]" />
 
-      <header className="tara-fade-down sticky top-0 z-40">
-        <div className="mx-auto w-full max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
-          <div
-            className={`rounded-full transition-all duration-500 ${
-              compactHeader
-                ? "border border-divider/70 bg-surface/80 shadow-panel backdrop-blur-xl"
-                : "border-0 bg-transparent shadow-none"
-            }`}
-          >
-            <div className={`relative flex items-center justify-between gap-4 px-4 transition-all duration-500 md:px-6 ${compactHeader ? "py-3" : "py-4"}`}>
-              <div className="flex min-w-0 items-center">
-                <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home">
-                  <DostBrandLogo />
-                </Link>
-              </div>
+      <header
+        className={`tara-fade-down fixed inset-x-0 top-0 z-40 border-b border-[#e2e8f0] bg-[#ffffff] shadow-[0_8px_24px_rgba(15,23,42,0.06)] transition-transform duration-300 ease-out ${
+          headerHidden ? "-translate-y-full" : "translate-y-0"
+        }`}
+      >
+        <div className="w-full px-2 sm:px-4 lg:px-6">
+          <div className={`relative flex items-center justify-between gap-4 transition-all duration-500 ${compactHeader ? "py-3" : "py-4"}`}>
+            <div className="-ml-1 flex min-w-0 items-center sm:-ml-2 lg:-ml-3">
+              <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home">
+                <DostBrandLogo />
+              </Link>
+            </div>
 
-              <div className="absolute left-1/2 hidden -translate-x-1/2 items-center lg:flex">
-                <nav className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap" aria-label="Primary navigation">
-                  {visibleNavGroups.map((group) => (
-                    <div
-                      key={group.label}
-                      className="relative"
-                      onMouseEnter={() => setActiveMenu(group.label)}
-                      onMouseLeave={() => setActiveMenu(null)}
+            <div className="absolute left-1/2 hidden -translate-x-1/2 items-center lg:flex">
+              <nav className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap" aria-label="Primary navigation">
+                {visibleNavGroups.map((group) => (
+                  <div
+                    key={group.label}
+                    className="relative"
+                    onMouseEnter={() => setActiveMenu(group.label)}
+                    onMouseLeave={() => setActiveMenu(null)}
+                  >
+                    <button
+                      type="button"
+                      className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
+                      aria-expanded={activeMenu === group.label}
+                      onFocus={() => setActiveMenu(group.label)}
                     >
-                      <button
-                        type="button"
-                        className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
-                        aria-expanded={activeMenu === group.label}
-                        onFocus={() => setActiveMenu(group.label)}
-                      >
-                        {group.label}
-                        <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
-                      </button>
+                      {group.label}
+                      <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
+                    </button>
 
                       {activeMenu === group.label && (
                         <div className="absolute left-1/2 top-full z-30 mt-4 w-[42rem] -translate-x-1/2 max-w-[calc(100vw-2rem)]">
@@ -328,7 +344,7 @@ export function TarasenseLanding() {
                 </Link>
               </div>
 
-              <div className="hidden items-center gap-3 lg:flex">
+              <div className="-mr-1 hidden items-center gap-3 sm:-mr-2 lg:-mr-1 lg:flex">
                 <Link href="/login" className="btn-nav">Sign in</Link>
               </div>
 
@@ -342,7 +358,6 @@ export function TarasenseLanding() {
                 <Menu />
               </button>
             </div>
-          </div>
         </div>
       </header>
 
@@ -400,7 +415,7 @@ export function TarasenseLanding() {
         </div>
       )}
 
-      <main>
+      <main className="pt-24 md:pt-28">
         <section id="hero" className="section-shell overflow-hidden md:pt-10">
           <div className="mx-auto grid w-full max-w-7xl items-start gap-16 px-4 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:px-8">
             <div className="tara-hero-copy relative z-10 max-w-2xl">
