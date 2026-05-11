@@ -12,6 +12,7 @@ type DbClient = PrismaClient | Prisma.TransactionClient;
 export type SampleCode = {
   sample: number;
   code: string;
+  servingOrder?: number;
 };
 
 type AssignmentInput = {
@@ -140,16 +141,23 @@ export function parseSampleCodes(value: unknown): SampleCode[] {
       return accumulator;
     }
 
-    const record = item as { sample?: unknown; code?: unknown };
+    const record = item as { sample?: unknown; code?: unknown; servingOrder?: unknown; presentationOrder?: unknown };
     if (typeof record.sample !== "number" || typeof record.code !== "string") {
       return accumulator;
     }
 
-    accumulator.push({ sample: record.sample, code: record.code });
+    const servingOrder =
+      typeof record.servingOrder === "number" && Number.isInteger(record.servingOrder) && record.servingOrder > 0
+        ? record.servingOrder
+        : typeof record.presentationOrder === "number" && Number.isInteger(record.presentationOrder) && record.presentationOrder > 0
+          ? record.presentationOrder
+          : undefined;
+
+    accumulator.push({ sample: record.sample, code: record.code, servingOrder });
     return accumulator;
   }, []);
 
-  return rows.sort((left, right) => left.sample - right.sample);
+  return rows.sort((left, right) => (left.servingOrder ?? left.sample) - (right.servingOrder ?? right.sample));
 }
 
 export function parseOfferedSessions(value: unknown): string[] {
@@ -226,7 +234,7 @@ async function generateUniqueSampleCodes(db: DbClient, studyId: string, sampleCo
       continue;
     }
     usedCodes.add(code);
-    generated.push({ sample: generated.length + 1, code });
+    generated.push({ sample: generated.length + 1, code, servingOrder: generated.length + 1 });
   }
 
   return generated;

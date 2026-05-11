@@ -3,6 +3,8 @@ import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { SensoryTestInterface } from "@/components/sensory-test/test-interface";
 import { getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
+import { parseSampleCodes } from "@/lib/participant-assignment";
+import { assignSampleCodesFromCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 
 type PageProps = {
   params: Promise<{ studyId: string; participantId: string }>;
@@ -29,6 +31,9 @@ export default async function SensoryTestPage({ params }: PageProps) {
     select: {
       status: true,
       source: true,
+      panelistNumber: true,
+      sampleCodes: true,
+      randomizeCode: true,
       panelist: {
         select: {
           userId: true,
@@ -38,6 +43,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
       study: {
         select: {
           creatorId: true,
+          creator: { select: { role: true } },
           productName: true,
           targetDemographics: true,
           sensoryAttributes: {
@@ -46,6 +52,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
               id: true,
               name: true,
               type: true,
+              sourceAttributeName: true,
               jarOptions: true,
             },
           },
@@ -56,18 +63,23 @@ export default async function SensoryTestPage({ params }: PageProps) {
     | {
         status: "SELECTED" | "WAITLIST" | "CONFIRMED" | "COMPLETED" | "CANCELLED" | "DECLINED";
         source: "REGISTERED_CONSUMER" | "WALK_IN_GUEST";
+        panelistNumber: number | null;
+        sampleCodes: unknown;
+        randomizeCode: string | null;
         panelist: {
           userId: string | null;
         };
         consentStatus: "PENDING" | "AGREED" | "DECLINED";
         study: {
           creatorId: string;
+          creator: { role: string };
           productName: string;
           targetDemographics: unknown;
           sensoryAttributes: Array<{
             id: string;
             name: string;
             type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+            sourceAttributeName: string | null;
             jarOptions: unknown;
           }>;
         };
@@ -83,6 +95,14 @@ export default async function SensoryTestPage({ params }: PageProps) {
   if (session?.role === "CONSUMER" && participant.consentStatus !== "AGREED") {
     redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Please+complete+consent+before+evaluation`);
   }
+  if (session?.role === "MSME" && participant.study.creatorId !== session.userId) {
+    if (participant.study.creator.role !== "MSME" || participant.panelist.userId !== session.userId) {
+      notFound();
+    }
+    if (participant.consentStatus !== "AGREED") {
+      redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Please+complete+consent+before+evaluation`);
+    }
+  }
   if (isGuest) {
     if (!guestSession || participant.source !== "WALK_IN_GUEST" || participantId !== guestSession.participantId) {
       notFound();
@@ -90,9 +110,6 @@ export default async function SensoryTestPage({ params }: PageProps) {
     if (participant.consentStatus !== "AGREED") {
       redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&guest=1&error=Please+complete+consent+before+evaluation`);
     }
-  }
-  if (session?.role === "MSME" && participant.study.creatorId !== session.userId) {
-    notFound();
   }
   if (session?.role === "MSME" && participant.study.creatorId === session.userId) {
     return (
@@ -133,11 +150,13 @@ export default async function SensoryTestPage({ params }: PageProps) {
     id: string;
     name: string;
     type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+    sourceAttributeName: string | null;
     jarOptions: unknown;
   }) => ({
     id: attribute.id,
     name: attribute.name,
     type: attribute.type,
+    sourceAttributeName: attribute.sourceAttributeName,
     jarOptions:
       attribute.jarOptions && typeof attribute.jarOptions === "object"
         ? (attribute.jarOptions as {
@@ -151,6 +170,13 @@ export default async function SensoryTestPage({ params }: PageProps) {
         : null,
   }));
   const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
+  const samplePlan = buildSamplePlan(
+    participant.sampleCodes,
+    participant.randomizeCode,
+    sampleCount,
+    participant.study.targetDemographics,
+    participant.panelistNumber
+  );
 
   return (
     <SensoryTestInterface
@@ -159,6 +185,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
       attributes={attributes}
       productName={participant.study.productName}
       sampleCount={sampleCount}
+      samplePlan={samplePlan}
     />
   );
 }
@@ -174,4 +201,44 @@ function resolveStudySampleCount(value: unknown) {
   }
 
   return Math.max(1, Math.floor(data.numberOfSamples));
+}
+
+function buildSamplePlan(
+  sampleCodes: unknown,
+  fallbackCode: string | null,
+  sampleCount: number,
+  targetDemographics: unknown,
+  panelistNumber: number | null
+) {
+  const codeBook = parseStudyRandomCodeBook(readRandomCodeBook(targetDemographics));
+  const planned = codeBook && panelistNumber ? assignSampleCodesFromCodeBook(codeBook, panelistNumber) : null;
+  if (planned && planned.length > 0) {
+    return planned.map((row) => ({
+      sampleNumber: row.sample,
+      servingOrder: row.servingOrder,
+      code: row.code,
+    }));
+  }
+
+  const parsed = parseSampleCodes(sampleCodes);
+  if (parsed.length > 0) {
+    return parsed.map((row, index) => ({
+      sampleNumber: row.sample,
+      servingOrder: row.servingOrder ?? index + 1,
+      code: row.code,
+    }));
+  }
+
+  return Array.from({ length: sampleCount }, (_, index) => ({
+    sampleNumber: index + 1,
+    servingOrder: index + 1,
+    code: sampleCount === 1 ? fallbackCode ?? `Sample ${index + 1}` : `Sample ${index + 1}`,
+  }));
+}
+
+function readRandomCodeBook(targetDemographics: unknown) {
+  if (!targetDemographics || typeof targetDemographics !== "object") {
+    return null;
+  }
+  return (targetDemographics as { randomCodeBook?: unknown }).randomCodeBook ?? null;
 }

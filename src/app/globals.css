@@ -147,6 +147,7 @@ html,
 body {
   height: 100%;
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 body {
@@ -162,7 +163,54 @@ body {
 *,
 *::before,
 *::after {
+  box-sizing: border-box;
   letter-spacing: 0 !important;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  min-width: 0;
+}
+
+svg {
+  flex-shrink: 0;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+main,
+section,
+article,
+header,
+footer,
+nav,
+form,
+fieldset,
+div {
+  min-width: 0;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+li,
+label,
+button,
+a,
+span {
+  overflow-wrap: anywhere;
 }
 
 html {
@@ -189,9 +237,60 @@ html {
   border-radius: 0.75rem;
   background: var(--card);
   color: var(--foreground);
+  font-size: 1rem;
+  line-height: 1.5;
+  min-height: 3rem;
   padding: 0.625rem 0.75rem;
   outline: none;
   transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.app-input.pl-10,
+.app-textarea.pl-10 {
+  padding-left: 2.5rem;
+}
+
+.app-icon-input {
+  align-items: center;
+  border: 1px solid var(--input);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--foreground);
+  display: flex;
+  min-height: 3rem;
+  overflow: hidden;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+.app-icon-input:focus-within {
+  border-color: var(--ring);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 24%, transparent);
+  background: var(--card);
+}
+
+.app-icon-input__icon {
+  align-items: center;
+  color: var(--muted-foreground);
+  display: inline-flex;
+  flex: 0 0 2.75rem;
+  justify-content: center;
+}
+
+.app-icon-input__control {
+  background: transparent;
+  border: 0;
+  color: var(--foreground);
+  flex: 1 1 auto;
+  font-size: 1rem;
+  line-height: 1.5;
+  min-height: 3rem;
+  min-width: 0;
+  outline: 0;
+  padding: 0.625rem 0.875rem 0.625rem 0;
+}
+
+.app-icon-input__control::placeholder {
+  color: var(--muted-foreground);
 }
 
 .app-input::placeholder,
@@ -266,6 +365,10 @@ html.dark .app-button-primary:hover {
   background: color-mix(in srgb, var(--surface) 80%, transparent);
   box-shadow: var(--app-shadow-panel);
   backdrop-filter: blur(24px);
+}
+
+.mobile-fullscreen-panel {
+  width: 100%;
 }
 
 .surface-panel {
@@ -513,6 +616,40 @@ html.dark .tara-logo-dark {
 .btn-xl {
   min-height: 3.25rem;
   padding-inline: 1.75rem;
+}
+
+@media (max-width: 640px) {
+  body {
+    background-image: none;
+  }
+
+  .glass-panel,
+  .surface-panel,
+  .app-card {
+    border-radius: 0.875rem;
+  }
+
+  .mobile-fullscreen-panel {
+    min-height: 100dvh;
+    border-radius: 0;
+    border-inline-width: 0;
+    box-shadow: none;
+  }
+
+  .btn-hero,
+  .btn-secondary,
+  .btn-nav {
+    min-width: 0;
+    white-space: normal;
+  }
+
+  .btn-xl {
+    padding-inline: 1rem;
+  }
+
+  table {
+    min-width: max-content;
+  }
 }
 
 .auth-gradient-text {

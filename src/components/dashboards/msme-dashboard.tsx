@@ -6,9 +6,11 @@ import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { CreateStudyBuilder } from "@/components/studies/create-study-builder";
+import { CreateStudyImportPanel } from "@/components/studies/create-study-import-panel";
 import { TimedToast } from "@/components/ui/timed-toast";
 import { StudyDeleteControl } from "@/components/dashboards/study-delete-control";
-import { ClipboardList, LayoutDashboard, PlusCircle, UserRound } from "lucide-react";
+import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
+import { ClipboardList, Compass, FileUp, LayoutDashboard, PlusCircle, UserRound } from "lucide-react";
 
 interface StudyParticipantSummary {
   id: string;
@@ -33,6 +35,20 @@ interface StudySummary {
   };
 }
 
+interface PeerStudySummary extends StudySummary {
+  description: string | null;
+  targetDemographics: unknown;
+  creator: {
+    name: string;
+    organization: string | null;
+  };
+  _count: {
+    responses: number;
+    participants: number;
+    sensoryAttributes: number;
+  };
+}
+
 export async function MsmeDashboard({
   userId,
   view,
@@ -49,13 +65,50 @@ export async function MsmeDashboard({
   const activeView = parseMsmeView(view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
   let historyStudies: StudySummary[] = [];
+  let peerStudies: PeerStudySummary[] = [];
   let dbError: string | null = null;
   let totalStudies = 0;
   let ficBookings = 0;
   let totalResponses = 0;
   let activeStudies = 0;
+  let peerStudyCount = 0;
 
   try {
+    const [evaluatorPanelist, peerStudyRowsForCount] = await Promise.all([
+      prisma.panelist.findFirst({
+        where: { userId },
+        select: {
+          age: true,
+          gender: true,
+          lifestyle: true,
+          dietaryPrefs: true,
+          consumptionHabits: true,
+          isActive: true,
+        },
+      }),
+      prisma.study.findMany({
+        where: {
+          creatorId: { not: userId },
+          creator: { role: "MSME" },
+          status: { in: ["RECRUITING", "ACTIVE"] },
+        },
+        select: {
+          targetDemographics: true,
+          participants: {
+            where: { panelist: { userId } },
+            select: { status: true },
+          },
+        },
+      }),
+    ]);
+
+    peerStudyCount = peerStudyRowsForCount.filter((study) => {
+      if (!doesPanelistMatchTargetConsumer(evaluatorPanelist, study.targetDemographics)) {
+        return false;
+      }
+      return study.participants.every((participant) => participant.status !== "COMPLETED");
+    }).length;
+
     [totalStudies, ficBookings, totalResponses, activeStudies] = await Promise.all([
       prisma.study.count({
         where: { creatorId: userId },
@@ -93,6 +146,44 @@ export async function MsmeDashboard({
         },
       }),
     ]);
+
+    if (activeView === "evaluate") {
+      const rawPeerStudies = (await prisma.study.findMany({
+        where: {
+          creatorId: { not: userId },
+          creator: { role: "MSME" },
+          status: { in: ["RECRUITING", "ACTIVE"] },
+        },
+        orderBy: { createdAt: "desc" },
+        include: {
+          creator: {
+            select: {
+              name: true,
+              organization: true,
+            },
+          },
+          participants: {
+            where: { panelist: { userId } },
+            select: { id: true, status: true, panelist: { select: { name: true } } },
+          },
+          _count: {
+            select: {
+              responses: true,
+              participants: true,
+              sensoryAttributes: true,
+            },
+          },
+        },
+        take: 20,
+      })) as unknown as PeerStudySummary[];
+
+      peerStudies = rawPeerStudies.filter((study) => {
+        if (!doesPanelistMatchTargetConsumer(evaluatorPanelist, study.targetDemographics)) {
+          return false;
+        }
+        return study.participants.every((participant) => participant.status !== "COMPLETED");
+      });
+    }
 
     if (activeView === "history") {
       historyStudies = (await prisma.study.findMany({
@@ -133,6 +224,23 @@ export async function MsmeDashboard({
         return searchable.includes(normalizedQuery);
       })
     : historyStudies;
+  const filteredPeerStudies = normalizedQuery
+    ? peerStudies.filter((study) => {
+        const searchable = [
+          study.title,
+          study.productName,
+          study.location,
+          study.category,
+          study.stage,
+          study.status,
+          study.creator.name,
+          study.creator.organization ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        return searchable.includes(normalizedQuery);
+      })
+    : peerStudies;
 
   return (
     <DashboardShell
@@ -146,6 +254,19 @@ export async function MsmeDashboard({
         { label: "Dashboard", href: "/msme/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
         { label: "Profile", href: "/msme/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
         { label: "Create Study", href: "/msme/dashboard?view=create-study", icon: PlusCircle, active: activeView === "create-study" },
+        {
+          label: "Import Existing Sensory Dataset",
+          href: "/msme/dashboard?view=import-dataset",
+          icon: FileUp,
+          active: activeView === "import-dataset",
+        },
+        {
+          label: "Evaluate Studies",
+          href: "/msme/dashboard?view=evaluate",
+          icon: Compass,
+          badge: `${peerStudyCount}`,
+          active: activeView === "evaluate",
+        },
         {
           label: "Study History",
           href: "/msme/dashboard?view=history",
@@ -187,6 +308,67 @@ export async function MsmeDashboard({
 
       {activeView === "create-study" && (
         <CreateStudyBuilder embedded />
+      )}
+
+      {activeView === "import-dataset" && (
+        <CreateStudyImportPanel />
+      )}
+
+      {activeView === "evaluate" && !dbError && filteredPeerStudies.length === 0 && (
+        <section className="rounded-2xl border border-[#e4d7cc] bg-white p-8 text-center">
+          <h2 className="text-xl font-semibold text-[#2e231c]">{peerStudies.length === 0 ? "No eligible peer studies" : "No matching studies"}</h2>
+          <p className="mt-2 text-[#6f5b4f]">
+            {peerStudies.length === 0
+              ? "Only open studies created by other MSME users and matching your panelist profile appear here."
+              : "Try another search term to find an evaluation."}
+          </p>
+        </section>
+      )}
+
+      {activeView === "evaluate" && !dbError && filteredPeerStudies.length > 0 && (
+        <CollapsibleSection id="peer-evaluation-studies" title="Available Peer Evaluations" countLabel={`${filteredPeerStudies.length}`} defaultOpen={true}>
+          <div className="space-y-4">
+            {filteredPeerStudies.map((study) => {
+              const myParticipation = study.participants[0] ?? null;
+              return (
+                <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                    <div className="space-y-2">
+                      <h2 className="text-xl font-semibold text-[#2e231c]">{study.title}</h2>
+                      <p className="text-[#6f5b4f]">{study.productName}</p>
+                      <p className="text-sm text-[#6f5b4f]">
+                        Created by {study.creator.name}
+                        {study.creator.organization ? ` (${study.creator.organization})` : ""}
+                      </p>
+                      <div className="flex flex-wrap gap-2 text-xs">
+                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.category}</span>
+                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.stage}</span>
+                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.status}</span>
+                        <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                          Responses {study._count.responses}/{study.sampleSize}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Link
+                        href={`/studies/${study.id}/start`}
+                        className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
+                      >
+                        {myParticipation ? "Continue Evaluation" : "Start Evaluation"}
+                      </Link>
+                      {myParticipation && (
+                        <span className="inline-flex items-center justify-center rounded-lg bg-[#edf5ff] px-4 py-2 text-sm font-medium text-[#1e4f8f]">
+                          {myParticipation.status}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        </CollapsibleSection>
       )}
 
       {dbError && (
@@ -240,7 +422,7 @@ export async function MsmeDashboard({
                         href={`/dashboard/${study.id}`}
                         className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
                       >
-                        Open Dashboard
+                        Result
                       </Link>
                       {targetReached ? (
                         <span className="inline-flex items-center justify-center rounded-lg bg-[#e8f8ed] px-4 py-2 text-sm font-medium text-[#1d7c4a]">
@@ -269,7 +451,13 @@ export async function MsmeDashboard({
 }
 
 function parseMsmeView(value?: string) {
-  if (value === "profile" || value === "create-study" || value === "history") {
+  if (
+    value === "profile" ||
+    value === "create-study" ||
+    value === "import-dataset" ||
+    value === "history" ||
+    value === "evaluate"
+  ) {
     return value;
   }
   return "dashboard";

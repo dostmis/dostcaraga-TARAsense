@@ -7,7 +7,14 @@ import { getCurrentSession } from "@/lib/auth/session";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
+import { formatDateKeyInTimeZone } from "@/lib/date-time";
+import { DEFAULT_TARGET_CONSUMER, normalizeTargetConsumer } from "@/lib/target-consumer";
 import { z } from "zod";
+
+type ConsumerObjective = "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING";
+type StudyStageValue = "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS";
+const PRODUCT_IMAGE_MAX_BYTES = 1_000_000;
+const PRODUCT_IMAGE_DATA_URL_MAX_LENGTH = 1_400_000;
 
 const PrismaCategorySchema = z.enum([
   "BEVERAGE",
@@ -20,6 +27,7 @@ const PrismaCategorySchema = z.enum([
 
 const BuilderSessionSlotSchema = z.object({
   dayOffset: z.number().int().min(0),
+  testingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   label: z.string().min(1),
   startDateTime: z.string().datetime(),
   endDateTime: z.string().datetime(),
@@ -41,15 +49,31 @@ const BuilderPayloadSchema = z.object({
   sensoryMethod: z.string().optional(),
   consumerObjective: z
     .enum([
-      "CHECK_ACCEPTABILITY",
-      "IMPROVE_TASTE",
-      "IMPROVE_TEXTURE",
-      "FINE_TUNE",
-      "FAST_ITERATION",
+      "MARKET_READINESS",
+      "REFINEMENT",
+      "PROTOTYPING",
     ])
     .optional(),
   studyTitle: z.string().min(3),
   purpose: z.string().min(3),
+  targetConsumer: z
+    .object({
+      ageRange: z.tuple([z.number().int().min(10).max(100), z.number().int().min(10).max(100)]),
+      genders: z
+        .array(z.enum(["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_SAY"]))
+        .min(1)
+        .default(DEFAULT_TARGET_CONSUMER.genders),
+      lifestyles: z.array(z.enum(["student", "athlete", "office_worker"])).default([]),
+      dietaryPrefs: z.array(z.enum(["VEGETARIAN", "VEGAN", "GLUTEN_FREE"])).default([]),
+      consumptionHabits: z
+        .object({
+          coffeeDrinker: z.boolean().optional(),
+          snackConsumer: z.boolean().optional(),
+          energyDrinkConsumer: z.boolean().optional(),
+        })
+        .default({}),
+    })
+    .optional(),
   region: z.string().optional(),
   facilityType: z.string().optional(),
   publicVenueName: z.string().optional(),
@@ -75,9 +99,13 @@ const BuilderPayloadSchema = z.object({
   sampleSetups: z
     .array(
       z.object({
-        description: z.string().min(1),
-        ingredient: z.string().optional(),
-        allergen: z.string().min(1),
+        description: z.string().trim().min(1).max(1000),
+        ingredient: z.string().trim().max(1000).optional(),
+        allergen: z.string().trim().max(500).optional(),
+        imageDataUrl: z.string().max(PRODUCT_IMAGE_DATA_URL_MAX_LENGTH).optional(),
+        imageName: z.string().trim().max(160).optional(),
+        price: z.string().trim().max(80).optional(),
+        purchaseIntentQuestion: z.string().trim().max(240).optional(),
       })
     )
     .default([]),
@@ -87,15 +115,10 @@ const BuilderPayloadSchema = z.object({
   questions: z.array(z.string().min(1)).default([]),
 });
 
-const OBJECTIVE_LIMITS: Record<
-  "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION",
-  number
-> = {
-  CHECK_ACCEPTABILITY: 110,
-  IMPROVE_TASTE: 60,
-  IMPROVE_TEXTURE: 60,
-  FINE_TUNE: 60,
-  FAST_ITERATION: 35,
+const OBJECTIVE_PANEL_REQUIREMENTS: Record<ConsumerObjective, number> = {
+  MARKET_READINESS: 100,
+  REFINEMENT: 50,
+  PROTOTYPING: 35,
 };
 
 type ResolvedLocationContext =
@@ -220,6 +243,11 @@ async function createMarketStudy(
   if (!payload.marketStudyType) {
     return { success: false, error: "Select a market study type." };
   }
+  const sampleSetupResult = normalizeMarketSampleSetups(payload);
+  if (!sampleSetupResult.success) {
+    return { success: false, error: sampleSetupResult.error };
+  }
+  const targetConsumer = normalizeTargetConsumer(payload.targetConsumer);
 
   const study = await prisma.study.create({
     data: {
@@ -230,6 +258,12 @@ async function createMarketStudy(
       stage: "MARKET_READINESS",
       description: payload.purpose,
       targetDemographics: {
+        ageRange: targetConsumer.ageRange,
+        genders: targetConsumer.genders,
+        lifestyles: targetConsumer.lifestyles,
+        dietaryPrefs: targetConsumer.dietaryPrefs,
+        consumptionHabits: targetConsumer.consumptionHabits,
+        targetConsumer,
         studyMode: "MARKET",
         coordinationMode: locationContext.coordinationMode,
         marketStudyType: payload.marketStudyType,
@@ -247,7 +281,7 @@ async function createMarketStudy(
       },
       screeningCriteria: {
         questions: payload.questions,
-        sampleSetups: payload.sampleSetups,
+        sampleSetups: sampleSetupResult.value,
       },
       stratificationVar: null,
       sampleSize: payload.targetResponses,
@@ -283,26 +317,29 @@ async function createSensoryStudy(
   if (!payload.categoryCode) {
     return { success: false, error: "Choose a product category profile." };
   }
+  const sensorySampleSetupResult = normalizeSensorySampleSetups(payload.sampleSetups);
+  if (!sensorySampleSetupResult.success) {
+    return { success: false, error: sensorySampleSetupResult.error };
+  }
+  const targetConsumer = normalizeTargetConsumer(payload.targetConsumer);
 
   const objective = payload.consumerObjective;
-  if (payload.sensoryStudyType === "CONSUMER_TEST") {
-    if (!objective) {
-      return { success: false, error: "Select what you want to do with the consumer test." };
-    }
-    const cap = OBJECTIVE_LIMITS[objective];
-    if (payload.targetResponses > cap) {
-      return {
-        success: false,
-        error: `Target responses exceed the ${cap} participant limit for ${objective.replace(/_/g, " ")}.`,
-      };
-    }
+  if (!objective) {
+    return { success: false, error: "Select a product development stage." };
+  }
+  const requiredPanels = OBJECTIVE_PANEL_REQUIREMENTS[objective];
+  if (payload.targetResponses < requiredPanels) {
+    return {
+      success: false,
+      error: `Target responses must be at least ${requiredPanels} for ${formatConsumerObjectiveLabel(objective)}.`,
+    };
   }
 
   const scheduleResult = buildSessionSchedule(payload);
   if (!scheduleResult.success) {
     return { success: false, error: scheduleResult.error };
   }
-  const bookingDates = extractBookingDatesFromSchedule(payload.testingStartDate, scheduleResult.value.slots);
+  const bookingDates = extractBookingDatesFromSchedule(scheduleResult.value.slots);
 
   const totalScheduleCapacity = scheduleResult.value.slots.reduce(
     (sum, slot) => sum + slot.capacity,
@@ -364,7 +401,10 @@ async function createSensoryStudy(
     return { success: false, error: planResult.error };
   }
 
-  const attributeQuestions = buildSensoryQuestionnaire(planResult.rows);
+  const attributeQuestions = buildSensoryQuestionnaire(
+    planResult.rows,
+    payload.sensoryStudyType === "CONSUMER_TEST" && objective !== "MARKET_READINESS"
+  );
   const ficBookingPayload =
     selectedFic && locationContext.coordinationMode === "FIC_ASSISTED"
       ? {
@@ -384,15 +424,28 @@ async function createSensoryStudy(
       sampleSize: payload.targetResponses,
       location: locationContext.location,
       targetDemographics: {
-        ageRange: [18, 55],
-        genders: ["MALE", "FEMALE", "NON_BINARY"],
-        lifestyles: [],
+        ageRange: targetConsumer.ageRange,
+        genders: targetConsumer.genders,
+        lifestyles: targetConsumer.lifestyles,
+        dietaryPrefs: targetConsumer.dietaryPrefs,
+        consumptionHabits: targetConsumer.consumptionHabits,
+        targetConsumer,
         experience: "regular-consumer",
         studyMode: "SENSORY",
         coordinationMode: locationContext.coordinationMode,
         sensoryStudyType: payload.sensoryStudyType,
         sensoryMethod: payload.sensoryMethod,
         consumerObjective: objective,
+        ...(objective
+          ? {
+              consumerPanelRequirement: {
+                requiredPanels: OBJECTIVE_PANEL_REQUIREMENTS[objective],
+                minimumPanels: OBJECTIVE_PANEL_REQUIREMENTS[objective],
+                panelCount: objective === "PROTOTYPING" ? 25 : OBJECTIVE_PANEL_REQUIREMENTS[objective],
+                bufferCount: objective === "PROTOTYPING" ? 10 : 0,
+              },
+            }
+          : {}),
         categoryLabel: payload.categoryLabel,
         numberOfSamples: payload.numberOfSamples,
         ...(locationContext.coordinationMode === "FIC_ASSISTED"
@@ -417,8 +470,8 @@ async function createSensoryStudy(
         {
           question: "Age qualification check",
           type: "age_range",
-          min: 18,
-          max: 55,
+          min: targetConsumer.ageRange[0],
+          max: targetConsumer.ageRange[1],
           required: true,
         },
         {
@@ -430,7 +483,7 @@ async function createSensoryStudy(
           question: "Sample setup notes",
           type: "text",
           required: false,
-          options: payload.sampleSetups.map((setup) =>
+          options: sensorySampleSetupResult.value.map((setup) =>
             `${setup.description} | Ingredients: ${setup.ingredient || "N/A"} | Allergen: ${setup.allergen}`
           ),
         },
@@ -450,32 +503,112 @@ async function createSensoryStudy(
   };
 }
 
-function extractBookingDatesFromSchedule(
-  startDate: string | undefined,
-  slots: Array<{
-    dayOffset: number;
-  }>
-) {
-  if (!startDate) {
-    return [] as string[];
-  }
-  const baseDate = new Date(`${startDate}T00:00:00`);
-  if (Number.isNaN(baseDate.getTime())) {
-    return [] as string[];
+function normalizeMarketSampleSetups(payload: z.infer<typeof BuilderPayloadSchema>) {
+  const baseRows = payload.sampleSetups.map((setup) => ({
+    description: setup.description.trim(),
+    ingredient: setup.ingredient?.trim() ?? "",
+    allergen: setup.allergen?.trim() ?? "",
+    imageDataUrl: setup.imageDataUrl?.trim() ?? "",
+    imageName: setup.imageName?.trim() ?? "",
+    price: setup.price?.trim() ?? "",
+    purchaseIntentQuestion: setup.purchaseIntentQuestion?.trim() ?? "",
+  }));
+
+  if (payload.marketStudyType !== "PRODUCT_INTENT") {
+    return {
+      success: true as const,
+      value: baseRows.map((setup) => ({
+        description: setup.description,
+        ingredient: setup.ingredient,
+        allergen: setup.allergen,
+      })),
+    };
   }
 
+  if (baseRows.length === 0) {
+    return { success: false as const, error: "Add at least one Product Intent sample setup." };
+  }
+
+  const rows = [];
+  for (const [index, setup] of baseRows.entries()) {
+    if (!setup.description) {
+      return { success: false as const, error: `General description is required for sample setup ${index + 1}.` };
+    }
+    if (!setup.price) {
+      return { success: false as const, error: `Price is required for sample setup ${index + 1}.` };
+    }
+    if (!setup.purchaseIntentQuestion) {
+      return { success: false as const, error: `Purchase intent question is required for sample setup ${index + 1}.` };
+    }
+    if (!isSafeProductImageDataUrl(setup.imageDataUrl)) {
+      return {
+        success: false as const,
+        error: `Upload a valid JPG, PNG, or WebP image up to 1 MB for sample setup ${index + 1}.`,
+      };
+    }
+
+    rows.push({
+      description: setup.description,
+      imageDataUrl: setup.imageDataUrl,
+      imageName: setup.imageName,
+      price: setup.price,
+      purchaseIntentQuestion: setup.purchaseIntentQuestion,
+    });
+  }
+
+  return { success: true as const, value: rows };
+}
+
+function normalizeSensorySampleSetups(sampleSetups: z.infer<typeof BuilderPayloadSchema>["sampleSetups"]) {
+  const rows = [];
+  for (const [index, setup] of sampleSetups.entries()) {
+    const description = setup.description.trim();
+    const allergen = setup.allergen?.trim() ?? "";
+    if (!description) {
+      return { success: false as const, error: `General description is required for sample setup ${index + 1}.` };
+    }
+    if (!allergen) {
+      return { success: false as const, error: `Allergen is required for sensory sample setup ${index + 1}.` };
+    }
+    rows.push({
+      description,
+      ingredient: setup.ingredient?.trim() ?? "",
+      allergen,
+    });
+  }
+  return { success: true as const, value: rows };
+}
+
+function isSafeProductImageDataUrl(value: string) {
+  const match = value.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) {
+    return false;
+  }
+  const base64 = match[2] ?? "";
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  const byteLength = Math.floor((base64.length * 3) / 4) - padding;
+  return byteLength > 0 && byteLength <= PRODUCT_IMAGE_MAX_BYTES;
+}
+
+function extractBookingDatesFromSchedule(slots: Array<{ testingDate: string }>) {
   return Array.from(
-    new Set(
-      slots.map((slot) => {
-        const date = new Date(baseDate);
-        date.setDate(baseDate.getDate() + slot.dayOffset);
-        const year = date.getFullYear();
-        const month = String(date.getMonth() + 1).padStart(2, "0");
-        const day = String(date.getDate()).padStart(2, "0");
-        return `${year}-${month}-${day}`;
-      })
-    )
+    new Set(slots.map((slot) => slot.testingDate))
   ).sort((left, right) => left.localeCompare(right));
+}
+
+function addDaysToDateInput(dateInput: string | undefined, dayOffset: number) {
+  if (!dateInput) {
+    return null;
+  }
+  const base = new Date(`${dateInput}T00:00:00`);
+  if (Number.isNaN(base.getTime())) {
+    return null;
+  }
+  base.setDate(base.getDate() + dayOffset);
+  const year = base.getFullYear();
+  const month = String(base.getMonth() + 1).padStart(2, "0");
+  const day = String(base.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 async function checkFicBookingDates(ficUserId: string, bookingDates: string[]) {
@@ -532,6 +665,7 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
     Array<{
       id: string;
       dayOffset: number;
+      testingDate: string;
       label: string;
       startsAt: string;
       endsAt: string;
@@ -539,6 +673,11 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
     }>
   >((accumulator, slot) => {
     if (slot.dayOffset >= durationDays) {
+      return accumulator;
+    }
+
+    const testingDate = slot.testingDate ?? addDaysToDateInput(payload.testingStartDate, slot.dayOffset);
+    if (!testingDate) {
       return accumulator;
     }
 
@@ -550,10 +689,17 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
     if (endsAt.getTime() <= startsAt.getTime()) {
       return accumulator;
     }
+    if (
+      formatDateKeyInTimeZone(startsAt, "Asia/Manila") !== testingDate ||
+      formatDateKeyInTimeZone(endsAt, "Asia/Manila") !== testingDate
+    ) {
+      return accumulator;
+    }
 
     accumulator.push({
       id: randomUUID(),
       dayOffset: slot.dayOffset,
+      testingDate,
       label: slot.label.trim(),
       startsAt: startsAt.toISOString(),
       endsAt: endsAt.toISOString(),
@@ -577,11 +723,19 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
     };
   }
 
+  const scheduledDates = Array.from(new Set(slots.map((slot) => slot.testingDate)));
+  if (scheduledDates.length !== durationDays) {
+    return {
+      success: false as const,
+      error: `Select exactly ${durationDays} testing date(s) for the configured duration.`,
+    };
+  }
+
   return {
     success: true as const,
     value: {
       timezone: "Asia/Manila",
-      startDate: payload.testingStartDate,
+      startDate: scheduledDates.sort((left, right) => left.localeCompare(right))[0] ?? payload.testingStartDate,
       durationDays,
       slots: slots.sort(
         (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime()
@@ -596,7 +750,8 @@ function buildSensoryQuestionnaire(
     dimension: "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
     isJarTarget: boolean;
     isCustom: boolean;
-  }>
+  }>,
+  includeJarRatings: boolean
 ) {
   const rows = attributes.slice(0, 5).filter((attribute) => attribute.name.trim().length > 0);
   const output: Array<{
@@ -624,26 +779,43 @@ function buildSensoryQuestionnaire(
     scaleType: "NINE_PT",
   });
 
-  rows
-    .filter((attribute) => attribute.isJarTarget)
-    .forEach((attribute) => {
+  rows.forEach((attribute) => {
     output.push({
-      name: `${attribute.name} (JAR)`,
-      type: "JAR",
+      name: attribute.name,
+      type: "ATTRIBUTE_LIKING",
       attributeType: attribute.dimension.toLowerCase(),
       sourceAttributeName: attribute.name,
       isCustom: attribute.isCustom,
-      questionType: "JAR",
-      scaleType: "JAR_5PT",
-      jarOptions: {
-        low: "Much too low",
-        midLow: "Slightly too low",
-        mid: "Just about right",
-        midHigh: "Slightly too high",
-        high: "Much too high",
-        labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
-      },
+      questionType: "HEDONIC",
+      scaleType: "NINE_PT",
     });
+
+    if (includeJarRatings) {
+      output.push({
+        name: `${attribute.name} (JAR)`,
+        type: "JAR",
+        attributeType: attribute.dimension.toLowerCase(),
+        sourceAttributeName: attribute.name,
+        isCustom: attribute.isCustom,
+        questionType: "JAR",
+        scaleType: "JAR_5PT",
+        jarOptions: {
+          low: "Much too low",
+          midLow: "Slightly too low",
+          mid: "Just about right",
+          midHigh: "Slightly too high",
+          high: "Much too high",
+          labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
+        },
+      });
+    }
+  });
+
+  output.push({
+    name: "What did you like most about this product?",
+    type: "OPEN_ENDED",
+    questionType: "OPEN_ENDED",
+    scaleType: "TEXT",
   });
 
   output.push({
@@ -657,15 +829,18 @@ function buildSensoryQuestionnaire(
 }
 
 function mapStage(
-  studyType: "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST",
-  objective?: "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION"
-): "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS" {
-  if (studyType === "CONSUMER_TEST") {
-    if (objective === "CHECK_ACCEPTABILITY") return "MARKET_READINESS";
-    if (objective === "IMPROVE_TASTE" || objective === "IMPROVE_TEXTURE" || objective === "FINE_TUNE") return "REFINEMENT";
-    return "PROTOTYPE_CHECK";
-  }
+  _studyType: "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST",
+  objective?: ConsumerObjective
+): StudyStageValue {
+  if (objective === "MARKET_READINESS") return "MARKET_READINESS";
+  if (objective === "REFINEMENT") return "REFINEMENT";
   return "PROTOTYPE_CHECK";
+}
+
+function formatConsumerObjectiveLabel(objective: ConsumerObjective) {
+  if (objective === "MARKET_READINESS") return "Market Readiness";
+  if (objective === "REFINEMENT") return "Refinement";
+  return "Prototyping";
 }
 
 function validateSensoryAttributePlan(
@@ -676,13 +851,13 @@ function validateSensoryAttributePlan(
     isCustom?: boolean;
     actionable?: boolean;
   }>,
-  objective: "CHECK_ACCEPTABILITY" | "IMPROVE_TASTE" | "IMPROVE_TEXTURE" | "FINE_TUNE" | "FAST_ITERATION" | undefined
+  objective: ConsumerObjective | undefined
 ) {
   const rows = attributes
     .map((attribute) => ({
       name: attribute.name.trim(),
       dimension: attribute.dimension,
-      isJarTarget: Boolean(attribute.isJarTarget),
+      isJarTarget: objective === "MARKET_READINESS" ? false : true,
       isCustom: Boolean(attribute.isCustom),
       actionable: Boolean(attribute.actionable),
     }))
@@ -710,41 +885,8 @@ function validateSensoryAttributePlan(
     }
   }
 
-  const jarTargets = rows.filter((attribute) => attribute.isJarTarget);
-  if (jarTargets.length > 3) {
-    return { success: false as const, error: "Only the TOP 3 attributes can be selected for JAR questions." };
-  }
-
   if (!objective) {
     return { success: false as const, error: "Select the MSME goal for this consumer test." };
-  }
-
-  if (objective === "CHECK_ACCEPTABILITY" && jarTargets.length !== 0) {
-    return { success: false as const, error: "Check acceptability requires Overall Acceptability only (no JAR attributes)." };
-  }
-
-  if (objective === "IMPROVE_TASTE") {
-    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Taste") {
-      return { success: false as const, error: "Improve taste requires exactly 1 Taste JAR attribute." };
-    }
-  }
-
-  if (objective === "IMPROVE_TEXTURE") {
-    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Texture") {
-      return { success: false as const, error: "Improve texture requires exactly 1 Texture JAR attribute." };
-    }
-  }
-
-  if (objective === "FINE_TUNE" && jarTargets.length !== 2) {
-    return { success: false as const, error: "Fine-tune requires exactly 2 JAR attributes." };
-  }
-
-  if (objective === "FAST_ITERATION" && (jarTargets.length < 1 || jarTargets.length > 2)) {
-    return { success: false as const, error: "FAST iteration requires 1 to 2 JAR attributes." };
-  }
-
-  if (objective !== "CHECK_ACCEPTABILITY" && jarTargets.length === 0) {
-    return { success: false as const, error: "Select at least 1 JAR attribute for this objective." };
   }
 
   const duplicates = new Set<string>();

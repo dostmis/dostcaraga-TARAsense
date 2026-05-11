@@ -6,11 +6,13 @@ import { useFormStatus } from "react-dom";
 
 type LoginFormProps = {
   action: (formData: FormData) => void | Promise<void>;
+  redirectTo?: string;
 };
 
-export function LoginForm({ action }: LoginFormProps) {
+export function LoginForm({ action, redirectTo = "" }: LoginFormProps) {
   return (
     <form action={action} className="mt-6 space-y-5">
+      <input type="hidden" name="redirectTo" value={redirectTo} />
       <button
         type="button"
         className="flex min-h-12 w-full items-center justify-center gap-3 rounded-full border border-divider/70 bg-surface px-4 py-3 text-sm font-semibold text-foreground shadow-soft transition-all hover:border-brand/25 hover:shadow-panel"
@@ -30,8 +32,8 @@ export function LoginForm({ action }: LoginFormProps) {
         <label htmlFor="email" className="text-sm font-medium text-foreground">
           Email
         </label>
-        <div className="flex min-h-12 items-center rounded-xl border border-input bg-card text-foreground transition focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_24%,transparent)]">
-          <span className="flex w-12 shrink-0 items-center justify-center text-muted-foreground">
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
             <Mail className="h-4 w-4" />
           </span>
           <input
@@ -39,7 +41,7 @@ export function LoginForm({ action }: LoginFormProps) {
             name="email"
             type="email"
             placeholder="you@company.com"
-            className="min-h-12 min-w-0 flex-1 border-0 bg-transparent py-2.5 pr-4 text-base text-foreground outline-none placeholder:text-muted-foreground"
+            className="app-icon-input__control"
             autoComplete="email"
             required
           />
@@ -50,8 +52,8 @@ export function LoginForm({ action }: LoginFormProps) {
         <label htmlFor="password" className="text-sm font-medium text-foreground">
           Password
         </label>
-        <div className="flex min-h-12 items-center rounded-xl border border-input bg-card text-foreground transition focus-within:border-ring focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--ring)_24%,transparent)]">
-          <span className="flex w-12 shrink-0 items-center justify-center text-muted-foreground">
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
             <Lock className="h-4 w-4" />
           </span>
           <input
@@ -59,7 +61,7 @@ export function LoginForm({ action }: LoginFormProps) {
             name="password"
             type="password"
             placeholder="Enter your password"
-            className="min-h-12 min-w-0 flex-1 border-0 bg-transparent py-2.5 pr-4 text-base text-foreground outline-none placeholder:text-muted-foreground"
+            className="app-icon-input__control"
             autoComplete="current-password"
             required
           />

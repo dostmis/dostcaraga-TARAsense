@@ -9,7 +9,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar";
 import { formatPanelistNumber } from "@/lib/participant-assignment";
-import { CalendarDays, ClipboardCheck, Clock3, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
+import { BarChart3, CalendarDays, ClipboardCheck, Clock3, FileText, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
 import { isMissingColumnError, logSchemaDriftWarning } from "@/lib/db-schema-drift";
 import { Prisma } from "@prisma/client";
 
@@ -44,7 +44,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
   const { error, message, q } = params;
   const activeView = parseFicView(params.view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
-  const shouldLoadQueueStudies = activeView === "queue";
+  const shouldLoadStudyCards = activeView === "queue" || activeView === "forms" || activeView === "dashboards";
   const shouldLoadCalendarSessions = activeView === "calendar";
   const now = new Date();
   const ficAssignment =
@@ -119,7 +119,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
       upcomingSessionCount,
       pendingSessionCount,
     ] = await Promise.all([
-      shouldLoadQueueStudies
+      shouldLoadStudyCards
         ? prisma.study.findMany({
             where: ficStudyWhere,
             orderBy: { createdAt: "desc" },
@@ -287,6 +287,20 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           active: activeView === "queue",
         },
         {
+          label: "View Form",
+          href: "/fic/dashboard?view=forms",
+          icon: FileText,
+          badge: `${ficStudyCount}`,
+          active: activeView === "forms",
+        },
+        {
+          label: "View Dashboard",
+          href: "/fic/dashboard?view=dashboards",
+          icon: BarChart3,
+          badge: `${ficStudyCount}`,
+          active: activeView === "dashboards",
+        },
+        {
           label: "FIC Calendar",
           href: "/fic/dashboard?view=calendar",
           icon: CalendarDays,
@@ -367,6 +381,112 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
               </div>
             </article>
           ))}
+        </section>
+      )}
+
+      {activeView === "forms" && (
+        <section className="space-y-4">
+          <header className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#c2410c]">FIC Study Forms</p>
+            <h2 className="mt-1 text-xl font-semibold text-[#2e231c]">View Form</h2>
+            <p className="mt-1 text-sm text-[#6f5b4f]">
+              Open the generated sensory form for studies assigned to your FIC facility.
+            </p>
+          </header>
+
+          {filteredStudies.length === 0 && (
+            <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+              <h2 className="text-lg font-semibold text-[#2e231c]">No matching forms</h2>
+              <p className="mt-1 text-sm text-[#6f5b4f]">Try a different search term or check your assigned facility.</p>
+            </article>
+          )}
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            {filteredStudies.map((study) => (
+              <article key={`form-card-${study.id}`} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                <div className="flex h-full flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <h3 className="text-lg font-semibold text-[#2e231c]">{study.title}</h3>
+                      <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
+                        {study.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-[#6f5b4f]">{study.productName}</p>
+                    <p className="mt-2 text-xs text-[#8c776a]">
+                      Uploaded by {study.creator.name}
+                      {study.creator.organization ? ` (${study.creator.organization})` : ""}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.location}</span>
+                      <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                        Participants: {study._count.participants}
+                      </span>
+                    </div>
+                  </div>
+                  <Link
+                    href={`/studies/${study.id}/form`}
+                    className="inline-flex w-full items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
+                  >
+                    View Form
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {activeView === "dashboards" && (
+        <section className="space-y-4">
+          <header className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#c2410c]">FIC Study Analytics</p>
+            <h2 className="mt-1 text-xl font-semibold text-[#2e231c]">View Dashboard</h2>
+            <p className="mt-1 text-sm text-[#6f5b4f]">
+              Review response progress and analysis dashboards for facility-assisted studies.
+            </p>
+          </header>
+
+          {filteredStudies.length === 0 && (
+            <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+              <h2 className="text-lg font-semibold text-[#2e231c]">No matching dashboards</h2>
+              <p className="mt-1 text-sm text-[#6f5b4f]">Try a different search term or check your assigned facility.</p>
+            </article>
+          )}
+
+          <div className="grid gap-4 xl:grid-cols-2">
+            {filteredStudies.map((study) => (
+              <article key={`dashboard-card-${study.id}`} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                <div className="flex h-full flex-col justify-between gap-4">
+                  <div>
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <h3 className="text-lg font-semibold text-[#2e231c]">{study.title}</h3>
+                      <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
+                        {study.status}
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm text-[#6f5b4f]">{study.productName}</p>
+                    <p className="mt-2 text-xs text-[#8c776a]">
+                      Uploaded by {study.creator.name}
+                      {study.creator.organization ? ` (${study.creator.organization})` : ""}
+                    </p>
+                    <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                      <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.location}</span>
+                      <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                        Responses: {study._count.responses}
+                      </span>
+                    </div>
+                  </div>
+                  <Link
+                    href={`/dashboard/${study.id}`}
+                    className="inline-flex w-full items-center justify-center rounded-lg bg-[#ed7f2a] px-4 py-2 text-sm font-medium text-white hover:bg-[#dc6f1d]"
+                  >
+                    View Dashboard
+                  </Link>
+                </div>
+              </article>
+            ))}
+          </div>
         </section>
       )}
 
@@ -466,7 +586,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
 }
 
 function parseFicView(value?: string) {
-  if (value === "profile" || value === "queue" || value === "calendar") {
+  if (value === "profile" || value === "queue" || value === "forms" || value === "dashboards" || value === "calendar") {
     return value;
   }
   return "dashboard";

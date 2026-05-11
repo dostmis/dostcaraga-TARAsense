@@ -1,6 +1,6 @@
 import type { Metadata, Viewport } from "next";
+import Script from "next/script";
 import { Suspense } from "react";
-import { FloatingChatbot } from "@/components/chatbot/floating-chatbot";
 import { PageTransitionIndicator } from "@/components/ui/page-transition-indicator";
 import "./globals.css";
 
@@ -42,7 +42,11 @@ export default function RootLayout({
           <PageTransitionIndicator />
         </Suspense>
         {children}
-        <FloatingChatbot />
+        <Script
+          src="https://helix.dostcaraga.ph/api/public/widget.js?v=20260507-cors-fix"
+          data-public-key="pbk_d323689b14e9189a52874b849acbf07d15fa89e539f54bae"
+          strategy="afterInteractive"
+        />
       </body>
     </html>
   );

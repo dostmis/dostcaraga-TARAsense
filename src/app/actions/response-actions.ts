@@ -36,6 +36,21 @@ const SubmitResponseSchema = z.object({
     )
     .max(MAX_SAMPLE_RESPONSES)
     .optional(),
+  sampleRanking: z
+    .array(
+      z.object({
+        sampleNumber: z.number().int().min(1),
+        rank: z.number().int().min(1),
+      })
+    )
+    .max(MAX_SAMPLE_RESPONSES)
+    .optional(),
+  comments: z
+    .object({
+      likedMost: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
+      improvements: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
+    })
+    .optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -48,6 +63,11 @@ interface NormalizedSampleResponse {
   sampleNumber: number;
   overallLiking?: number;
   attributes: Record<string, unknown>;
+}
+
+interface NormalizedSampleRanking {
+  sampleNumber: number;
+  rank: number;
 }
 
 type ParseAttributeResult =
@@ -66,6 +86,11 @@ type NormalizePayloadResult =
       overallLiking: number;
       attributes: Record<string, unknown>;
       sampleResponses: NormalizedSampleResponse[];
+      sampleRanking: NormalizedSampleRanking[];
+      comments: {
+        likedMost: string;
+        improvements: string;
+      };
     }
   | {
       success: false;
@@ -97,11 +122,14 @@ export async function submitResponse(studyId: string, participantId: string, pay
         id: true,
         status: true,
         source: true,
+        consentStatus: true,
         study: {
           select: {
             id: true,
             title: true,
             creatorId: true,
+            creator: { select: { role: true } },
+            targetDemographics: true,
             sensoryAttributes: {
               select: {
                 name: true,
@@ -134,8 +162,19 @@ export async function submitResponse(studyId: string, participantId: string, pay
     if (session?.role === "CONSUMER" && participant.panelist.userId !== session.userId) {
       return { success: false, error: "You are not allowed to answer this study participant slot." };
     }
-    if (session?.role === "MSME" && participant.study.creatorId === session.userId) {
-      return { success: false, error: "MSME users cannot answer their own created studies." };
+    if (session?.role === "MSME") {
+      if (participant.study.creatorId === session.userId) {
+        return { success: false, error: "MSME users cannot answer their own created studies." };
+      }
+      if (participant.study.creator.role !== "MSME") {
+        return { success: false, error: "MSME users can only answer other MSME studies." };
+      }
+      if (participant.panelist.userId !== session.userId) {
+        return { success: false, error: "You are not allowed to answer this study participant slot." };
+      }
+    }
+    if (session && !["CONSUMER", "MSME", "ADMIN"].includes(session.role)) {
+      return { success: false, error: "Your account role is not allowed to submit sensory responses." };
     }
     if (!session && guestSession) {
       if (participant.source !== "WALK_IN_GUEST") {
@@ -149,13 +188,21 @@ export async function submitResponse(studyId: string, participantId: string, pay
     if (participant.status === "COMPLETED") {
       return { success: true, alreadySubmitted: true };
     }
+    if (participant.status !== "CONFIRMED") {
+      return { success: false, error: "Participant slot is not confirmed for evaluation." };
+    }
+    if (participant.consentStatus !== "AGREED") {
+      return { success: false, error: "Please complete consent before submitting responses." };
+    }
     if (participant.study.sensoryAttributes.length === 0) {
       return { success: false, error: "Study has no configured sensory attributes." };
     }
 
+    const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
     const normalized = normalizePayloadAgainstStudy(
       validated,
-      participant.study.sensoryAttributes as StudyAttributeConfig[]
+      participant.study.sensoryAttributes as StudyAttributeConfig[],
+      sampleCount
     );
     if (!normalized.success) {
       return { success: false, error: normalized.error };
@@ -166,6 +213,8 @@ export async function submitResponse(studyId: string, participantId: string, pay
         overallLiking: normalized.overallLiking,
         attributes: normalized.attributes,
         sampleResponses: normalized.sampleResponses,
+        sampleRanking: normalized.sampleRanking,
+        comments: normalized.comments,
       })
     ) as Prisma.InputJsonValue;
 
@@ -281,9 +330,11 @@ export async function submitResponse(studyId: string, participantId: string, pay
 
 function normalizePayloadAgainstStudy(
   payload: z.infer<typeof SubmitResponseSchema>,
-  attributes: StudyAttributeConfig[]
+  attributes: StudyAttributeConfig[],
+  sampleCount: number
 ): NormalizePayloadResult {
   const allowedAttributeNames = new Set(attributes.map((attribute) => attribute.name));
+  const sampleLevelAttributes = attributes.filter((attribute) => attribute.type !== "OPEN_ENDED");
   const normalizedAttributes: Record<string, unknown> = {};
   let overallFromAttributes: number | null = null;
 
@@ -312,8 +363,20 @@ function normalizePayloadAgainstStudy(
   }
 
   const normalizedSampleResponses: NormalizedSampleResponse[] = [];
-  for (const sample of payload.sampleResponses ?? []) {
-    const unknownSampleKeys = Object.keys(sample.attributes).filter((key) => !allowedAttributeNames.has(key));
+  const rawSampleResponses = payload.sampleResponses ?? [];
+  if (rawSampleResponses.length !== sampleCount) {
+    return { success: false, error: `Expected responses for exactly ${sampleCount} sample(s).` };
+  }
+
+  const seenSampleNumbers = new Set<number>();
+  for (const sample of rawSampleResponses) {
+    if (sample.sampleNumber > sampleCount || seenSampleNumbers.has(sample.sampleNumber)) {
+      return { success: false, error: "Invalid or duplicate sample response number." };
+    }
+    seenSampleNumbers.add(sample.sampleNumber);
+
+    const allowedSampleAttributeNames = new Set(sampleLevelAttributes.map((attribute) => attribute.name));
+    const unknownSampleKeys = Object.keys(sample.attributes).filter((key) => !allowedSampleAttributeNames.has(key));
     if (unknownSampleKeys.length > 0) {
       return { success: false, error: `Unknown sample attribute(s): ${unknownSampleKeys.join(", ")}.` };
     }
@@ -321,7 +384,7 @@ function normalizePayloadAgainstStudy(
     const normalizedSampleAttributes: Record<string, unknown> = {};
     let sampleOverallFromAttribute: number | null = null;
 
-    for (const attribute of attributes) {
+    for (const attribute of sampleLevelAttributes) {
       const parsed = parseAttributeValue(
         attribute,
         sample.attributes[attribute.name],
@@ -353,12 +416,73 @@ function normalizePayloadAgainstStudy(
     });
   }
 
+  const rankingResult = normalizeSampleRanking(payload.sampleRanking, sampleCount);
+  if (!rankingResult.success) {
+    return rankingResult;
+  }
+
+  const comments = {
+    likedMost: payload.comments?.likedMost?.trim() ?? "",
+    improvements: payload.comments?.improvements?.trim() ?? "",
+  };
+
   return {
     success: true,
     overallLiking: overallFromAttributes,
     attributes: normalizedAttributes,
     sampleResponses: normalizedSampleResponses,
+    sampleRanking: rankingResult.value,
+    comments,
   };
+}
+
+function normalizeSampleRanking(
+  sampleRanking: Array<{ sampleNumber: number; rank: number }> | undefined,
+  sampleCount: number
+):
+  | { success: true; value: NormalizedSampleRanking[] }
+  | { success: false; error: string } {
+  if (sampleCount <= 1) {
+    return { success: true, value: [] };
+  }
+
+  if (!sampleRanking || sampleRanking.length !== sampleCount) {
+    return { success: false, error: `Rank all ${sampleCount} samples before submitting.` };
+  }
+
+  const sampleNumbers = new Set<number>();
+  const ranks = new Set<number>();
+  const rows: NormalizedSampleRanking[] = [];
+
+  for (const row of sampleRanking) {
+    if (row.sampleNumber < 1 || row.sampleNumber > sampleCount || sampleNumbers.has(row.sampleNumber)) {
+      return { success: false, error: "Invalid or duplicate ranked sample number." };
+    }
+    if (row.rank < 1 || row.rank > sampleCount || ranks.has(row.rank)) {
+      return { success: false, error: "Each sample rank must be unique and within the sample count." };
+    }
+
+    sampleNumbers.add(row.sampleNumber);
+    ranks.add(row.rank);
+    rows.push({
+      sampleNumber: row.sampleNumber,
+      rank: row.rank,
+    });
+  }
+
+  return {
+    success: true,
+    value: rows.sort((left, right) => left.sampleNumber - right.sampleNumber),
+  };
+}
+
+function resolveStudySampleCount(value: unknown) {
+  if (!value || typeof value !== "object") {
+    return 1;
+  }
+
+  const raw = (value as { numberOfSamples?: unknown }).numberOfSamples;
+  return typeof raw === "number" && Number.isFinite(raw) ? Math.max(1, Math.floor(raw)) : 1;
 }
 
 function parseAttributeValue(attribute: StudyAttributeConfig, rawValue: unknown, label: string): ParseAttributeResult {

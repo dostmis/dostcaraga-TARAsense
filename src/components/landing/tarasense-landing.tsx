@@ -223,11 +223,16 @@ function DostBrandLogo() {
   );
 }
 
-function TarasenseWordmark() {
+function TarasenseWordmark({ variant = "nav" }: { variant?: "nav" | "hero" }) {
+  const sizeClass =
+    variant === "hero"
+      ? "text-[3.5rem] sm:text-[5rem] lg:text-[6.5rem]"
+      : "text-[1.65rem]";
+
   return (
-    <span className="text-xl font-black tracking-tight" aria-label="TARAsense">
-      <span className="text-[#1746ff]">TARA</span>
-      <span className="text-[#f97316]">sense</span>
+    <span className={`inline-flex items-baseline font-black leading-none tracking-normal ${sizeClass}`} aria-label="TARAsense">
+      <span className="text-[#10254f]">TARA</span>
+      <span className="text-[#ff7058]">sense</span>
     </span>
   );
 }
@@ -238,31 +243,105 @@ export function TarasenseLanding() {
   const [compactHeader, setCompactHeader] = useState(false);
   const [headerHidden, setHeaderHidden] = useState(false);
   const [activeTestimonial, setActiveTestimonial] = useState(0);
+  const headerRef = useRef<HTMLElement | null>(null);
   const lastScrollYRef = useRef(0);
+  const lastTouchYRef = useRef<number | null>(null);
+  const scrollRafRef = useRef<number | null>(null);
 
   useEffect(() => {
-    const onScroll = () => {
-      const currentScrollY = window.scrollY;
+    const getScrollY = () => window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+
+    const applyHeaderVisibility = (hidden: boolean) => {
+      setHeaderHidden(hidden);
+      const header = headerRef.current;
+      if (!header) return;
+
+      header.style.transform = hidden ? "translate3d(0, -100%, 0)" : "translate3d(0, 0, 0)";
+      header.style.pointerEvents = hidden ? "none" : "auto";
+      header.dataset.scrollHidden = hidden ? "true" : "false";
+    };
+
+    const updateHeaderFromScroll = () => {
+      const currentScrollY = getScrollY();
       const scrollDelta = currentScrollY - lastScrollYRef.current;
 
       setCompactHeader(currentScrollY > 18);
 
-      if (menuOpen || currentScrollY < 96) {
-        setHeaderHidden(false);
-      } else if (Math.abs(scrollDelta) > 6) {
-        setHeaderHidden(scrollDelta > 0);
-        if (scrollDelta > 0) {
+      if (menuOpen || currentScrollY <= 24) {
+        applyHeaderVisibility(false);
+      } else if (Math.abs(scrollDelta) >= 2) {
+        const scrollingDown = scrollDelta > 0;
+        applyHeaderVisibility(scrollingDown);
+        if (scrollingDown) {
           setActiveMenu(null);
         }
       }
 
       lastScrollYRef.current = Math.max(currentScrollY, 0);
+      scrollRafRef.current = null;
     };
 
-    lastScrollYRef.current = window.scrollY;
-    onScroll();
+    const onScroll = () => {
+      if (scrollRafRef.current !== null) {
+        return;
+      }
+      scrollRafRef.current = window.requestAnimationFrame(updateHeaderFromScroll);
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      if (menuOpen || Math.abs(event.deltaY) < 2) return;
+      const currentScrollY = getScrollY();
+      if (event.deltaY > 0 && currentScrollY > 24) {
+        applyHeaderVisibility(true);
+        setActiveMenu(null);
+        return;
+      }
+      if (event.deltaY < 0) {
+        applyHeaderVisibility(false);
+      }
+    };
+
+    const onTouchStart = (event: TouchEvent) => {
+      lastTouchYRef.current = event.touches[0]?.clientY ?? null;
+    };
+
+    const onTouchMove = (event: TouchEvent) => {
+      if (menuOpen) return;
+      const nextY = event.touches[0]?.clientY;
+      const previousY = lastTouchYRef.current;
+      if (typeof nextY !== "number" || typeof previousY !== "number") return;
+
+      const touchDelta = nextY - previousY;
+      if (Math.abs(touchDelta) >= 2) {
+        const currentScrollY = getScrollY();
+        if (touchDelta < 0 && currentScrollY > 24) {
+          applyHeaderVisibility(true);
+          setActiveMenu(null);
+        } else if (touchDelta > 0) {
+          applyHeaderVisibility(false);
+        }
+      }
+      lastTouchYRef.current = nextY;
+    };
+
+    lastScrollYRef.current = getScrollY();
+    updateHeaderFromScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+    window.addEventListener("touchmove", onTouchMove, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      document.removeEventListener("scroll", onScroll, { capture: true });
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      if (scrollRafRef.current !== null) {
+        window.cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+      }
+    };
   }, [menuOpen]);
 
   useEffect(() => {
@@ -277,6 +356,12 @@ export function TarasenseLanding() {
     () => testimonials.filter((_, index) => index !== activeTestimonial).slice(0, 2),
     [activeTestimonial],
   );
+  const navigationVisibilityStyle = {
+    opacity: headerHidden ? 0 : 1,
+    pointerEvents: headerHidden ? "none" : "auto",
+    transform: headerHidden ? "translate3d(0, -120%, 0)" : "translate3d(0, 0, 0)",
+    transition: "transform 260ms ease-out, opacity 180ms ease-out",
+  } as const;
 
   return (
     <div className="relative overflow-x-clip bg-background text-foreground">
@@ -284,9 +369,13 @@ export function TarasenseLanding() {
       <div className="bg-mesh pointer-events-none absolute inset-x-0 top-0 -z-10 h-[36rem]" />
 
       <header
-        className={`tara-fade-down fixed inset-x-0 top-0 z-40 border-b border-[#e2e8f0] bg-[#ffffff] shadow-[0_8px_24px_rgba(15,23,42,0.06)] transition-transform duration-300 ease-out ${
-          headerHidden ? "-translate-y-full" : "translate-y-0"
-        }`}
+        ref={headerRef}
+        className="fixed inset-x-0 top-0 z-40 border-b border-[#e2e8f0] bg-[#ffffff] shadow-[0_8px_24px_rgba(15,23,42,0.06)] will-change-transform"
+        style={{
+          transform: headerHidden ? "translate3d(0, -100%, 0)" : "translate3d(0, 0, 0)",
+          transition: "transform 260ms ease-out",
+          pointerEvents: headerHidden ? "none" : "auto",
+        }}
       >
         <div className="w-full px-2 sm:px-4 lg:px-6">
           <div className={`relative flex items-center justify-between gap-4 transition-all duration-500 ${compactHeader ? "py-3" : "py-4"}`}>
@@ -297,7 +386,11 @@ export function TarasenseLanding() {
             </div>
 
             <div className="absolute left-1/2 hidden -translate-x-1/2 items-center lg:flex">
-              <nav className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap" aria-label="Primary navigation">
+              <nav
+                className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap will-change-transform"
+                style={navigationVisibilityStyle}
+                aria-label="Primary navigation"
+              >
                 {visibleNavGroups.map((group) => (
                   <div
                     key={group.label}
@@ -344,13 +437,17 @@ export function TarasenseLanding() {
                 </Link>
               </div>
 
-              <div className="-mr-1 hidden items-center gap-3 sm:-mr-2 lg:-mr-1 lg:flex">
+              <div
+                className="-mr-1 hidden items-center gap-3 will-change-transform sm:-mr-2 lg:-mr-1 lg:flex"
+                style={navigationVisibilityStyle}
+              >
                 <Link href="/login" className="btn-nav">Sign in</Link>
               </div>
 
               <button
                 type="button"
                 className="btn-icon lg:!hidden"
+                style={navigationVisibilityStyle}
                 onClick={() => setMenuOpen((open) => !open)}
                 aria-label="Toggle navigation menu"
                 aria-expanded={menuOpen}
@@ -424,12 +521,15 @@ export function TarasenseLanding() {
                 Enterprise market intelligence
               </div>
 
-              <h1 className="text-display tara-reveal max-w-[12ch] text-5xl text-foreground sm:text-6xl lg:text-7xl">
-                Test. Analyze. Refine. Advance.
+              <h1 className="tara-reveal mt-6 text-foreground">
+                <TarasenseWordmark variant="hero" />
+                <span className="mt-4 block whitespace-nowrap text-[1.05rem] font-bold leading-tight tracking-normal sm:text-3xl lg:text-[2.35rem]">
+                  Test. Analyze. Refine. Advance.
+                </span>
               </h1>
 
               <p className="tara-reveal mt-8 max-w-xl text-body">
-                Sensory and consumer driven food innovation platform that connects MSMEs, Consumer and Government support networks in one smart digital platform.
+                TARAsense is a food innovation platform that connects MSMEs, Food Innovation Centers (FICs), and participants to enable structured sensory evaluation, packaging and concept testing, and data-driven product improvement at scale.
               </p>
 
               <div className="tara-reveal mt-10 flex flex-col gap-4 sm:flex-row">
@@ -443,7 +543,7 @@ export function TarasenseLanding() {
             <div className="tara-scale-in relative flex items-center justify-center">
               <div className="glass-panel hero-grid panel-sheen relative w-full max-w-xl overflow-hidden p-6 md:p-4">
                 <div className="relative z-10 aspect-[2048/1365] w-full overflow-hidden rounded-[1.5rem] shadow-soft">
-                  <Image src="/TARAimage/Selected/DSC_0209.JPG" alt="TARAsense launch interface" fill sizes="(min-width: 1024px) 42vw, 92vw" className="object-cover" priority />
+                  <Image src="/TARAimage/Selected/DSC_0222.JPG" alt="TARAsense launch interface" fill sizes="(min-width: 1024px) 42vw, 92vw" className="object-cover" priority />
                 </div>
               </div>
             </div>
@@ -724,15 +824,32 @@ export function TarasenseLanding() {
   );
 }
 
+function muteVideo(video: HTMLVideoElement) {
+  video.muted = true;
+  video.defaultMuted = true;
+  video.volume = 0;
+}
+
 function SolutionVisual({ story }: { story: Story }) {
   const Icon = story.icon;
   const chartId = `line-a-${story.eyebrow.toLowerCase().replace(/[^a-z0-9]+/g, "-")}`;
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    if (story.eyebrow !== "Signal clarity") return;
+
+    const video = videoRef.current;
+    if (!video) return;
+
+    muteVideo(video);
+  }, [story.eyebrow]);
 
   if (story.eyebrow === "Signal clarity") {
     return (
       <div className="tara-reveal relative flex items-center justify-center">
         <div className="glass-panel hero-grid panel-sheen relative w-full max-w-xl overflow-hidden p-6 md:p-4">
           <video
+            ref={videoRef}
             src="/TARAvideo/IMG_1408.mp4"
             className="relative z-10 aspect-[2048/1365] w-full rounded-[1.5rem] object-cover shadow-soft"
             autoPlay
@@ -740,6 +857,8 @@ function SolutionVisual({ story }: { story: Story }) {
             muted
             playsInline
             preload="metadata"
+            onLoadedMetadata={(event) => muteVideo(event.currentTarget)}
+            onPlay={(event) => muteVideo(event.currentTarget)}
             aria-label="Signal clarity demonstration video"
           />
         </div>

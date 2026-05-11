@@ -8,7 +8,7 @@ import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { getCurrentRole } from "@/lib/auth/session";
 
 type PageProps = {
-  searchParams: Promise<{ error?: string; message?: string }>;
+  searchParams: Promise<{ error?: string; message?: string; next?: string }>;
 };
 
 function decodeFeedback(value: string) {
@@ -16,29 +16,29 @@ function decodeFeedback(value: string) {
 }
 
 export default async function LoginPage({ searchParams }: PageProps) {
+  const { error, message, next } = await searchParams;
+  const redirectTo = resolveAuthRedirectTarget(next);
   const currentRole = await getCurrentRole();
   if (currentRole) {
-    redirect(ROLE_DASHBOARD_PATH[currentRole]);
+    redirect(resolveCurrentSessionRedirect(currentRole, redirectTo));
   }
-
-  const { error, message } = await searchParams;
 
   return (
     <div className="relative grid min-h-screen w-full grid-cols-1 overflow-hidden bg-background text-foreground lg:grid-cols-2">
       <AuthBrandPanel
-        headline={["Market Intelligence", "That Moves Fast."]}
+        headline={["Build Your Team", "On Real Data."]} 
         body="Monitor shifts, detect opportunities, and align teams around real consumer signals - not yesterday's data."
       />
 
-      <section className="flex min-h-screen items-center justify-center p-6 sm:p-8">
-        <div className="glass-panel auth-fade-in w-full max-w-md p-8 sm:p-10">
-          <Link href="/" className="mb-7 inline-flex items-center gap-2 rounded-full border border-divider/70 bg-surface/80 px-4 py-2 text-sm font-semibold text-muted-foreground shadow-soft backdrop-blur transition-all hover:border-brand/40 hover:text-foreground lg:hidden">
+      <section className="flex min-h-screen items-stretch justify-center p-0 sm:items-center sm:p-8">
+        <div className="glass-panel mobile-fullscreen-panel auth-fade-in w-full max-w-md p-5 pt-[calc(1.25rem+env(safe-area-inset-top))] sm:p-10">
+          <Link href="/" className="mb-7 inline-flex max-w-full items-center gap-2 rounded-full border border-divider/70 bg-surface/80 px-4 py-2 text-sm font-semibold text-muted-foreground shadow-soft backdrop-blur transition-all hover:border-brand/40 hover:text-foreground lg:hidden">
             TARAsense
           </Link>
 
           <div className="space-y-2 text-center">
-            <h1 className="text-3xl font-semibold text-foreground">TARAsense</h1>
-            <p className="text-muted-foreground">Log in to TARAsense</p>
+            <h1 className="text-2xl font-semibold leading-tight text-foreground sm:text-3xl">TARAsense</h1>
+            <p className="text-sm leading-6 text-muted-foreground sm:text-base">Log in to TARAsense</p>
           </div>
 
           {error && (
@@ -58,11 +58,11 @@ export default async function LoginPage({ searchParams }: PageProps) {
             </div>
           )}
 
-          <LoginForm action={login} />
+          <LoginForm action={login} redirectTo={redirectTo} />
 
           <p className="mt-7 text-center text-sm text-muted-foreground">
             Don&apos;t have an account?{" "}
-            <Link href="/register" className="link-accent font-medium text-brand hover:text-brand">
+            <Link href={`/register?next=${encodeURIComponent(redirectTo)}`} className="link-accent font-medium text-brand hover:text-brand">
               Create one
             </Link>
           </p>
@@ -70,4 +70,22 @@ export default async function LoginPage({ searchParams }: PageProps) {
       </section>
     </div>
   );
+}
+
+function resolveAuthRedirectTarget(value: string | undefined) {
+  const raw = String(value ?? "").trim();
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    return raw;
+  }
+  return ROLE_DASHBOARD_PATH.CONSUMER;
+}
+
+function resolveCurrentSessionRedirect(role: keyof typeof ROLE_DASHBOARD_PATH, redirectTo: string) {
+  if (role === "CONSUMER") {
+    return redirectTo;
+  }
+  if (role === "MSME" && /^\/studies\/[^/]+\/start(?:\?|$)/.test(redirectTo)) {
+    return redirectTo;
+  }
+  return ROLE_DASHBOARD_PATH[role];
 }

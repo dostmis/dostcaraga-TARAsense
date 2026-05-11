@@ -60,9 +60,26 @@ export async function GET(request: Request, context: RouteContext) {
     if (responseCount === 0 && !study.analysis) {
       return NextResponse.json({
         generatedAt: new Date().toISOString(),
-        overallLiking: { mean: 0, stdDev: 0, n: 0, median: 0, samplePerformance: [], bySample: [], bestSample: null },
+        studyOverview: null,
+        overallLiking: {
+          mean: 0,
+          stdDev: 0,
+          n: 0,
+          median: 0,
+          samplePerformance: [],
+          bySample: [],
+          bestSample: null,
+          perSampleResults: [],
+          comparativeAnalysis: null,
+          meanDropAnalysis: [],
+          automaticInterpretation: null,
+        },
         attributeStats: [],
         penaltyAnalysis: [],
+        perSampleResults: [],
+        comparativeAnalysis: null,
+        meanDropAnalysis: [],
+        automaticInterpretation: null,
         aiInterpretation: null,
         aiRecommendation: null,
         decisionFlag: null,
@@ -78,9 +95,50 @@ export async function GET(request: Request, context: RouteContext) {
       where: { studyId },
     });
 
-    return NextResponse.json(analysis);
+    if (!analysis) {
+      return NextResponse.json({ error: "Analysis not found" }, { status: 404 });
+    }
+
+    const extendedPayload = extractExtendedAnalysisPayload(analysis.overallLiking);
+    return NextResponse.json({
+      ...analysis,
+      ...extendedPayload,
+    });
   } catch (error) {
     console.error("Failed to fetch study analysis:", error);
     return NextResponse.json({ error: "Failed to fetch analysis" }, { status: 500 });
   }
+}
+
+function extractExtendedAnalysisPayload(overallLiking: unknown) {
+  if (!overallLiking || typeof overallLiking !== "object") {
+    return {
+      studyOverview: null,
+      perSampleResults: [],
+      comparativeAnalysis: null,
+      meanDropAnalysis: [],
+      automaticInterpretation: null,
+    };
+  }
+
+  const payload = overallLiking as {
+    studyOverview?: unknown;
+    perSampleResults?: unknown;
+    bySample?: unknown;
+    comparativeAnalysis?: unknown;
+    meanDropAnalysis?: unknown;
+    automaticInterpretation?: unknown;
+  };
+
+  return {
+    studyOverview: payload.studyOverview ?? null,
+    perSampleResults: Array.isArray(payload.perSampleResults)
+      ? payload.perSampleResults
+      : Array.isArray(payload.bySample)
+        ? payload.bySample
+        : [],
+    comparativeAnalysis: payload.comparativeAnalysis ?? null,
+    meanDropAnalysis: Array.isArray(payload.meanDropAnalysis) ? payload.meanDropAnalysis : [],
+    automaticInterpretation: payload.automaticInterpretation ?? null,
+  };
 }

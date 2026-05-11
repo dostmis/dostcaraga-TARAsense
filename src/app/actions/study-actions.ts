@@ -12,6 +12,7 @@ import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/rando
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 
 const MAX_STUDY_ATTRIBUTES_STRICT = 5;
+const MAX_STUDY_QUESTION_ROWS_STRICT = 13;
 const MAX_STUDY_ATTRIBUTES_IMPORT = 25;
 const MAX_ATTRIBUTE_NAME_LENGTH = 120;
 type SopMode = "STRICT_NEW_STUDY" | "IMPORT_COMPLETED_STUDY";
@@ -32,7 +33,7 @@ const CreateStudySchema = z.object({
   location: z.string(),
   targetDemographics: z.object({
     ageRange: z.tuple([z.number(), z.number()]),
-    genders: z.array(z.enum(["MALE", "FEMALE", "NON_BINARY"])).optional(),
+    genders: z.array(z.enum(["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_SAY"])).optional(),
     lifestyles: z.array(z.string()).optional(),
     experience: z.string().optional()
   }).passthrough(),
@@ -305,18 +306,21 @@ function validateSensoryAttributeSetup(
       high: string;
       labels?: string[];
     };
+    sourceAttributeName?: string;
     isCustom?: boolean;
   }>,
   sopMode: SopMode
 ) {
   const maxStudyAttributes = sopMode === "IMPORT_COMPLETED_STUDY" ? MAX_STUDY_ATTRIBUTES_IMPORT : MAX_STUDY_ATTRIBUTES_STRICT;
-  const customCount = attributes.filter((attribute) => Boolean(attribute.isCustom)).length;
+  const maxQuestionRows = sopMode === "IMPORT_COMPLETED_STUDY" ? MAX_STUDY_ATTRIBUTES_IMPORT : MAX_STUDY_QUESTION_ROWS_STRICT;
+  const baseAttributeKeys = new Set<string>();
+  const customBaseAttributeKeys = new Set<string>();
 
   if (attributes.length === 0) {
     return "At least one sensory attribute is required.";
   }
-  if (attributes.length > maxStudyAttributes) {
-    return `Too many sensory attributes. Maximum is ${maxStudyAttributes}.`;
+  if (attributes.length > maxQuestionRows) {
+    return `Too many sensory questions. Maximum is ${maxQuestionRows}.`;
   }
 
   let overallCount = 0;
@@ -341,6 +345,16 @@ function validateSensoryAttributeSetup(
       overallCount += 1;
     }
 
+    if (attribute.type === "ATTRIBUTE_LIKING" || attribute.type === "JAR") {
+      const baseAttributeKey = getBaseAttributeKey(attribute);
+      if (baseAttributeKey) {
+        baseAttributeKeys.add(baseAttributeKey);
+        if (attribute.isCustom) {
+          customBaseAttributeKeys.add(baseAttributeKey);
+        }
+      }
+    }
+
     if (attribute.type === "JAR") {
       jarCount += 1;
       if (!attribute.jarOptions) {
@@ -363,21 +377,37 @@ function validateSensoryAttributeSetup(
         return `Invalid attribute type "${attribute.attributeType}" for "${attribute.name}".`;
       }
     }
-    
-    if (sopMode === "STRICT_NEW_STUDY" && attribute.isCustom && customCount > 1) {
-      return "Only one custom attribute is allowed per study.";
-    }
+  }
+
+  if (sopMode === "STRICT_NEW_STUDY" && baseAttributeKeys.size > maxStudyAttributes) {
+    return `Too many sensory attributes. Maximum is ${maxStudyAttributes}.`;
+  }
+
+  if (sopMode === "STRICT_NEW_STUDY" && customBaseAttributeKeys.size > 1) {
+    return "Only one custom attribute is allowed per study.";
   }
 
   if (overallCount !== 1) {
     return "Exactly one OVERALL_LIKING question is required.";
   }
 
-  if (sopMode === "STRICT_NEW_STUDY" && jarCount > 3) {
-    return "Maximum 3 JAR attributes allowed. Please select only 3 JAR attributes as part of the top 5 total attributes.";
+  if (sopMode === "STRICT_NEW_STUDY" && jarCount > maxStudyAttributes) {
+    return `Too many JAR attributes. Maximum is ${maxStudyAttributes}.`;
   }
 
   return null;
+}
+
+function getBaseAttributeKey(attribute: {
+  name: string;
+  type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
+  sourceAttributeName?: string;
+}) {
+  if (attribute.type === "OVERALL_LIKING" || attribute.type === "OPEN_ENDED") {
+    return "";
+  }
+
+  return (attribute.sourceAttributeName?.trim() || attribute.name.replace(/\s*\(JAR\)\s*$/i, "").trim()).toLowerCase();
 }
 
 async function syncCoreSensoryTables(
@@ -490,7 +520,7 @@ function calculateStratumDistribution(
   totalSize: number, 
   demographics: {
     ageRange: [number, number];
-    genders?: ("MALE" | "FEMALE" | "NON_BINARY")[];
+    genders?: ("MALE" | "FEMALE" | "NON_BINARY" | "PREFER_NOT_SAY")[];
   }
 ) {
   if (variable === "gender") {

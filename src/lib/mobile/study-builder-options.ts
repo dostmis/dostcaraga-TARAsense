@@ -1,4 +1,10 @@
 import { FACILITIES_BY_REGION, REGIONS } from "@/lib/facility-constants";
+import {
+  TARGET_CONSUMER_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_GENDER_OPTIONS,
+  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+} from "@/lib/target-consumer";
 
 export const MARKET_TYPE_OPTIONS = [
   { value: "PACKAGING_EVALUATION", label: "Packaging Evaluation" },
@@ -14,11 +20,9 @@ export const SENSORY_STUDY_TYPES = [
 ];
 
 export const CONSUMER_OBJECTIVES = [
-  { value: "CHECK_ACCEPTABILITY", label: "Check acceptability", max: 110, defaultTarget: 80 },
-  { value: "IMPROVE_TASTE", label: "Improve taste", max: 60, defaultTarget: 50 },
-  { value: "IMPROVE_TEXTURE", label: "Improve texture", max: 60, defaultTarget: 50 },
-  { value: "FINE_TUNE", label: "Fine-tune", max: 60, defaultTarget: 50 },
-  { value: "FAST_ITERATION", label: "FAST iteration", max: 35, defaultTarget: 30 },
+  { value: "MARKET_READINESS", label: "Market Readiness", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
+  { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
+  { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
 ];
 
 export const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];
@@ -107,5 +111,11 @@ export function getStudyBuilderOptions() {
     regions: REGIONS,
     facilitiesByRegion: FACILITIES_BY_REGION,
     attributeDimensions: ["Taste", "Texture", "Aftertaste", "Mouthfeel"],
+    targetConsumerOptions: {
+      genders: TARGET_CONSUMER_GENDER_OPTIONS,
+      lifestyles: TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+      dietaryPrefs: TARGET_CONSUMER_DIETARY_OPTIONS,
+      consumptionHabits: TARGET_CONSUMER_CONSUMPTION_OPTIONS,
+    },
   };
 }

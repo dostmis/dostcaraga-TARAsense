@@ -4,12 +4,19 @@ import { verifyPassword } from "@/lib/auth/password";
 import { parseRole } from "@/lib/auth/roles";
 import { mobileAuthResponse, mobileError, parseJsonBody } from "@/lib/mobile/api";
 import { isMobileTokenSecretConfigured } from "@/lib/mobile/token";
+import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   if (!isMobileTokenSecretConfigured()) {
     return mobileError("Mobile authentication is not configured.", 500, "AUTH_CONFIG_ERROR");
+  }
+
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rateLimitResult = checkRateLimit(`mobile-login:${ip}`, AUTH_RATE_LIMIT);
+  if (!rateLimitResult.allowed) {
+    return mobileError("Too many login attempts. Please try again later.", 429, "RATE_LIMITED");
   }
 
   const body = await parseJsonBody(request);

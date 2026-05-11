@@ -25,8 +25,32 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     const { ficUserId } = await context.params;
+
     if (session.role === "FIC" && session.userId !== ficUserId) {
       return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+    }
+
+    if (session.role === "MSME") {
+      const [msmeUser, ficUser] = await Promise.all([
+        prisma.user.findUnique({
+          where: { id: session.userId },
+          select: { assignedRegion: true, assignedFacility: true },
+        }),
+        prisma.user.findUnique({
+          where: { id: ficUserId, role: "FIC" },
+          select: { assignedRegion: true, assignedFacility: true },
+        }),
+      ]);
+
+      if (
+        !ficUser ||
+        !msmeUser?.assignedRegion ||
+        !msmeUser?.assignedFacility ||
+        ficUser.assignedRegion !== msmeUser.assignedRegion ||
+        ficUser.assignedFacility !== msmeUser.assignedFacility
+      ) {
+        return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+      }
     }
 
     const url = new URL(request.url);

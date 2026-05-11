@@ -1,7 +1,13 @@
 import Link from "next/link";
+import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { registerWalkInGuest } from "@/app/actions/guest-actions";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
+import {
+  TARGET_CONSUMER_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+} from "@/lib/target-consumer";
 
 type PageProps = {
   searchParams: Promise<{ studyId?: string; slotId?: string; error?: string; message?: string }>;
@@ -9,6 +15,11 @@ type PageProps = {
 
 export default async function GuestCheckInPage({ searchParams }: PageProps) {
   const { studyId, slotId, error, message } = await searchParams;
+
+  if (studyId && slotId) {
+    const nextPath = `/studies/${encodeURIComponent(studyId)}/start?slotId=${encodeURIComponent(slotId)}`;
+    redirect(`/login?next=${encodeURIComponent(nextPath)}&message=Sign+in+to+check+in+for+this+session.+New+consumers+can+create+an+account+below`);
+  }
 
   if (!studyId || !slotId) {
     return (
@@ -152,6 +163,38 @@ export default async function GuestCheckInPage({ searchParams }: PageProps) {
               </label>
             </div>
 
+            <div className="grid gap-4 md:grid-cols-3">
+              <fieldset className="space-y-2">
+                <legend className="text-sm text-[#334155]">Lifestyle</legend>
+                {TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => (
+                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
+                    <input type="checkbox" name="lifestyle" value={option.value} />
+                    {option.label}
+                  </label>
+                ))}
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-sm text-[#334155]">Dietary Preference</legend>
+                {TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => (
+                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
+                    <input type="checkbox" name="dietaryPrefs" value={option.value} />
+                    {option.label}
+                  </label>
+                ))}
+              </fieldset>
+
+              <fieldset className="space-y-2">
+                <legend className="text-sm text-[#334155]">Consumption Behavior</legend>
+                {TARGET_CONSUMER_CONSUMPTION_OPTIONS.map((option) => (
+                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
+                    <input type="checkbox" name={option.value} />
+                    {option.label}
+                  </label>
+                ))}
+              </fieldset>
+            </div>
+
             <button type="submit" className="app-button-primary w-full py-2.5">
               Continue to Consent
             </button>
@@ -161,4 +204,3 @@ export default async function GuestCheckInPage({ searchParams }: PageProps) {
     </main>
   );
 }
-

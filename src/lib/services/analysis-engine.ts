@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db";
 import { DecisionType, Prisma } from "@prisma/client";
+import { compareSamples, formatPValue, type ComparisonResult } from "@/lib/services/statistics";
 
 type JarBucket = "too_low" | "just_right" | "too_high";
 type DriverLevel = "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
@@ -24,6 +25,7 @@ interface SampleResponseEntry {
 }
 
 interface StudyResponse {
+  respondentId: string;
   overallLiking?: number;
   attributes: Record<string, unknown>;
   sampleResponses?: SampleResponseEntry[];
@@ -38,7 +40,7 @@ interface PenaltyResult {
   tooHighPenalty: number | null;
   tooLowPercent: number;
   tooHighPercent: number;
-  jarMean: number;
+  jarMean: number | null;
   tooLowLevel: DriverLevel;
   tooHighLevel: DriverLevel;
   driverLevel: DriverLevel;
@@ -67,13 +69,32 @@ interface SampleJarBreakdownRow {
   driverLevel: DriverLevel;
 }
 
+interface SampleMeanDropRow {
+  attribute: string;
+  jarCount: number;
+  nonJarCount: number;
+  jarPercent: number;
+  tooLowPercent: number;
+  tooHighPercent: number;
+  jarMean: number | null;
+  nonJarMean: number | null;
+  tooLowMean: number | null;
+  tooHighMean: number | null;
+  meanDrop: number | null;
+  tooLowMeanDrop: number | null;
+  tooHighMeanDrop: number | null;
+  severity: DriverLevel;
+}
+
 interface SampleAnalysisBlock {
   sampleNumber: number;
   sampleLabel: string;
   overallLiking: DescriptiveStats;
   interpretation: string;
+  attributeLiking: Array<{ attribute: string; stats: DescriptiveStats }>;
   jarBreakdown: SampleJarBreakdownRow[];
   penaltyAnalysis: PenaltyResult[];
+  meanDropAnalysis: SampleMeanDropRow[];
   actionableDrivers: string[];
 }
 
@@ -83,27 +104,73 @@ interface SampleInsights {
   bestSample: SamplePerformanceRow | null;
 }
 
+interface SampleObservation {
+  respondentId: string;
+  sampleNumber: number;
+  sampleLabel: string;
+  overallLiking?: number;
+  attributes: Record<string, unknown>;
+}
+
 export class SensoryAnalysisEngine {
   async analyzeStudy(studyId: string) {
-    const responses = await prisma.sensoryResponse.findMany({
-      where: { studyId },
-      include: { participant: true },
-    });
+    const [study, responses, attributes] = await Promise.all([
+      prisma.study.findUnique({
+        where: { id: studyId },
+        select: {
+          id: true,
+          title: true,
+          productName: true,
+          sampleSize: true,
+          targetDemographics: true,
+          status: true,
+          createdAt: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.sensoryResponse.findMany({
+        where: { studyId },
+        select: {
+          participantId: true,
+          data: true,
+          submittedAt: true,
+        },
+        orderBy: { submittedAt: "asc" },
+      }),
+      prisma.sensoryAttribute.findMany({
+        where: { studyId },
+        orderBy: { order: "asc" },
+      }),
+    ]);
 
-    const parsedResponses: StudyResponse[] = responses.map((r: { data: unknown }) => r.data as StudyResponse);
-
-    const attributes = await prisma.sensoryAttribute.findMany({
-      where: { studyId },
-      orderBy: { order: "asc" },
-    });
+    const parsedResponses: StudyResponse[] = responses.map((response) => ({
+      ...(response.data as unknown as Omit<StudyResponse, "respondentId">),
+      respondentId: response.participantId,
+    }));
+    const sampleObservations = this.buildSampleObservations(parsedResponses);
 
     const overallLikingScores = parsedResponses
       .map((response) => response.overallLiking)
       .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
     const overallStats = this.computeDescriptiveStats(overallLikingScores);
     const sampleInsights = this.buildSampleInsights(
-      parsedResponses,
-      attributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.name)
+      sampleObservations,
+      attributes
+    );
+    const studyOverview = this.buildStudyOverview(study, attributes, responses, sampleInsights);
+    const comparativeAnalysis = this.buildComparativeAnalysis(sampleObservations, attributes);
+    const meanDropAnalysis = sampleInsights.bySample.flatMap((sample) =>
+      sample.meanDropAnalysis.map((row) => ({
+        sampleNumber: sample.sampleNumber,
+        sampleLabel: sample.sampleLabel,
+        ...row,
+      }))
+    );
+    const automaticInterpretation = this.buildAutomaticInterpretation(
+      overallStats,
+      sampleInsights,
+      comparativeAnalysis,
+      meanDropAnalysis
     );
 
     const attributeResults: Array<Record<string, unknown>> = [];
@@ -140,9 +207,14 @@ export class SensoryAnalysisEngine {
     const penaltyStatsJson = JSON.parse(JSON.stringify(penaltyResults)) as Prisma.InputJsonValue;
     const overallLikingPayload = {
       ...overallStats,
+      studyOverview,
       samplePerformance: sampleInsights.samplePerformance,
       bestSample: sampleInsights.bestSample,
       bySample: sampleInsights.bySample,
+      perSampleResults: sampleInsights.bySample,
+      comparativeAnalysis,
+      meanDropAnalysis,
+      automaticInterpretation,
       jarFramework: {
         tooLow: "1-2",
         justRight: "3",
@@ -182,7 +254,7 @@ export class SensoryAnalysisEngine {
     }
 
     const mean = values.reduce((a, b) => a + b, 0) / values.length;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length - 1);
     const stdDev = Math.sqrt(variance);
 
     return {
@@ -270,22 +342,15 @@ export class SensoryAnalysisEngine {
       totalValidJar += 1;
     });
 
-    const jarMean =
-      groups.just_right.length > 0
-        ? groups.just_right.reduce((a, b) => a + b, 0) / groups.just_right.length
-        : 0;
-
-    const tooLowMean =
-      groups.too_low.length > 0 ? groups.too_low.reduce((a, b) => a + b, 0) / groups.too_low.length : 0;
-    const tooHighMean =
-      groups.too_high.length > 0 ? groups.too_high.reduce((a, b) => a + b, 0) / groups.too_high.length : 0;
+    const jarMean = nullableMean(groups.just_right);
+    const tooLowMean = nullableMean(groups.too_low);
+    const tooHighMean = nullableMean(groups.too_high);
 
     const tooLowPercent = totalValidJar > 0 ? (groups.too_low.length / totalValidJar) * 100 : 0;
     const tooHighPercent = totalValidJar > 0 ? (groups.too_high.length / totalValidJar) * 100 : 0;
 
-    const tooLowPenalty = groups.too_low.length > 0 && groups.just_right.length > 0 ? jarMean - tooLowMean : null;
-    const tooHighPenalty =
-      groups.too_high.length > 0 && groups.just_right.length > 0 ? jarMean - tooHighMean : null;
+    const tooLowPenalty = jarMean !== null && tooLowMean !== null ? jarMean - tooLowMean : null;
+    const tooHighPenalty = jarMean !== null && tooHighMean !== null ? jarMean - tooHighMean : null;
 
     const tooLowLevel = classifyDriverLevel(tooLowPenalty, tooLowPercent);
     const tooHighLevel = classifyDriverLevel(tooHighPenalty, tooHighPercent);
@@ -293,11 +358,11 @@ export class SensoryAnalysisEngine {
 
     return {
       attribute: attributeName,
-      tooLowPenalty: tooLowPenalty !== null ? Math.round(tooLowPenalty * 100) / 100 : null,
-      tooHighPenalty: tooHighPenalty !== null ? Math.round(tooHighPenalty * 100) / 100 : null,
+      tooLowPenalty: roundNullable(tooLowPenalty),
+      tooHighPenalty: roundNullable(tooHighPenalty),
       tooLowPercent: Math.round(tooLowPercent),
       tooHighPercent: Math.round(tooHighPercent),
-      jarMean: Math.round(jarMean * 100) / 100,
+      jarMean: roundNullable(jarMean),
       tooLowLevel,
       tooHighLevel,
       driverLevel,
@@ -306,9 +371,8 @@ export class SensoryAnalysisEngine {
     };
   }
 
-  private buildSampleInsights(parsedResponses: StudyResponse[], jarAttributeNames: string[]): SampleInsights {
-    const buckets = new Map<number, { sampleNumber: number; sampleLabel: string; responses: StudyResponse[] }>();
-
+  private buildSampleObservations(parsedResponses: StudyResponse[]): SampleObservation[] {
+    const observations: SampleObservation[] = [];
     parsedResponses.forEach((response) => {
       const labelMap = toSampleLabelMap(response.importMeta?.sampleLabelByNumber);
       const sampleRows =
@@ -331,21 +395,42 @@ export class SensoryAnalysisEngine {
         const sampleLabel =
           sample.sampleLabel?.trim() || labelMap.get(normalizedSampleNumber) || `Sample ${normalizedSampleNumber}`;
 
-        const bucket = buckets.get(normalizedSampleNumber) ?? {
+        observations.push({
+          respondentId: response.respondentId,
           sampleNumber: normalizedSampleNumber,
           sampleLabel,
-          responses: [],
-        };
-        bucket.sampleLabel = bucket.sampleLabel || sampleLabel;
-        bucket.responses.push({
           overallLiking:
             typeof sample.overallLiking === "number" && Number.isFinite(sample.overallLiking)
               ? sample.overallLiking
               : response.overallLiking,
           attributes: sample.attributes,
         });
-        buckets.set(normalizedSampleNumber, bucket);
       });
+    });
+
+    return observations;
+  }
+
+  private buildSampleInsights(sampleObservations: SampleObservation[], attributes: Array<{ name: string; type: string }>): SampleInsights {
+    const jarAttributeNames = attributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.name);
+    const likingAttributeNames = attributes
+      .filter((attribute) => attribute.type === "ATTRIBUTE_LIKING" || attribute.type === "OVERALL_LIKING")
+      .map((attribute) => attribute.name);
+    const buckets = new Map<number, { sampleNumber: number; sampleLabel: string; responses: StudyResponse[] }>();
+
+    sampleObservations.forEach((observation) => {
+      const bucket = buckets.get(observation.sampleNumber) ?? {
+        sampleNumber: observation.sampleNumber,
+        sampleLabel: observation.sampleLabel,
+        responses: [],
+      };
+      bucket.sampleLabel = bucket.sampleLabel || observation.sampleLabel;
+      bucket.responses.push({
+        respondentId: observation.respondentId,
+        overallLiking: observation.overallLiking,
+        attributes: observation.attributes,
+      });
+      buckets.set(observation.sampleNumber, bucket);
     });
 
     const sampleRows = Array.from(buckets.values()).sort((left, right) => left.sampleNumber - right.sampleNumber);
@@ -354,8 +439,21 @@ export class SensoryAnalysisEngine {
         .map((row) => row.overallLiking)
         .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
       const stats = this.computeDescriptiveStats(overallScores);
+      const attributeLiking = likingAttributeNames.map((attributeName) => {
+        const values = sampleRow.responses
+          .map((row) => getNumericAttributeValue(row.attributes, attributeName))
+          .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+        return {
+          attribute: attributeName,
+          stats: this.computeDescriptiveStats(values),
+        };
+      });
       const penalties = jarAttributeNames.map((attributeName) =>
         this.calculatePenaltyAnalysis(attributeName, sampleRow.responses)
+      );
+      const meanDropAnalysis = jarAttributeNames.map((attributeName) =>
+        this.calculateMeanDropAnalysis(attributeName, sampleRow.responses)
       );
       const jarBreakdown: SampleJarBreakdownRow[] = jarAttributeNames.map((attributeName) => {
         const distribution = this.calculateJARDistribution(attributeName, sampleRow.responses);
@@ -380,8 +478,10 @@ export class SensoryAnalysisEngine {
         sampleLabel: sampleRow.sampleLabel,
         overallLiking: stats,
         interpretation: interpretSampleMean(stats.mean),
+        attributeLiking,
         jarBreakdown,
         penaltyAnalysis: penalties,
+        meanDropAnalysis,
         actionableDrivers,
       };
     });
@@ -406,6 +506,244 @@ export class SensoryAnalysisEngine {
       samplePerformance,
       bySample,
       bestSample,
+    };
+  }
+
+  private buildStudyOverview(
+    study: {
+      title: string;
+      productName: string;
+      sampleSize: number;
+      targetDemographics: Prisma.JsonValue;
+      status: string;
+      createdAt: Date;
+      updatedAt: Date;
+    } | null,
+    attributes: Array<{ name: string; type: string }>,
+    responses: Array<{ submittedAt: Date }>,
+    sampleInsights: SampleInsights
+  ) {
+    const submittedDates = responses.map((response) => response.submittedAt.getTime()).filter(Number.isFinite);
+    const conductedAt = submittedDates.length > 0 ? new Date(Math.max(...submittedDates)).toISOString() : null;
+    const hedonicScale = attributes.some(
+      (attribute) => attribute.type === "OVERALL_LIKING" || attribute.type === "ATTRIBUTE_LIKING"
+    )
+      ? "9-point hedonic scale"
+      : "Not configured";
+    const jarScale = attributes.some((attribute) => attribute.type === "JAR") ? "5-point JAR scale" : null;
+
+    return {
+      title: study?.title ?? "Untitled study",
+      productName: study?.productName ?? "",
+      status: study?.status ?? "UNKNOWN",
+      numberOfConsumers: responses.length,
+      targetConsumers: study?.sampleSize ?? 0,
+      numberOfSamples: sampleInsights.samplePerformance.length,
+      attributesEvaluated: attributes.map((attribute) => ({
+        name: attribute.name,
+        type: attribute.type,
+      })),
+      hedonicScale,
+      jarScale,
+      dateConducted: conductedAt,
+      generatedAt: new Date().toISOString(),
+      workflow: "Raw Consumer Data > Data Validation > Sample-Based Summary > Comparative Analysis > Graph Output",
+    };
+  }
+
+  private buildComparativeAnalysis(sampleObservations: SampleObservation[], attributes: Array<{ name: string; type: string }>) {
+    const candidateVariables = [
+      ...attributes
+        .filter((attribute) => attribute.type === "OVERALL_LIKING")
+        .map((attribute) => ({
+          key: attribute.name,
+          label: attribute.name,
+          type: "OVERALL_LIKING" as const,
+        })),
+      ...attributes
+        .filter((attribute) => attribute.type === "ATTRIBUTE_LIKING")
+        .map((attribute) => ({
+          key: attribute.name,
+          label: attribute.name,
+          type: "ATTRIBUTE_LIKING" as const,
+        })),
+    ];
+
+    const variables =
+      candidateVariables.length > 0
+        ? candidateVariables
+        : [
+            {
+              key: "overallLiking",
+              label: "Overall Liking",
+              type: "OVERALL_LIKING" as const,
+            },
+          ];
+
+    const sampleNumbers = Array.from(new Set(sampleObservations.map((row) => row.sampleNumber))).sort((left, right) => left - right);
+    const sampleOptions = sampleNumbers.map((sampleNumber) => {
+      const match = sampleObservations.find((row) => row.sampleNumber === sampleNumber);
+      return {
+        sampleNumber,
+        sampleLabel: match?.sampleLabel ?? `Sample ${sampleNumber}`,
+      };
+    });
+
+    const comparisons = variables.map((variable) => {
+      const sampleInputs = sampleOptions.map((sample) => {
+        const valuesByRespondent = new Map<string, number>();
+        sampleObservations
+          .filter((observation) => observation.sampleNumber === sample.sampleNumber)
+          .forEach((observation) => {
+            const value =
+              variable.key === "overallLiking"
+                ? observation.overallLiking
+                : getNumericAttributeValue(observation.attributes, variable.key);
+            if (typeof value === "number" && Number.isFinite(value)) {
+              valuesByRespondent.set(observation.respondentId, value);
+            }
+          });
+
+        return {
+          sampleNumber: sample.sampleNumber,
+          sampleLabel: sample.sampleLabel,
+          valuesByRespondent,
+        };
+      });
+
+      const result = compareSamples(sampleInputs);
+      return {
+        variableKey: variable.key,
+        variableLabel: variable.label,
+        variableType: variable.type,
+        sampleSelection: "ALL_SAMPLES",
+        sampleCount: sampleInputs.length,
+        samples: sampleInputs.map((sample) => {
+          const values = Array.from(sample.valuesByRespondent.values());
+          return {
+            sampleNumber: sample.sampleNumber,
+            sampleLabel: sample.sampleLabel,
+            stats: this.computeDescriptiveStats(values),
+          };
+        }),
+        statisticalComparison: serializeComparisonResult(result),
+        graphType: result.repeatedMeasures ? "Repeated-measures bar chart with paired comparison" : "Independent-group bar chart",
+      };
+    });
+
+    const primaryComparison = comparisons.find((comparison) => comparison.variableType === "OVERALL_LIKING") ?? comparisons[0] ?? null;
+
+    return {
+      sampleOptions,
+      variableOptions: variables.map((variable) => ({
+        key: variable.key,
+        label: variable.label,
+        type: variable.type,
+      })),
+      defaultSampleSelection: "ALL_SAMPLES",
+      defaultVariableKey: primaryComparison?.variableKey ?? null,
+      primaryComparison,
+      comparisons,
+      guardrails: [
+        "Statistical tests are selected by TARAsense, not by the user.",
+        "Complete respondent overlap is treated as repeated-measures data.",
+        "Rank-based tests are used as conservative Phase 1 defaults for small or ordinal-like hedonic datasets.",
+      ],
+    };
+  }
+
+  private calculateMeanDropAnalysis(attributeName: string, responses: StudyResponse[]): SampleMeanDropRow {
+    const groups = {
+      just_right: [] as number[],
+      too_low: [] as number[],
+      too_high: [] as number[],
+    };
+
+    responses.forEach((response) => {
+      if (typeof response.overallLiking !== "number" || !Number.isFinite(response.overallLiking)) {
+        return;
+      }
+      const jarValue = normalizeJarValue(response.attributes[attributeName]);
+      if (!jarValue) {
+        return;
+      }
+      groups[jarValue.bucket].push(response.overallLiking);
+    });
+
+    const jarMean = nullableMean(groups.just_right);
+    const tooLowMean = nullableMean(groups.too_low);
+    const tooHighMean = nullableMean(groups.too_high);
+    const nonJarValues = [...groups.too_low, ...groups.too_high];
+    const nonJarMean = nullableMean(nonJarValues);
+    const total = groups.just_right.length + nonJarValues.length;
+    const tooLowPercent = total > 0 ? (groups.too_low.length / total) * 100 : 0;
+    const tooHighPercent = total > 0 ? (groups.too_high.length / total) * 100 : 0;
+    const meanDrop = jarMean !== null && nonJarMean !== null ? jarMean - nonJarMean : null;
+    const tooLowMeanDrop = jarMean !== null && tooLowMean !== null ? jarMean - tooLowMean : null;
+    const tooHighMeanDrop = jarMean !== null && tooHighMean !== null ? jarMean - tooHighMean : null;
+    const severity = mergeDriverLevels(
+      classifyDriverLevel(tooLowMeanDrop, tooLowPercent),
+      classifyDriverLevel(tooHighMeanDrop, tooHighPercent)
+    );
+
+    return {
+      attribute: attributeName,
+      jarCount: groups.just_right.length,
+      nonJarCount: nonJarValues.length,
+      jarPercent: total > 0 ? Math.round((groups.just_right.length / total) * 100) : 0,
+      tooLowPercent: Math.round(tooLowPercent),
+      tooHighPercent: Math.round(tooHighPercent),
+      jarMean: roundNullable(jarMean),
+      nonJarMean: roundNullable(nonJarMean),
+      tooLowMean: roundNullable(tooLowMean),
+      tooHighMean: roundNullable(tooHighMean),
+      meanDrop: roundNullable(meanDrop),
+      tooLowMeanDrop: roundNullable(tooLowMeanDrop),
+      tooHighMeanDrop: roundNullable(tooHighMeanDrop),
+      severity,
+    };
+  }
+
+  private buildAutomaticInterpretation(
+    overallStats: DescriptiveStats,
+    sampleInsights: SampleInsights,
+    comparativeAnalysis: ReturnType<SensoryAnalysisEngine["buildComparativeAnalysis"]>,
+    meanDropAnalysis: Array<SampleMeanDropRow & { sampleNumber: number; sampleLabel: string }>
+  ) {
+    const insights: string[] = [];
+    if (sampleInsights.bestSample) {
+      insights.push(
+        `${sampleInsights.bestSample.sampleLabel} obtained the highest overall liking score (${sampleInsights.bestSample.meanScore}).`
+      );
+    }
+
+    const comparison = comparativeAnalysis.primaryComparison?.statisticalComparison;
+    if (comparison) {
+      insights.push(comparison.interpretation);
+    }
+
+    const strongestDriver = [...meanDropAnalysis]
+      .filter((row) => row.severity !== "NOT_ACTIONABLE" && row.meanDrop !== null)
+      .sort((left, right) => (right.meanDrop ?? 0) - (left.meanDrop ?? 0))[0];
+    if (strongestDriver) {
+      insights.push(
+        `${strongestDriver.attribute} in ${strongestDriver.sampleLabel} is the strongest actionable JAR driver with a mean drop of ${strongestDriver.meanDrop}.`
+      );
+    }
+
+    if (insights.length === 0) {
+      insights.push(`Overall liking averaged ${overallStats.mean}, with no actionable JAR driver detected from current data.`);
+    }
+
+    return {
+      summary: insights,
+      decisionSupport: {
+        bestSample: sampleInsights.bestSample,
+        primaryPValue: comparison?.pValue ?? null,
+        formattedPrimaryPValue: formatPValue(comparison?.pValue ?? null),
+        hasSignificantDifference: comparison?.significant ?? null,
+        strongestDriver: strongestDriver ?? null,
+      },
     };
   }
 
@@ -533,6 +871,18 @@ Format as JSON: {"interpretation": string, "recommendation": string, "decision":
       });
     } catch (error) {
       console.error("AI generation failed:", error);
+      try {
+        await prisma.studyAnalysis.update({
+          where: { studyId },
+          data: {
+            aiInterpretation: null,
+            aiRecommendation: null,
+            decisionFlag: null,
+          },
+        });
+      } catch {
+        // Best-effort clear; do not re-throw so analysis pipeline continues.
+      }
     }
   }
 }
@@ -655,4 +1005,36 @@ function toSampleLabelMap(value: unknown) {
     map.set(Math.floor(sampleNumber), rawLabel.trim());
   });
   return map;
+}
+
+function getNumericAttributeValue(attributes: Record<string, unknown>, attributeName: string) {
+  const value = attributes[attributeName];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nullableMean(values: number[]) {
+  if (values.length === 0) {
+    return null;
+  }
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function roundNullable(value: number | null) {
+  return value === null ? null : Math.round(value * 100) / 100;
+}
+
+function serializeComparisonResult(result: ComparisonResult) {
+  return {
+    test: result.test,
+    testLabel: result.testLabel,
+    repeatedMeasures: result.repeatedMeasures,
+    pValue: result.pValue,
+    formattedPValue: formatPValue(result.pValue),
+    statistic: result.statistic,
+    significant: result.significant,
+    alpha: result.alpha,
+    interpretation: result.interpretation,
+    assumptions: result.assumptions,
+    warnings: result.warnings,
+  };
 }

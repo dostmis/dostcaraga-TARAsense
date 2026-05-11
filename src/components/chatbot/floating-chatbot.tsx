@@ -10,6 +10,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { usePathname } from "next/navigation";
 import type { FormEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -35,6 +36,7 @@ const INITIAL_MESSAGE: ChatMessage = {
 };
 
 export function FloatingChatbot() {
+  const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([INITIAL_MESSAGE]);
@@ -44,6 +46,11 @@ export function FloatingChatbot() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const canSubmit = input.trim().length > 0 && !isSending;
+  const shouldHideChatbot =
+    pathname === "/login" ||
+    pathname === "/register" ||
+    pathname.startsWith("/test") ||
+    pathname.startsWith("/guest/check-in");
 
   const payloadMessages = useMemo(
     () =>
@@ -133,13 +140,17 @@ export function FloatingChatbot() {
     }
   }
 
+  if (shouldHideChatbot) {
+    return null;
+  }
+
   return (
-    <div className="tara-chatbot-root pointer-events-none fixed bottom-[calc(1rem+env(safe-area-inset-bottom))] right-3 z-[1200] flex max-w-[calc(100vw-1.5rem)] flex-col items-end gap-3 sm:right-5 sm:max-w-[390px]">
+    <div className="tara-chatbot-root pointer-events-none fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] right-2 z-[1200] flex max-w-[calc(100vw-1rem)] flex-col items-end gap-3 sm:bottom-[calc(1rem+env(safe-area-inset-bottom))] sm:right-5 sm:max-w-[390px]">
       {isOpen && (
         <section
           role="dialog"
           aria-label="TARAsense assistant"
-          className="pointer-events-auto flex max-h-[min(620px,calc(100dvh-6.75rem))] w-[calc(100vw-1.5rem)] max-w-[390px] flex-col overflow-hidden rounded-2xl border border-[var(--divider)] bg-[var(--surface)] text-[var(--foreground)] shadow-[0_24px_70px_rgba(15,23,42,0.24)]"
+          className="pointer-events-auto flex max-h-[min(620px,calc(100dvh-6rem))] w-[calc(100vw-1rem)] max-w-[390px] flex-col overflow-hidden rounded-2xl border border-[var(--divider)] bg-[var(--surface)] text-[var(--foreground)] shadow-[0_24px_70px_rgba(15,23,42,0.24)]"
         >
           <header className="bg-gradient-to-br from-[#1746ff] via-[#2459ff] to-[#f97316] px-4 py-4 text-white">
             <div className="flex items-start justify-between gap-3">
@@ -250,7 +261,7 @@ export function FloatingChatbot() {
       <button
         type="button"
         onClick={() => setIsOpen((current) => !current)}
-        className="pointer-events-auto inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#fed7aa] bg-[#f97316] text-white shadow-[0_12px_30px_rgba(249,115,22,0.34)] transition hover:scale-105 hover:bg-[#ea580c] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#fed7aa]"
+        className="pointer-events-auto inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-[#fed7aa] bg-[#f97316] text-white shadow-[0_12px_30px_rgba(249,115,22,0.34)] transition hover:scale-105 hover:bg-[#ea580c] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#fed7aa]"
         aria-label={isOpen ? "Close TARAsense assistant" : "Open TARAsense assistant"}
         title={isOpen ? "Close TARAsense assistant" : "Open TARAsense assistant"}
       >

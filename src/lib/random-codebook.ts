@@ -8,6 +8,7 @@ export type StudyRandomCodeBook = {
     sample: number;
     codes: string[];
   }>;
+  servingOrdersByPanelist: number[][];
 };
 
 type CodePoolPicker = {
@@ -55,6 +56,7 @@ export function createStudyRandomCodeBook(participantCapacity: number, sampleCou
     sampleCount: safeSampleCount,
     generatedAt: new Date().toISOString(),
     codesBySample,
+    servingOrdersByPanelist: createRandomizedServingOrders(safeParticipantCapacity, safeSampleCount),
   };
 }
 
@@ -78,6 +80,15 @@ export function parseStudyRandomCodeBook(value: unknown): StudyRandomCodeBook | 
   }, []);
 
   if (parsed.length !== sampleCount) return null;
+  const servingOrdersByPanelist = parseServingOrdersByPanelist(
+    value.servingOrdersByPanelist,
+    participantCapacity,
+    sampleCount
+  ) ?? createDeterministicServingOrders(
+    participantCapacity,
+    sampleCount,
+    typeof value.generatedAt === "string" ? value.generatedAt : "legacy-codebook"
+  );
 
   return {
     version: 1,
@@ -86,13 +97,14 @@ export function parseStudyRandomCodeBook(value: unknown): StudyRandomCodeBook | 
     sampleCount,
     generatedAt: typeof value.generatedAt === "string" ? value.generatedAt : new Date().toISOString(),
     codesBySample: parsed.sort((left, right) => left.sample - right.sample),
+    servingOrdersByPanelist,
   };
 }
 
 export function assignSampleCodesFromCodeBook(
   codeBook: StudyRandomCodeBook,
   panelistNumber: number
-): Array<{ sample: number; code: string }> | null {
+): Array<{ sample: number; code: string; servingOrder: number }> | null {
   if (!Number.isInteger(panelistNumber) || panelistNumber < 1) {
     return null;
   }
@@ -102,9 +114,12 @@ export function assignSampleCodesFromCodeBook(
     return null;
   }
 
-  const rows = codeBook.codesBySample.map((bucket) => ({
-    sample: bucket.sample,
-    code: bucket.codes[index] ?? "",
+  const servingOrder = codeBook.servingOrdersByPanelist[index] ?? buildSequentialOrder(codeBook.sampleCount);
+  const codeBySample = new Map(codeBook.codesBySample.map((bucket) => [bucket.sample, bucket.codes[index] ?? ""]));
+  const rows = servingOrder.map((sample, servingIndex) => ({
+    sample,
+    code: codeBySample.get(sample) ?? "",
+    servingOrder: servingIndex + 1,
   }));
 
   if (rows.some((row) => !isThreeDigitCode(row.code))) {
@@ -134,6 +149,77 @@ function pickCodeForSlot(input: { sampleIndex: number; rowUsed: Set<string>; pic
 
 function buildThreeDigitCodes() {
   return Array.from({ length: 900 }, (_, index) => String(index + 100));
+}
+
+function createRandomizedServingOrders(participantCapacity: number, sampleCount: number) {
+  if (sampleCount <= 1) {
+    return Array.from({ length: participantCapacity }, () => [1]);
+  }
+
+  const startOffset = Math.floor(Math.random() * sampleCount);
+  return Array.from({ length: participantCapacity }, (_, participantIndex) => {
+    const rotation = (participantIndex + startOffset) % sampleCount;
+    const order = rotateOrder(buildSequentialOrder(sampleCount), rotation);
+    if (sampleCount > 2 && Math.random() < 0.5) {
+      return [order[0], ...order.slice(1).reverse()];
+    }
+    return order;
+  });
+}
+
+function createDeterministicServingOrders(participantCapacity: number, sampleCount: number, seed: string) {
+  if (sampleCount <= 1) {
+    return Array.from({ length: participantCapacity }, () => [1]);
+  }
+
+  const startOffset = hashSeed(seed) % sampleCount;
+  return Array.from({ length: participantCapacity }, (_, participantIndex) => {
+    const rotation = (participantIndex + startOffset) % sampleCount;
+    const order = rotateOrder(buildSequentialOrder(sampleCount), rotation);
+    if (sampleCount > 2 && (hashSeed(`${seed}:${participantIndex}`) % 2) === 1) {
+      return [order[0], ...order.slice(1).reverse()];
+    }
+    return order;
+  });
+}
+
+function parseServingOrdersByPanelist(value: unknown, participantCapacity: number, sampleCount: number) {
+  if (!Array.isArray(value) || value.length !== participantCapacity) {
+    return null;
+  }
+
+  const expected = buildSequentialOrder(sampleCount);
+  const orders = value.reduce<number[][]>((accumulator, row) => {
+    if (!Array.isArray(row) || row.length !== sampleCount) {
+      return accumulator;
+    }
+    const parsed = row.map((sample) => (typeof sample === "number" && Number.isInteger(sample) ? sample : 0));
+    const sorted = [...parsed].sort((left, right) => left - right);
+    if (sorted.some((sample, index) => sample !== expected[index])) {
+      return accumulator;
+    }
+    accumulator.push(parsed);
+    return accumulator;
+  }, []);
+
+  return orders.length === participantCapacity ? orders : null;
+}
+
+function buildSequentialOrder(sampleCount: number) {
+  return Array.from({ length: sampleCount }, (_, index) => index + 1);
+}
+
+function rotateOrder(order: number[], offset: number) {
+  const normalizedOffset = ((offset % order.length) + order.length) % order.length;
+  return [...order.slice(normalizedOffset), ...order.slice(0, normalizedOffset)];
+}
+
+function hashSeed(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
 }
 
 function toPositiveInt(value: unknown) {

@@ -1,27 +1,39 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import type { DietaryPref } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { clearGuestSessionCookies, getCurrentSession, SESSION_KEYS } from "@/lib/auth/session";
 import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/session-token";
+import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { normalizeRegionFacility } from "@/lib/facility-constants";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const ALLOWED_LIFESTYLES = new Set(["student", "athlete", "office_worker"]);
+const ALLOWED_DIETARY_PREFS = new Set<DietaryPref>(["VEGETARIAN", "VEGAN", "GLUTEN_FREE"]);
 
 export async function login(formData: FormData) {
+  const redirectTo = safeConsumerRedirect(formData.get("redirectTo"));
   if (!isSessionSecretConfigured()) {
-    redirect("/login?error=Session+configuration+error.+Please+contact+an+administrator");
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
+  }
+
+  const requestHeaders = await headers();
+  const ip = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rateLimitResult = checkRateLimit(`login:${ip}`, AUTH_RATE_LIMIT);
+  if (!rateLimitResult.allowed) {
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Too many login attempts. Please try again later."));
   }
 
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
 
   if (!email || !password) {
-    redirect("/login?error=Email+and+password+are+required");
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Email and password are required"));
   }
 
   const user = await prisma.user.findUnique({
@@ -30,52 +42,72 @@ export async function login(formData: FormData) {
   });
 
   if (!user?.password || !verifyPassword(password, user.password)) {
-    redirect("/login?error=Invalid+email+or+password");
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Invalid email or password"));
   }
 
   const role = parseRole(user.role);
   if (!role) {
-    redirect("/login?error=Unsupported+role+configuration");
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Unsupported role configuration"));
   }
 
   const store = await cookies();
   try {
     setSessionCookie(store, user.id);
   } catch {
-    redirect("/login?error=Session+configuration+error.+Please+contact+an+administrator");
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
   clearLegacySessionCookies(store);
   clearGuestSessionCookies(store);
 
+  const postLoginPath = resolvePostLoginRedirect(role, redirectTo);
   await notifyUser(user.id, {
     title: "Login successful",
     message: "You have successfully signed in.",
     level: "SUCCESS",
     category: "AUTH",
-    actionUrl: ROLE_DASHBOARD_PATH[role],
+    actionUrl: postLoginPath,
   });
 
-  redirect(ROLE_DASHBOARD_PATH[role]);
+  redirect(postLoginPath);
 }
 
 export async function register(formData: FormData) {
+  const redirectTo = safeConsumerRedirect(formData.get("redirectTo"));
   if (!isSessionSecretConfigured()) {
-    redirect("/register?error=Session+configuration+error.+Please+contact+an+administrator");
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Session configuration error. Please contact an administrator"));
+  }
+
+  const requestHeaders = await headers();
+  const ip = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const rateLimitResult = checkRateLimit(`register:${ip}`, AUTH_RATE_LIMIT);
+  if (!rateLimitResult.allowed) {
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Too many registration attempts. Please try again later."));
   }
 
   const name = String(formData.get("name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
   const password = String(formData.get("password") ?? "");
   const organization = String(formData.get("organization") ?? "").trim();
+  const lifestyles = formData
+    .getAll("lifestyle")
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => ALLOWED_LIFESTYLES.has(value));
+  const dietaryPrefs = formData
+    .getAll("dietaryPrefs")
+    .map((value) => String(value).trim().toUpperCase() as DietaryPref)
+    .filter((value) => ALLOWED_DIETARY_PREFS.has(value));
+  const coffeeDrinker = formData.get("coffeeDrinker") === "on";
+  const snackConsumer = formData.get("snackConsumer") === "on";
+  const energyDrinkConsumer = formData.get("energyDrinkConsumer") === "on";
 
   if (name.length < 2) {
-    redirect("/register?error=Name+must+be+at+least+2+characters");
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Name must be at least 2 characters"));
   }
-  if (!email.includes("@")) {
-    redirect("/register?error=Enter+a+valid+email+address");
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Enter a valid email address"));
   }
   if (password.length < 8) {
-    redirect("/register?error=Password+must+be+at+least+8+characters");
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Password must be at least 8 characters"));
   }
 
   const existing = await prisma.user.findUnique({
@@ -83,25 +115,64 @@ export async function register(formData: FormData) {
     select: { id: true },
   });
   if (existing) {
-    redirect("/register?error=Email+already+registered");
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Email already registered"));
   }
 
-  const created = await prisma.user.create({
-    data: {
+  const created = await prisma.$transaction(async (tx) => {
+    const user = await tx.user.create({
+      data: {
+        name,
+        email,
+        password: hashPassword(password),
+        role: "CONSUMER",
+        organization: organization || null,
+      },
+      select: { id: true },
+    });
+
+    const panelistData = {
+      userId: user.id,
       name,
       email,
-      password: hashPassword(password),
-      role: "CONSUMER",
-      organization: organization || null,
-    },
-    select: { id: true },
+      age: 25,
+      gender: "PREFER_NOT_SAY" as const,
+      location: "Unspecified",
+      occupation: "Consumer",
+      lifestyle: lifestyles,
+      dietaryPrefs,
+      consumptionHabits: {
+        coffeeDrinker,
+        snackConsumer,
+        energyDrinkConsumer,
+        snacks: snackConsumer ? "daily" : "weekly",
+      },
+      isActive: true,
+    };
+
+    const existingPanelist = await tx.panelist.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+
+    if (existingPanelist) {
+      await tx.panelist.update({
+        where: { id: existingPanelist.id },
+        data: panelistData,
+      });
+    } else {
+      await tx.panelist.create({
+        data: panelistData,
+      });
+    }
+
+    return user;
   });
 
   const store = await cookies();
   try {
     setSessionCookie(store, created.id);
   } catch {
-    redirect("/register?error=Session+configuration+error.+Please+contact+an+administrator");
+    redirect(authRouteWithFeedback("/register", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
   clearLegacySessionCookies(store);
   clearGuestSessionCookies(store);
@@ -111,7 +182,7 @@ export async function register(formData: FormData) {
     message: "Your account is now active as a Consumer user.",
     level: "SUCCESS",
     category: "AUTH",
-    actionUrl: ROLE_DASHBOARD_PATH.CONSUMER,
+    actionUrl: redirectTo,
   });
   await notifyRole("ADMIN", {
     title: "New user registered",
@@ -121,7 +192,7 @@ export async function register(formData: FormData) {
     actionUrl: "/admin/dashboard",
   });
 
-  redirect(ROLE_DASHBOARD_PATH.CONSUMER);
+  redirect(redirectTo);
 }
 
 export async function applyForRole(formData: FormData) {
@@ -460,6 +531,35 @@ function resolveAdminRedirectTarget(value: FormDataEntryValue | null) {
     return raw;
   }
   return "/admin/dashboard?view=role-requests";
+}
+
+function safeConsumerRedirect(value: FormDataEntryValue | null) {
+  const raw = String(value ?? "").trim();
+  if (raw.startsWith("/") && !raw.startsWith("//")) {
+    return raw;
+  }
+  return ROLE_DASHBOARD_PATH.CONSUMER;
+}
+
+function resolvePostLoginRedirect(role: NonNullable<ReturnType<typeof parseRole>>, redirectTo: string) {
+  if (role === "CONSUMER") {
+    return redirectTo;
+  }
+  if (role === "MSME" && isStudyStartPath(redirectTo)) {
+    return redirectTo;
+  }
+  return ROLE_DASHBOARD_PATH[role];
+}
+
+function isStudyStartPath(path: string) {
+  return /^\/studies\/[^/]+\/start(?:\?|$)/.test(path);
+}
+
+function authRouteWithFeedback(path: "/login" | "/register", redirectTo: string, key: "error" | "message", value: string) {
+  const target = new URL(path, "http://localhost");
+  target.searchParams.set("next", redirectTo);
+  target.searchParams.set(key, value);
+  return `${target.pathname}${target.search}`;
 }
 
 function withFeedback(path: string, key: "error" | "message", value: string) {

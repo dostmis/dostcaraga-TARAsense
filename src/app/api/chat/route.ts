@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentSession } from "@/lib/auth/session";
 import { buildTarasenseChatSystemPrompt, TARASENSE_CHATBOT_STARTER_TOPICS } from "@/lib/chatbot/system-prompt";
+import { checkRateLimit, CHAT_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -31,6 +32,14 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
+    const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+    const session = await getCurrentSession();
+    const rateLimitKey = session?.userId ? `chat:user:${session.userId}` : `chat:ip:${ip}`;
+    const rateLimitResult = checkRateLimit(rateLimitKey, CHAT_RATE_LIMIT);
+    if (!rateLimitResult.allowed) {
+      return NextResponse.json({ error: "Too many requests. Please slow down." }, { status: 429 });
+    }
+
     const payload = await readJson(request);
     const parsed = ChatRequestSchema.safeParse(payload);
 
@@ -43,7 +52,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "A user message is required." }, { status: 400 });
     }
 
-    const session = await getCurrentSession();
     const role = session?.role ?? "PUBLIC";
     const systemPrompt = buildTarasenseChatSystemPrompt({
       role,

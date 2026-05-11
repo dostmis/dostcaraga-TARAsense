@@ -3,6 +3,7 @@ export const DEFAULT_STUDY_TIMEZONE = "Asia/Manila";
 export type StudySessionSlot = {
   id: string;
   dayOffset: number;
+  testingDate?: string;
   label: string;
   startsAt: string;
   endsAt: string;
@@ -48,6 +49,7 @@ export function parseStudySessionSchedule(targetDemographics: unknown): StudySes
       const startsAt = typeof item.startsAt === "string" ? item.startsAt : "";
       const endsAt = typeof item.endsAt === "string" ? item.endsAt : "";
       const dayOffset = typeof item.dayOffset === "number" ? Math.floor(item.dayOffset) : -1;
+      const testingDate = typeof item.testingDate === "string" ? item.testingDate : undefined;
       const capacity = typeof item.capacity === "number" ? Math.floor(item.capacity) : 0;
 
       const startsAtDate = new Date(startsAt);
@@ -66,6 +68,7 @@ export function parseStudySessionSchedule(targetDemographics: unknown): StudySes
       accumulator.push({
         id,
         dayOffset,
+        testingDate,
         label,
         startsAt: startsAtDate.toISOString(),
         endsAt: endsAtDate.toISOString(),

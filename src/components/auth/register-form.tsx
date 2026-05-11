@@ -7,6 +7,7 @@ import { useFormStatus } from "react-dom";
 
 type RegisterFormProps = {
   action: (formData: FormData) => void | Promise<void>;
+  redirectTo?: string;
 };
 
 const passwordChecks: Array<{ match: RegExp; label: string }> = [
@@ -16,18 +17,21 @@ const passwordChecks: Array<{ match: RegExp; label: string }> = [
   { match: /[0-9]/, label: "Number" },
 ];
 
-export function RegisterForm({ action }: RegisterFormProps) {
+export function RegisterForm({ action, redirectTo = "" }: RegisterFormProps) {
   const [password, setPassword] = useState("");
 
   return (
     <form action={action} className="mt-6 space-y-5">
+      <input type="hidden" name="redirectTo" value={redirectTo} />
       <div className="space-y-2">
         <label htmlFor="name" className="text-sm font-medium text-foreground">
           Full Name
         </label>
-        <div className="relative">
-          <User className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input id="name" name="name" placeholder="Jane Doe" required className="app-input pl-10" autoComplete="name" />
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
+            <User className="h-4 w-4" />
+          </span>
+          <input id="name" name="name" placeholder="Jane Doe" required className="app-icon-input__control" autoComplete="name" />
         </div>
       </div>
 
@@ -35,9 +39,11 @@ export function RegisterForm({ action }: RegisterFormProps) {
         <label htmlFor="organization" className="text-sm font-medium text-foreground">
           Organization <span className="text-xs font-normal text-muted-foreground">(optional)</span>
         </label>
-        <div className="relative">
-          <Building2 className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input id="organization" name="organization" placeholder="Acme Corp" className="app-input pl-10" autoComplete="organization" />
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
+            <Building2 className="h-4 w-4" />
+          </span>
+          <input id="organization" name="organization" placeholder="Acme Corp" className="app-icon-input__control" autoComplete="organization" />
         </div>
       </div>
 
@@ -45,9 +51,11 @@ export function RegisterForm({ action }: RegisterFormProps) {
         <label htmlFor="email" className="text-sm font-medium text-foreground">
           Email
         </label>
-        <div className="relative">
-          <Mail className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <input id="email" name="email" type="email" placeholder="you@company.com" required className="app-input pl-10" autoComplete="email" />
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
+            <Mail className="h-4 w-4" />
+          </span>
+          <input id="email" name="email" type="email" placeholder="you@company.com" required className="app-icon-input__control" autoComplete="email" />
         </div>
       </div>
 
@@ -55,8 +63,10 @@ export function RegisterForm({ action }: RegisterFormProps) {
         <label htmlFor="password" className="text-sm font-medium text-foreground">
           Password
         </label>
-        <div className="relative">
-          <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+        <div className="app-icon-input">
+          <span className="app-icon-input__icon">
+            <Lock className="h-4 w-4" />
+          </span>
           <input
             id="password"
             name="password"
@@ -64,7 +74,7 @@ export function RegisterForm({ action }: RegisterFormProps) {
             placeholder="Create a strong password"
             minLength={8}
             required
-            className="app-input pl-10"
+            className="app-icon-input__control"
             autoComplete="new-password"
             onChange={(event) => setPassword(event.currentTarget.value)}
           />

@@ -11,6 +11,7 @@ import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { ClipboardList, Compass, FileText, LayoutDashboard, ShieldCheck, UserRound } from "lucide-react";
 import { formatPanelistNumber, parseOfferedSessions } from "@/lib/participant-assignment";
 import { formatSessionWindow, normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
+import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
 
 export const dynamic = "force-dynamic";
 
@@ -32,10 +33,29 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
   const shouldLoadCompletedStudies = activeView === "completed";
   const shouldLoadApplications = activeView === "applications";
 
-  const [openStudyCount, completedStudyCount, pendingApplications, approvedApplications] = await Promise.all([
-    prisma.study.count({
+  const consumerPanelist = await prisma.panelist.findFirst({
+    where: { userId: session.userId },
+    select: {
+      age: true,
+      gender: true,
+      lifestyle: true,
+      dietaryPrefs: true,
+      consumptionHabits: true,
+      isActive: true,
+    },
+  });
+
+  const [activeStudyRowsForCount, completedStudyCount, pendingApplications, approvedApplications] = await Promise.all([
+    prisma.study.findMany({
       where: {
         status: { in: ["RECRUITING", "ACTIVE"] },
+      },
+      select: {
+        targetDemographics: true,
+        participants: {
+          where: { panelist: { userId: session.userId } },
+          select: { status: true },
+        },
       },
     }),
     prisma.studyParticipant.count({
@@ -57,6 +77,12 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       },
     }),
   ]);
+  const openStudyCount = activeStudyRowsForCount.filter((study) => {
+    if (!doesPanelistMatchTargetConsumer(consumerPanelist, study.targetDemographics)) {
+      return false;
+    }
+    return study.participants.every((participant) => participant.status !== "COMPLETED");
+  }).length;
 
   const [availableStudies, completedStudiesRaw, applications] = await Promise.all([
     shouldLoadAvailableStudies
@@ -136,12 +162,15 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       : Promise.resolve([]),
   ]);
 
+  const matchedAvailableStudies = availableStudies.filter((study) =>
+    doesPanelistMatchTargetConsumer(consumerPanelist, study.targetDemographics)
+  );
   const openStudies = (normalizedQuery
-    ? availableStudies.filter((study) => {
+    ? matchedAvailableStudies.filter((study) => {
         const entry = [study.title, study.productName, study.category, study.stage, study.status].join(" ").toLowerCase();
         return entry.includes(normalizedQuery);
       })
-    : availableStudies
+    : matchedAvailableStudies
   ).filter((study) => study.participants.find((participant) => participant.panelist.userId === session.userId)?.status !== "COMPLETED");
 
   const completedStudies = (normalizedQuery
@@ -283,7 +312,11 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
             {openStudies.length === 0 && (
               <article className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
                 <h2 className="text-lg font-semibold text-[#2e231c]">No active studies at the moment.</h2>
-                <p className="mt-1 text-sm text-[#6f5b4f]">Check back later for new survey opportunities.</p>
+                <p className="mt-1 text-sm text-[#6f5b4f]">
+                  {consumerPanelist
+                    ? "Check back later for new survey opportunities."
+                    : "Complete your profile so TARAsense can match studies to your consumer profile."}
+                </p>
               </article>
             )}
 

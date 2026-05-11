@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { notifyUser } from "@/lib/notifications";
@@ -14,8 +15,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Server misconfiguration" }, { status: 503 });
     }
 
-    const incoming = request.headers.get("x-cron-secret");
-    if (incoming !== cronSecret) {
+    const incoming = request.headers.get("x-cron-secret") ?? "";
+    const incomingBuf = Buffer.from(incoming, "utf8");
+    const expectedBuf = Buffer.from(cronSecret, "utf8");
+    const valid =
+      incomingBuf.length === expectedBuf.length && timingSafeEqual(incomingBuf, expectedBuf);
+    if (!valid) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 

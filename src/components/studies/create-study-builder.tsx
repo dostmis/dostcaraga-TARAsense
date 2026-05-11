@@ -2,11 +2,20 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import { useEffect, useMemo, useState, useTransition } from "react";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
-import { createStudyAndImportFromFile } from "@/app/actions/study-import-actions";
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
 import type { Region } from "@/lib/facility-constants";
+import {
+  DEFAULT_TARGET_CONSUMER,
+  TARGET_CONSUMER_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_GENDER_OPTIONS,
+  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+  type TargetConsumerDietaryPref,
+  type TargetConsumerGender,
+} from "@/lib/target-consumer";
 import {
   getAvailableFics,
   getFacilityAvailabilityOverview,
@@ -25,12 +34,11 @@ type MarketStudyType =
   | "CONSUMER_USAGE_HABIT";
 type SensoryStudyType = "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST";
 type ConsumerObjective =
-  | "CHECK_ACCEPTABILITY"
-  | "IMPROVE_TASTE"
-  | "IMPROVE_TEXTURE"
-  | "FINE_TUNE"
-  | "FAST_ITERATION";
+  | "MARKET_READINESS"
+  | "REFINEMENT"
+  | "PROTOTYPING";
 type AttributeDimension = "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
+type TargetConsumptionHabit = (typeof TARGET_CONSUMER_CONSUMPTION_OPTIONS)[number]["value"];
 
 interface AttributeRow {
   name: string;
@@ -49,6 +57,10 @@ interface SampleSetupRow {
   description: string;
   ingredient: string;
   allergen: string;
+  imageDataUrl: string;
+  imageName: string;
+  price: string;
+  purchaseIntentQuestion: string;
 }
 
 interface SessionSlotDraft {
@@ -58,22 +70,6 @@ interface SessionSlotDraft {
   startTime: string;
   endTime: string;
   capacity: number;
-}
-
-interface ImportCreateResult {
-  success?: boolean;
-  valid?: boolean;
-  error?: string;
-  rowsRead?: number;
-  rowsParsed?: number;
-  rowsRejected?: number;
-  respondents?: number;
-  sampleCount?: number;
-  attributeCount?: number;
-  sampleLabels?: string[];
-  warnings?: Array<{ rowNumber?: number; field?: string; message: string }>;
-  errors?: Array<{ rowNumber?: number; field?: string; message: string }>;
-  redirectPath?: string;
 }
 
 interface CategoryProfile {
@@ -95,12 +91,16 @@ const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
 const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];
 const DESCRIPTIVE_METHODS = ["QDA", "Spectrum Method", "Similarity Measures"];
 
-const CONSUMER_OBJECTIVES: Array<{ value: ConsumerObjective; label: string; max: number; defaultTarget: number }> = [
-  { value: "CHECK_ACCEPTABILITY", label: "Check acceptability", max: 110, defaultTarget: 80 },
-  { value: "IMPROVE_TASTE", label: "Improve taste", max: 60, defaultTarget: 50 },
-  { value: "IMPROVE_TEXTURE", label: "Improve texture", max: 60, defaultTarget: 50 },
-  { value: "FINE_TUNE", label: "Fine-tune", max: 60, defaultTarget: 50 },
-  { value: "FAST_ITERATION", label: "FAST iteration", max: 35, defaultTarget: 30 },
+const CONSUMER_OBJECTIVES: Array<{
+  value: ConsumerObjective;
+  label: string;
+  panelCount: number;
+  bufferCount: number;
+  defaultTarget: number;
+}> = [
+  { value: "MARKET_READINESS", label: "Market Readiness", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
+  { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
+  { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
 ];
 
 const DEFAULT_MARKET_QUESTIONS = [
@@ -274,10 +274,16 @@ const EMPTY_SAMPLE_SETUP: SampleSetupRow = {
   description: "",
   ingredient: "",
   allergen: "",
+  imageDataUrl: "",
+  imageName: "",
+  price: "",
+  purchaseIntentQuestion: "Are you willing to buy this product?",
 };
 
 const STUDY_TIMEZONE = "Asia/Manila";
 const ATTRIBUTE_DIMENSIONS: AttributeDimension[] = ["Taste", "Texture", "Aftertaste", "Mouthfeel"];
+const PRODUCT_IMAGE_MAX_BYTES = 1_000_000;
+const PRODUCT_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean }) {
   const router = useRouter();
@@ -289,14 +295,24 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
   const [sensoryStudyType, setSensoryStudyType] = useState<SensoryStudyType>("CONSUMER_TEST");
   const [sensoryMethod, setSensoryMethod] = useState("Triangle Test");
-  const [consumerObjective, setConsumerObjective] = useState<ConsumerObjective>("FAST_ITERATION");
+  const [consumerObjective, setConsumerObjective] = useState<ConsumerObjective>("PROTOTYPING");
 
   const [region, setRegion] = useState<Region | "">("");
   const [facilityType, setFacilityType] = useState<string>("");
   const [publicVenueName, setPublicVenueName] = useState("");
   const [publicCityMunicipality, setPublicCityMunicipality] = useState("");
   const [publicAddressDetails, setPublicAddressDetails] = useState("");
-  const [targetResponses, setTargetResponses] = useState(30);
+  const [targetResponses, setTargetResponses] = useState(35);
+  const [targetAgeMin, setTargetAgeMin] = useState(DEFAULT_TARGET_CONSUMER.ageRange[0]);
+  const [targetAgeMax, setTargetAgeMax] = useState(DEFAULT_TARGET_CONSUMER.ageRange[1]);
+  const [targetGenders, setTargetGenders] = useState<TargetConsumerGender[]>(DEFAULT_TARGET_CONSUMER.genders);
+  const [targetLifestyles, setTargetLifestyles] = useState<string[]>([]);
+  const [targetDietaryPrefs, setTargetDietaryPrefs] = useState<TargetConsumerDietaryPref[]>([]);
+  const [targetConsumptionHabits, setTargetConsumptionHabits] = useState<Record<TargetConsumptionHabit, boolean>>({
+    coffeeDrinker: false,
+    snackConsumer: false,
+    energyDrinkConsumer: false,
+  });
 
   const [productName, setProductName] = useState("");
   const [profileKey, setProfileKey] = useState(CATEGORY_PROFILES[0].key);
@@ -307,6 +323,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [customAttributeType, setCustomAttributeType] = useState<AttributeDimension>("Taste");
   const [customAttributeActionable, setCustomAttributeActionable] = useState(false);
   const [testingStartDate, setTestingStartDate] = useState(() => getTodayDateInput());
+  const [selectedTestingDates, setSelectedTestingDates] = useState<string[]>(() => [getTodayDateInput()]);
   const [testingDurationDays, setTestingDurationDays] = useState(1);
   const [sessionSlots, setSessionSlots] = useState<SessionSlotDraft[]>([
     createSessionSlotDraft(0, 0),
@@ -316,8 +333,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
   const [marketQuestions, setMarketQuestions] = useState(DEFAULT_MARKET_QUESTIONS);
   const [error, setError] = useState<string | null>(null);
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importResult, setImportResult] = useState<ImportCreateResult | null>(null);
   const [assignedFicUsers, setAssignedFicUsers] = useState<FacilityAssignedFic[]>([]);
   const [ficOptions, setFicOptions] = useState<AvailableFic[]>([]);
   const [selectedFicUserId, setSelectedFicUserId] = useState("");
@@ -370,17 +385,24 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     () => studyMode === "SENSORY" && coordinationMode === "FIC_ASSISTED",
     [coordinationMode, studyMode]
   );
+  const normalizedTestingDuration = useMemo(
+    () => Math.max(1, Math.floor(testingDurationDays)),
+    [testingDurationDays]
+  );
+  const normalizedSelectedTestingDates = useMemo(
+    () => normalizeTestingDateSelection(selectedTestingDates, testingStartDate, normalizedTestingDuration),
+    [normalizedTestingDuration, selectedTestingDates, testingStartDate]
+  );
   const scheduleDateRange = useMemo(() => {
-    if (!testingStartDate) {
+    if (normalizedSelectedTestingDates.length === 0) {
       return null;
     }
-    const duration = Math.max(1, Math.floor(testingDurationDays));
     return {
-      startDate: testingStartDate,
-      endDate: addDaysToDateInput(testingStartDate, duration - 1),
-      duration,
+      startDate: normalizedSelectedTestingDates[0],
+      endDate: normalizedSelectedTestingDates[normalizedSelectedTestingDates.length - 1],
+      duration: normalizedTestingDuration,
     };
-  }, [testingDurationDays, testingStartDate]);
+  }, [normalizedSelectedTestingDates, normalizedTestingDuration]);
   const facilityCalendarRange = useMemo(() => {
     const start = new Date(facilityCalendarYear, facilityCalendarMonth, 1);
     const end = new Date(facilityCalendarYear, facilityCalendarMonth + 1, 0);
@@ -551,21 +573,21 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     [profileKey]
   );
 
-  const consumerLimit = useMemo(() => {
-    if (sensoryStudyType !== "CONSUMER_TEST") return null;
-    return CONSUMER_OBJECTIVES.find((objective) => objective.value === consumerObjective)?.max ?? null;
-  }, [sensoryStudyType, consumerObjective]);
+  const selectedConsumerObjective = useMemo(() => {
+    return CONSUMER_OBJECTIVES.find((objective) => objective.value === consumerObjective) ?? CONSUMER_OBJECTIVES[0];
+  }, [consumerObjective]);
+  const consumerMinimum = selectedConsumerObjective.defaultTarget;
+  const isProductIntentMarketStudy = studyMode === "MARKET" && marketStudyType === "PRODUCT_INTENT";
 
   const sessionSlotsByDay = useMemo(() => {
-    const totalDays = Math.max(1, Math.floor(testingDurationDays));
-    return Array.from({ length: totalDays }, (_, dayOffset) => ({
+    return Array.from({ length: normalizedTestingDuration }, (_, dayOffset) => ({
       dayOffset,
-      date: addDaysToDateInput(testingStartDate, dayOffset),
+      date: normalizedSelectedTestingDates[dayOffset] ?? addDaysToDateInput(testingStartDate, dayOffset),
       slots: sessionSlots
         .filter((slot) => slot.dayOffset === dayOffset)
         .sort((left, right) => left.startTime.localeCompare(right.startTime)),
     }));
-  }, [sessionSlots, testingDurationDays, testingStartDate]);
+  }, [normalizedSelectedTestingDates, normalizedTestingDuration, sessionSlots, testingStartDate]);
 
   const totalSessionCapacity = useMemo(
     () =>
@@ -619,6 +641,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     [assignedFicById, rangeAvailabilityByFicId, selectedFicUserId]
   );
   const todayDateKey = useMemo(() => getTodayDateInput(), []);
+  const selectedScheduleDates = useMemo(() => {
+    return normalizedSelectedTestingDates;
+  }, [normalizedSelectedTestingDates]);
+  const selectedScheduleDateSet = useMemo(() => new Set(selectedScheduleDates), [selectedScheduleDates]);
+  const unavailableFacilityScheduleDates = useMemo(() => {
+    if (!requiresFicBooking) {
+      return [];
+    }
+    return selectedScheduleDates.filter((dateKey) => (facilityAvailabilityByDate.get(dateKey) ?? 0) === 0);
+  }, [facilityAvailabilityByDate, requiresFicBooking, selectedScheduleDates]);
   const facilityCalendarDays = useMemo(() => {
     const firstDay = new Date(facilityCalendarYear, facilityCalendarMonth, 1);
     const lastDay = new Date(facilityCalendarYear, facilityCalendarMonth + 1, 0);
@@ -678,10 +710,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   }, [selectedProfile]);
 
   useEffect(() => {
-    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
+    if (studyMode === "SENSORY") {
       const objective = CONSUMER_OBJECTIVES.find((o) => o.value === consumerObjective);
       if (objective) {
-        setTargetResponses(objective.defaultTarget);
+        setTargetResponses((previous) => Math.max(previous, objective.defaultTarget));
       }
     }
   }, [consumerObjective, sensoryStudyType, studyMode]);
@@ -697,11 +729,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   }, [sampleSetupCount]);
 
   useEffect(() => {
-    const totalDays = Math.max(1, Math.floor(testingDurationDays));
     setSessionSlots((previous) => {
-      const filtered = previous.filter((slot) => slot.dayOffset < totalDays);
+      const filtered = previous.filter((slot) => slot.dayOffset < normalizedTestingDuration);
       const next = [...filtered];
-      for (let dayOffset = 0; dayOffset < totalDays; dayOffset += 1) {
+      for (let dayOffset = 0; dayOffset < normalizedTestingDuration; dayOffset += 1) {
         if (!next.some((slot) => slot.dayOffset === dayOffset)) {
           const daySlotCount = next.filter((slot) => slot.dayOffset === dayOffset).length;
           next.push(createSessionSlotDraft(dayOffset, daySlotCount));
@@ -714,7 +745,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         return left.startTime.localeCompare(right.startTime);
       });
     });
-  }, [testingDurationDays]);
+  }, [normalizedTestingDuration]);
+
+  useEffect(() => {
+    setSelectedTestingDates((previous) => normalizeTestingDateSelection(previous, testingStartDate, normalizedTestingDuration));
+  }, [normalizedTestingDuration, testingStartDate]);
 
   useEffect(() => {
     if (sensoryStudyType === "DISCRIMINATIVE") {
@@ -751,24 +786,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         return { ...row, dimension: value };
       })
     );
-  };
-
-  const toggleJarTarget = (index: number) => {
-    setAttributes((previous) => {
-      const current = previous[index];
-      if (!current) return previous;
-
-      const selectedCount = previous.filter((row) => row.isJarTarget).length;
-      if (!current.isJarTarget && selectedCount >= 3) {
-        setError("Only the TOP 3 attributes can be selected for JAR.");
-        return previous;
-      }
-
-      setError(null);
-      return previous.map((row, rowIndex) =>
-        rowIndex === index ? { ...row, isJarTarget: !row.isJarTarget } : row
-      );
-    });
   };
 
   const removeAttribute = (index: number) => {
@@ -816,7 +833,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         {
           name: trimmed,
           dimension: customAttributeType,
-          isJarTarget: false,
+          isJarTarget: consumerObjective !== "MARKET_READINESS",
           isCustom: true,
           actionable: true,
         },
@@ -837,15 +854,94 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     );
   };
 
+  const updateSampleSetupImage = (index: number, file: File | null) => {
+    if (!file) {
+      updateSampleSetup(index, "imageDataUrl", "");
+      updateSampleSetup(index, "imageName", "");
+      return;
+    }
+
+    if (!PRODUCT_IMAGE_TYPES.includes(file.type)) {
+      setError("Upload a JPG, PNG, or WebP product image.");
+      return;
+    }
+    if (file.size > PRODUCT_IMAGE_MAX_BYTES) {
+      setError("Product image must be 1 MB or smaller.");
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === "string" ? reader.result : "";
+      if (!isSafeProductImageDataUrl(result)) {
+        setError("Product image could not be read safely. Upload a JPG, PNG, or WebP image.");
+        return;
+      }
+      setError(null);
+      setSampleSetups((previous) =>
+        previous.map((row, rowIndex) => {
+          if (rowIndex !== index) return row;
+          return {
+            ...row,
+            imageDataUrl: result,
+            imageName: file.name,
+          };
+        })
+      );
+    };
+    reader.onerror = () => {
+      setError("Product image could not be read. Please choose another image.");
+    };
+    reader.readAsDataURL(file);
+  };
+
   const updateMarketQuestion = (index: number, value: string) => {
     setMarketQuestions((previous) =>
       previous.map((question, questionIndex) => (questionIndex === index ? value : question))
     );
   };
 
+  const updateTestingStartDate = (dateValue: string) => {
+    setTestingStartDate(dateValue);
+    setSelectedTestingDates(getDateRangeInputs(dateValue, normalizedTestingDuration));
+  };
+
+  const updateTestingDuration = (value: number) => {
+    const duration = Math.max(1, Math.floor(value || 1));
+    setTestingDurationDays(duration);
+    setSelectedTestingDates((previous) => normalizeTestingDateSelection(previous, testingStartDate, duration));
+  };
+
+  const toggleTestingDate = (dateValue: string) => {
+    if (dateValue < todayDateKey) {
+      return;
+    }
+    if ((facilityAvailabilityByDate.get(dateValue) ?? 0) === 0) {
+      return;
+    }
+
+    setSelectedTestingDates((previous) => {
+      const current = normalizeTestingDateSelection(previous, testingStartDate, normalizedTestingDuration);
+      const isSelected = current.includes(dateValue);
+      const next = isSelected
+        ? current.filter((dateKey) => dateKey !== dateValue)
+        : current.length >= normalizedTestingDuration
+          ? [dateValue]
+          : [...current, dateValue];
+      if (next.length === 0) {
+        return current;
+      }
+
+      const normalized = normalizeTestingDateSelection(next, dateValue, normalizedTestingDuration);
+      setTestingStartDate(normalized[0] ?? dateValue);
+      setError(null);
+      return normalized;
+    });
+  };
+
   const addSessionSlot = (dayOffset: number) => {
     if (requiresFicBooking) {
-      const targetDate = addDaysToDateInput(testingStartDate, dayOffset);
+      const targetDate = normalizedSelectedTestingDates[dayOffset] ?? addDaysToDateInput(testingStartDate, dayOffset);
       if (getFicDateStatus(targetDate) !== "AVAILABLE") {
         setError("Cannot add a session on a date that is unavailable in the selected FIC calendar.");
         return;
@@ -897,6 +993,25 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     );
   };
 
+  const toggleTargetGender = (value: TargetConsumerGender) => {
+    setTargetGenders((previous) => toggleSelection(previous, value));
+  };
+
+  const toggleTargetLifestyle = (value: string) => {
+    setTargetLifestyles((previous) => toggleSelection(previous, value));
+  };
+
+  const toggleTargetDietaryPref = (value: TargetConsumerDietaryPref) => {
+    setTargetDietaryPrefs((previous) => toggleSelection(previous, value));
+  };
+
+  const toggleTargetConsumptionHabit = (value: TargetConsumptionHabit) => {
+    setTargetConsumptionHabits((previous) => ({
+      ...previous,
+      [value]: !previous[value],
+    }));
+  };
+
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
@@ -925,6 +1040,19 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       }
     }
 
+    if (!Number.isInteger(targetAgeMin) || !Number.isInteger(targetAgeMax) || targetAgeMin < 10 || targetAgeMax > 100) {
+      setError("Target consumer age range must be between 10 and 100.");
+      return;
+    }
+    if (targetAgeMin > targetAgeMax) {
+      setError("Target consumer minimum age cannot exceed maximum age.");
+      return;
+    }
+    if (targetGenders.length === 0) {
+      setError("Select at least one target consumer gender.");
+      return;
+    }
+
     if (!Number.isInteger(targetResponses) || targetResponses < 1) {
       setError("Target responses must be at least 1.");
       return;
@@ -940,21 +1068,36 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return;
     }
 
-    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && consumerLimit && targetResponses > consumerLimit) {
-      setError(`Target responses exceed the ${consumerLimit} maximum for this consumer test objective.`);
+    if (studyMode === "SENSORY" && targetResponses < consumerMinimum) {
+      setError(`Target responses must be at least ${consumerMinimum} for ${selectedConsumerObjective.label}.`);
       return;
     }
 
     if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
-      const planValidation = validateObjectiveSelection(attributes, consumerObjective);
+      const planValidation = validateObjectiveSelection(attributes);
       if (!planValidation.valid) {
         setError(planValidation.error);
         return;
       }
     }
 
+    if (isProductIntentMarketStudy) {
+      const invalidProductSetup = sampleSetups.find(
+        (setup) =>
+          !setup.description.trim() ||
+          !setup.price.trim() ||
+          !setup.purchaseIntentQuestion.trim() ||
+          !isSafeProductImageDataUrl(setup.imageDataUrl)
+      );
+      if (invalidProductSetup) {
+        setError("Complete each Product Intent sample setup: description, image, price, and purchase intent question.");
+        return;
+      }
+    }
+
     let sessionPayload: Array<{
       dayOffset: number;
+      testingDate: string;
       label: string;
       startDateTime: string;
       endDateTime: string;
@@ -964,6 +1107,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     if (studyMode === "SENSORY") {
       if (!testingStartDate) {
         setError("Testing start date is required.");
+        return;
+      }
+
+      if (requiresFicBooking && normalizedSelectedTestingDates.length !== normalizedTestingDuration) {
+        setError(`Select exactly ${normalizedTestingDuration} testing date(s) from the facility availability calendar.`);
         return;
       }
 
@@ -982,7 +1130,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
       sessionPayload = sessionSlots
         .map((slot) => {
-          const dateValue = addDaysToDateInput(testingStartDate, slot.dayOffset);
+          const dateValue = normalizedSelectedTestingDates[slot.dayOffset] ?? addDaysToDateInput(testingStartDate, slot.dayOffset);
           const startsAt = new Date(`${dateValue}T${slot.startTime}:00`);
           const endsAt = new Date(`${dateValue}T${slot.endTime}:00`);
           if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
@@ -993,6 +1141,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           }
           return {
             dayOffset: slot.dayOffset,
+            testingDate: dateValue,
             label: slot.label.trim(),
             startDateTime: startsAt.toISOString(),
             endDateTime: endsAt.toISOString(),
@@ -1004,6 +1153,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             slot
           ): slot is {
             dayOffset: number;
+            testingDate: string;
             label: string;
             startDateTime: string;
             endDateTime: string;
@@ -1027,7 +1177,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       if (requiresFicBooking) {
         const bookingDates = Array.from(
           new Set(
-            sessionPayload.map((slot) => addDaysToDateInput(testingStartDate, slot.dayOffset))
+            sessionPayload.map((slot) => slot.testingDate)
           )
         ).sort((left, right) => left.localeCompare(right));
 
@@ -1062,9 +1212,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         marketStudyType: studyMode === "MARKET" ? marketStudyType : undefined,
         sensoryStudyType: studyMode === "SENSORY" ? sensoryStudyType : undefined,
         sensoryMethod: studyMode === "SENSORY" ? sensoryMethod : undefined,
-        consumerObjective: studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" ? consumerObjective : undefined,
+        consumerObjective: studyMode === "SENSORY" ? consumerObjective : undefined,
         studyTitle: generatedStudyTitle,
         purpose: generatedPurpose,
+        targetConsumer: {
+          ageRange: [targetAgeMin, targetAgeMax],
+          genders: targetGenders,
+          lifestyles: targetLifestyles,
+          dietaryPrefs: targetDietaryPrefs,
+          consumptionHabits: targetConsumptionHabits,
+        },
         region: coordinationMode === "FIC_ASSISTED" ? region : undefined,
         facilityType: coordinationMode === "FIC_ASSISTED" ? facilityType : undefined,
         publicVenueName: coordinationMode === "SELF_MANAGED_PUBLIC" ? publicVenueName.trim() : undefined,
@@ -1086,11 +1243,18 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 actionable: attribute.isCustom ? attribute.actionable : true,
               })).filter((attribute) => attribute.name.length > 0)
             : [],
-        testingStartDate: studyMode === "SENSORY" ? testingStartDate : undefined,
-        testingDurationDays: studyMode === "SENSORY" ? Math.max(1, Math.floor(testingDurationDays)) : undefined,
+        testingStartDate: studyMode === "SENSORY" ? normalizedSelectedTestingDates[0] ?? testingStartDate : undefined,
+        testingDurationDays: studyMode === "SENSORY" ? normalizedTestingDuration : undefined,
         sessionSlots: studyMode === "SENSORY" ? sessionPayload : [],
         sampleSetups,
-        questions: studyMode === "MARKET" ? marketQuestions.filter((question) => question.trim().length > 0) : [],
+        questions:
+          studyMode === "MARKET"
+            ? isProductIntentMarketStudy
+              ? sampleSetups
+                  .map((setup) => setup.purchaseIntentQuestion.trim())
+                  .filter((question) => question.length > 0)
+              : marketQuestions.filter((question) => question.trim().length > 0)
+            : [],
       };
 
       const result = await createStudyFromBuilder(payload);
@@ -1113,39 +1277,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     });
   };
 
-  const onCreateFromImportFile = () => {
-    setError(null);
-    if (!importFile) {
-      setImportResult({ success: false, error: "Choose an Excel/CSV file first." });
-      return;
-    }
-
-    // Validate file extension
-    const validExtensions = [".xlsx", ".xls", ".csv"];
-    const fileName = importFile.name.toLowerCase();
-    const isValidExtension = validExtensions.some(ext => fileName.endsWith(ext));
-    
-    if (!isValidExtension) {
-      setImportResult({ 
-        success: false, 
-        error: "Invalid file type. Please upload an Excel (.xlsx, .xls) or CSV (.csv) file." 
-      });
-      return;
-    }
-
-    startTransition(async () => {
-      const formData = new FormData();
-      formData.set("file", importFile);
-      const result = await createStudyAndImportFromFile(formData);
-      const actionResult = result as ImportCreateResult;
-      setImportResult(actionResult);
-
-      if (actionResult.success && actionResult.valid && actionResult.redirectPath) {
-        router.push(actionResult.redirectPath);
-      }
-    });
-  };
-
   return (
     <div className={embedded ? "" : "min-h-screen bg-[#f8fafc] px-4 py-8"}>
       <div
@@ -1164,154 +1295,37 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           </div>
         )}
 
-        <section className="space-y-3 rounded-xl border border-[#bfdbfe] bg-[#eff6ff] p-4">
-          <h2 className="text-lg font-semibold text-[#1e3a8a]">Import Existing Sensory Dataset</h2>
-          <p className="text-sm text-[#334155]">
-            Upload a completed sensory Excel/CSV file and TARAsense will auto-create the study, import respondents,
-            compute analysis, and mark the study as completed.
-          </p>
-          <p className="text-xs text-[#475569]">
-            Required columns: Respondent_ID, Sample, Overall_Liking, Attribute, JAR_Score
-          </p>
-          <div className="grid gap-2 md:grid-cols-[1fr_auto]">
-            <input
-              type="file"
-              accept=".xlsx,.csv"
-              onChange={(event) => {
-                setImportFile(event.target.files?.[0] ?? null);
-                setImportResult(null);
-              }}
-              className="block w-full rounded-md border border-[#93c5fd] bg-white px-3 py-2 text-sm text-[#334155] file:mr-3 file:rounded file:border-0 file:bg-[#2563eb] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
-            />
-            <button
-              type="button"
-              onClick={onCreateFromImportFile}
-              disabled={isPending}
-              className="rounded-md border border-[#1d4ed8] bg-[#2563eb] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1d4ed8] disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              {isPending ? "Processing..." : "Create Study + Import + Analyze"}
-            </button>
-          </div>
-
-          {importResult?.error && (
-            <p className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{importResult.error}</p>
-          )}
-
-          {importResult && !importResult.error && (
-            <div className="space-y-2 rounded-md border border-[#dbeafe] bg-white px-3 py-2 text-xs text-[#334155]">
-              <p className="font-medium text-[#0f172a]">
-                Import Preview: {importResult.valid ? "Ready/Completed" : "Validation issues found"}
-              </p>
-              <p>
-                Rows read: {importResult.rowsRead ?? 0} | Parsed: {importResult.rowsParsed ?? 0} | Rejected: {importResult.rowsRejected ?? 0}
-              </p>
-              <p>
-                Respondents: {importResult.respondents ?? 0} | Samples: {importResult.sampleCount ?? 0} | Attributes: {importResult.attributeCount ?? 0}
-              </p>
-              {importResult.sampleLabels && importResult.sampleLabels.length > 0 && (
-                <p>Sample labels: {importResult.sampleLabels.join(", ")}</p>
-              )}
-              {importResult.warnings && importResult.warnings.length > 0 && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
-                  {importResult.warnings.slice(0, 6).map((warning, index) => (
-                    <p key={`create-import-warning-${index}`}>{formatImportIssue(warning)}</p>
-                  ))}
-                  {importResult.warnings.length > 6 && <p>...and {importResult.warnings.length - 6} more warning(s).</p>}
-                </div>
-              )}
-              {importResult.errors && importResult.errors.length > 0 && (
-                <div className="rounded-md border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700">
-                  {importResult.errors.slice(0, 8).map((issue, index) => (
-                    <p key={`create-import-error-${index}`}>{formatImportIssue(issue)}</p>
-                  ))}
-                  {importResult.errors.length > 8 && <p>...and {importResult.errors.length - 8} more error(s).</p>}
-                </div>
-              )}
-            </div>
-          )}
-        </section>
-
         <form onSubmit={onSubmit} className="space-y-8">
           <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Study Type</h2>
+            <h2 className="text-lg font-semibold text-gray-900">Create Study</h2>
             <div className="grid md:grid-cols-2 gap-4">
-              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-                <input
-                  type="radio"
-                  checked={studyMode === "MARKET"}
-                  onChange={() => setStudyMode("MARKET")}
-                />
-                <span>Market Study</span>
-              </label>
-              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-                <input
-                  type="radio"
-                  checked={studyMode === "SENSORY"}
-                  onChange={() => setStudyMode("SENSORY")}
-                />
-                <span>Sensory Study</span>
-              </label>
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Study Coordination</h2>
-            <div className="grid md:grid-cols-2 gap-4">
-              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-                <input
-                  type="radio"
-                  checked={coordinationMode === "FIC_ASSISTED"}
-                  onChange={() => setCoordinationMode("FIC_ASSISTED")}
-                />
-                <span>Coordinate with FIC</span>
-              </label>
-              <label className="flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3">
-                <input
-                  type="radio"
-                  checked={coordinationMode === "SELF_MANAGED_PUBLIC"}
-                  onChange={() => setCoordinationMode("SELF_MANAGED_PUBLIC")}
-                />
-                <span>Self-managed Public Recruitment</span>
-              </label>
-            </div>
-
-            {coordinationMode === "FIC_ASSISTED" ? (
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-1">
-                  <FieldLabel text="Region" />
-                  <select
-                    value={region}
-                    onChange={(event) => setRegion(event.target.value as Region | "")}
-                    className="app-select"
-                    required
-                  >
-                    <option value="">Select Region</option>
-                    {REGIONS.map((regionOption) => (
-                      <option key={regionOption} value={regionOption}>
-                        {regionOption}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <FieldLabel text="Facility Type" />
-                  <select
-                    value={facilityType}
-                    onChange={(event) => setFacilityType(event.target.value)}
-                    className="app-select"
-                    required
-                    disabled={!region}
-                  >
-                    <option value="">{region ? "Select Facility" : "Select Region First"}</option>
-                    {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
-                      <option key={facilityOption} value={facilityOption}>
-                        {facilityOption}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div className="space-y-1">
+                <FieldLabel text="Study Type" />
+                <select
+                  value={studyMode}
+                  onChange={(event) => setStudyMode(event.target.value as StudyMode)}
+                  className="app-select"
+                  required
+                >
+                  <option value="SENSORY">Sensory Study</option>
+                  <option value="MARKET">Market Study</option>
+                </select>
               </div>
-            ) : (
+              <div className="space-y-1">
+                <FieldLabel text="Study Execution" />
+                <select
+                  value={coordinationMode}
+                  onChange={(event) => setCoordinationMode(event.target.value as CoordinationMode)}
+                  className="app-select"
+                  required
+                >
+                  <option value="FIC_ASSISTED">Coordinate with FIC</option>
+                  <option value="SELF_MANAGED_PUBLIC">Self-managed Public Recruitment</option>
+                </select>
+              </div>
+            </div>
+
+            {coordinationMode === "SELF_MANAGED_PUBLIC" && (
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-1">
                   <FieldLabel text="Public Venue Name" />
@@ -1344,6 +1358,44 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
             )}
+
+            {coordinationMode === "FIC_ASSISTED" && studyMode === "MARKET" && (
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <FieldLabel text="Region" />
+                  <select
+                    value={region}
+                    onChange={(event) => setRegion(event.target.value as Region | "")}
+                    className="app-select"
+                    required
+                  >
+                    <option value="">Select Region</option>
+                    {REGIONS.map((regionOption) => (
+                      <option key={regionOption} value={regionOption}>
+                        {regionOption}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="Facility" />
+                  <select
+                    value={facilityType}
+                    onChange={(event) => setFacilityType(event.target.value)}
+                    className="app-select"
+                    required
+                    disabled={!region}
+                  >
+                    <option value="">{region ? "Select Facility" : "Select Region First"}</option>
+                    {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
+                      <option key={facilityOption} value={facilityOption}>
+                        {facilityOption}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            )}
           </section>
 
           {studyMode === "MARKET" && (
@@ -1364,23 +1416,25 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </select>
               </div>
 
-              <div className="space-y-3">
-                <p className="text-sm font-medium text-gray-700">Questions (Survey Form)</p>
-                {marketQuestions.map((question, index) => (
-                  <input
-                    key={`market-question-${index}`}
-                    value={question}
-                    onChange={(event) => updateMarketQuestion(index, event.target.value)}
-                    className="app-input"
-                  />
-                ))}
-              </div>
+              {!isProductIntentMarketStudy && (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium text-gray-700">Questions (Survey Form)</p>
+                  {marketQuestions.map((question, index) => (
+                    <input
+                      key={`market-question-${index}`}
+                      value={question}
+                      onChange={(event) => updateMarketQuestion(index, event.target.value)}
+                      className="app-input"
+                    />
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
           {studyMode === "SENSORY" && (
             <section className="space-y-6">
-              <h2 className="text-lg font-semibold text-gray-900">Sensory Study Setup</h2>
+              <h2 className="text-lg font-semibold text-gray-900">Type of Sensory Test</h2>
 
               <div className="grid md:grid-cols-2 gap-4">
                 <FieldLabel text="Sensory Study" />
@@ -1429,28 +1483,25 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               )}
 
-              {sensoryStudyType === "CONSUMER_TEST" && (
-                <div className="grid md:grid-cols-2 gap-4">
-                  <FieldLabel text="What do you want to do with this test?" />
-                  <select
-                    value={consumerObjective}
-                    onChange={(event) => {
-                      const value = event.target.value as ConsumerObjective;
-                      // Validate that the selected value is one of the valid options
-                      if (CONSUMER_OBJECTIVES.some(obj => obj.value === value)) {
-                        setConsumerObjective(value);
-                      }
-                    }}
-                    className="app-select"
-                  >
-                    {CONSUMER_OBJECTIVES.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+              <div className="grid md:grid-cols-2 gap-4">
+                <FieldLabel text="Product Development Stage" />
+                <select
+                  value={consumerObjective}
+                  onChange={(event) => {
+                    const value = event.target.value as ConsumerObjective;
+                    if (CONSUMER_OBJECTIVES.some((objective) => objective.value === value)) {
+                      setConsumerObjective(value);
+                    }
+                  }}
+                  className="app-select"
+                >
+                  {CONSUMER_OBJECTIVES.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               <div className="grid md:grid-cols-2 gap-4">
                 <FieldLabel text="Product Name" />
@@ -1477,19 +1528,117 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </select>
               </div>
 
-              <div className="space-y-2">
+              <section className="space-y-4">
+                <h2 className="text-lg font-semibold text-gray-900">Target Consumer</h2>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <FieldLabel text="Minimum Age" />
+                    <input
+                      type="number"
+                      min={10}
+                      max={100}
+                      value={targetAgeMin}
+                      onChange={(event) => setTargetAgeMin(Math.floor(Number(event.target.value) || 0))}
+                      className="app-input"
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <FieldLabel text="Maximum Age" />
+                    <input
+                      type="number"
+                      min={10}
+                      max={100}
+                      value={targetAgeMax}
+                      onChange={(event) => setTargetAgeMax(Math.floor(Number(event.target.value) || 0))}
+                      className="app-input"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <FieldLabel text="Gender" />
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {TARGET_CONSUMER_GENDER_OPTIONS.map((option) => (
+                      <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
+                        <input
+                          type="checkbox"
+                          checked={targetGenders.includes(option.value)}
+                          onChange={() => toggleTargetGender(option.value)}
+                        />
+                        {option.label}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="space-y-2">
+                    <FieldLabel text="Lifestyle" />
+                    <div className="space-y-2">
+                      {TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => (
+                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
+                          <input
+                            type="checkbox"
+                            checked={targetLifestyles.includes(option.value)}
+                            onChange={() => toggleTargetLifestyle(option.value)}
+                          />
+                          {option.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <FieldLabel text="Dietary Preference" />
+                    <div className="space-y-2">
+                      {TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => (
+                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
+                          <input
+                            type="checkbox"
+                            checked={targetDietaryPrefs.includes(option.value)}
+                            onChange={() => toggleTargetDietaryPref(option.value)}
+                          />
+                          {option.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <FieldLabel text="Consumption Behavior" />
+                    <div className="space-y-2">
+                      {TARGET_CONSUMER_CONSUMPTION_OPTIONS.map((option) => (
+                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
+                          <input
+                            type="checkbox"
+                            checked={targetConsumptionHabits[option.value]}
+                            onChange={() => toggleTargetConsumptionHabit(option.value)}
+                          />
+                          {option.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="space-y-2">
+                <h2 className="text-lg font-semibold text-gray-900">Choose what to test</h2>
                 <div className="rounded-lg border border-[#dbe3ec] bg-[#f8fafc] p-3">
-                  <p className="text-sm font-semibold text-[#0f172a]">Choose what to test</p>
+                  <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
                   <p className="mt-1 text-xs text-[#64748b]">
-                    Select up to 3 attributes that you most want to improve in this test.
-                    Testing too many attributes at once can make results unclear.
+                    {consumerObjective === "MARKET_READINESS"
+                      ? "Market Readiness does not add JAR diagnostics; listed attributes use Attribute Liking only."
+                      : "Each listed attribute will be evaluated with JAR first, followed by Attribute Liking."}
                   </p>
-                  <p className="mt-2 text-xs text-[#64748b]">
-                    What is JAR (Just-About-Right)? JAR helps you see whether an attribute is too low, too high, or just right for most consumers.
-                  </p>
-                  <p className="mt-1 text-xs text-[#64748b]">
-                    Why can I only select 3? Limiting attributes helps ensure participants give reliable feedback and makes it easier to identify what truly affects liking.
-                  </p>
+                  {consumerObjective !== "MARKET_READINESS" && (
+                    <p className="mt-2 text-xs text-[#64748b]">
+                      JAR shows whether each attribute is too low, just right, or too high; Attribute Liking captures preference on the 9-point scale.
+                    </p>
+                  )}
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
                   <table className="w-full min-w-[560px] text-sm">
@@ -1497,7 +1646,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       <tr>
                         <th className="px-4 py-2 text-left">Attribute</th>
                         <th className="px-4 py-2 text-left">Type</th>
-                        <th className="px-4 py-2 text-left">Top 3 JAR</th>
+                        <th className="px-4 py-2 text-left">Ratings</th>
                         <th className="px-4 py-2 text-left">Action</th>
                       </tr>
                     </thead>
@@ -1529,14 +1678,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               </select>
                             </td>
                             <td className="px-4 py-2 text-gray-700">
-                              <label className="inline-flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  checked={attribute.isJarTarget}
-                                  onChange={() => toggleJarTarget(index)}
-                                />
-                                <span className="text-xs">Optimize</span>
-                              </label>
+                              <div className="space-y-1 text-xs text-[#475569]">
+                                {consumerObjective !== "MARKET_READINESS" && <p>JAR</p>}
+                                <p>Attribute Liking</p>
+                              </div>
                             </td>
                             <td className="px-4 py-2 text-gray-700">
                               <button
@@ -1554,9 +1699,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     </tbody>
                   </table>
                 </div>
-                <p className="text-xs text-[#64748b]">
-                  Selected for JAR: {attributes.filter((attribute) => attribute.isJarTarget).length}/3
-                </p>
                 <div className="rounded-lg border border-[#e2e8f0] bg-white p-3">
                   <p className="text-sm font-semibold text-[#0f172a]">Add custom attribute (max 1)</p>
                   <p className="mt-1 text-xs text-[#64748b]">
@@ -1599,10 +1741,50 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     </button>
                   </div>
                 </div>
-              </div>
+              </section>
+
+              <section className="flex flex-col gap-4">
+                <h2 className="text-lg font-semibold text-gray-900">{requiresFicBooking ? "Book FIC" : "Testing Schedule"}</h2>
+              {requiresFicBooking && (
+                <div className="order-1 grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <FieldLabel text="Region" />
+                    <select
+                      value={region}
+                      onChange={(event) => setRegion(event.target.value as Region | "")}
+                      className="app-select"
+                      required
+                    >
+                      <option value="">Select Region</option>
+                      {REGIONS.map((regionOption) => (
+                        <option key={regionOption} value={regionOption}>
+                          {regionOption}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <FieldLabel text="Facility" />
+                    <select
+                      value={facilityType}
+                      onChange={(event) => setFacilityType(event.target.value)}
+                      className="app-select"
+                      required
+                      disabled={!region}
+                    >
+                      <option value="">{region ? "Select Facility" : "Select Region First"}</option>
+                      {region && FACILITIES_BY_REGION[region].map((facilityOption) => (
+                        <option key={facilityOption} value={facilityOption}>
+                          {facilityOption}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
 
               {requiresFicBooking && (
-                <div className="space-y-3 rounded-xl border border-[#c7d2fe] bg-[#191b29] p-4">
+                <div className="order-3 space-y-3 rounded-xl border border-[#c7d2fe] bg-[#191b29] p-4">
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <FieldLabel text="Assigned FIC User" />
@@ -1618,11 +1800,13 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                         </option>
                         {assignedFicUsers.map((fic) => {
                           const rangeAvailability = rangeAvailabilityByFicId.get(fic.id);
-                          const rangeAvailableCount = rangeAvailability?.availableDates.length ?? 0;
+                          const rangeAvailableCount = normalizedSelectedTestingDates.filter((dateKey) =>
+                            rangeAvailability?.availableDates.includes(dateKey)
+                          ).length;
                           const rangeWindowDays = scheduleDateRange?.duration ?? 0;
                           const availabilityLabel =
                             rangeWindowDays > 0
-                              ? `${rangeAvailableCount}/${rangeWindowDays} day(s) available in selected window`
+                              ? `${rangeAvailableCount}/${rangeWindowDays} selected day(s) available`
                               : `${fic.availableDateCount} day(s) available this month`;
 
                           return (
@@ -1666,7 +1850,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       <div className="mt-2 grid gap-2 md:grid-cols-2">
                         {assignedFicUsers.map((fic) => {
                           const rangeAvailability = rangeAvailabilityByFicId.get(fic.id);
-                          const rangeAvailableCount = rangeAvailability?.availableDates.length ?? 0;
+                          const rangeAvailableCount = normalizedSelectedTestingDates.filter((dateKey) =>
+                            rangeAvailability?.availableDates.includes(dateKey)
+                          ).length;
                           const isActive = fic.id === selectedFicUserId;
                           return (
                             <button
@@ -1682,7 +1868,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               <p className="font-semibold">{fic.name}</p>
                               <p className="mt-0.5 text-[11px] text-[#64748b]">{fic.email}</p>
                               <p className="mt-1">
-                                Window availability: {rangeAvailableCount}/{scheduleDateRange?.duration ?? 0} day(s)
+                                Selected-date availability: {rangeAvailableCount}/{scheduleDateRange?.duration ?? 0} day(s)
                               </p>
                             </button>
                           );
@@ -1694,7 +1880,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   {selectedFic && scheduleDateRange && (
                     <div className="rounded-lg border border-[#dbeafe] bg-white p-3">
                       <p className="text-xs font-semibold text-[#1e3a8a]">
-                        Availability for {selectedFic.name} ({scheduleDateRange.startDate} to {scheduleDateRange.endDate})
+                        Availability for {selectedFic.name} on selected dates
                       </p>
                       <div className="mt-2 flex flex-wrap gap-2">
                         {sessionSlotsByDay.map((day) => {
@@ -1721,7 +1907,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               )}
 
-              <div className="grid md:grid-cols-2 gap-4">
+              <div className="order-2 grid md:grid-cols-2 gap-4">
                 <div className="space-y-2">
                   <FieldLabel text="Number of Target Responses" />
                   <input
@@ -1736,13 +1922,20 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     className="app-input"
                     required
                   />
-                  {consumerLimit && (
-                    <p className="text-xs text-gray-500">Maximum for selected objective: {consumerLimit}</p>
+                  {studyMode === "SENSORY" && (
+                    <p className="text-xs text-gray-500">
+                      Minimum participants: {selectedConsumerObjective.defaultTarget}
+                      {" "}({selectedConsumerObjective.panelCount}
+                      {selectedConsumerObjective.bufferCount > 0
+                        ? ` + ${selectedConsumerObjective.bufferCount} buffer`
+                        : " panelists"}
+                      )
+                    </p>
                   )}
                 </div>
               </div>
               
-              <div className="space-y-4 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
+              <div className="order-4 space-y-4 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <h3 className="text-base font-semibold text-[#0f172a]">Testing Schedule (Date, Time, Session Capacity)</h3>
                   <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-xs font-medium text-[#1e4f8f]">
@@ -1757,18 +1950,28 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
                 <div className="grid md:grid-cols-3 gap-4">
                   <div className="space-y-1">
-                    <FieldLabel text="Testing Start Date" />
+                    <FieldLabel text={requiresFicBooking ? "First Booked Date" : "Testing Start Date"} />
                     <input
                       type="date"
                       value={testingStartDate}
-                      onChange={(event) => setTestingStartDate(event.target.value)}
-                      className="app-input"
+                      onChange={(event) => {
+                        if (!requiresFicBooking) {
+                          updateTestingStartDate(event.target.value);
+                        }
+                      }}
+                      className={`app-input ${requiresFicBooking ? "bg-[#f1f5f9]" : ""}`}
                       min={todayDateKey}
+                      readOnly={requiresFicBooking}
                       required
                     />
                     {requiresFicBooking && selectedStartDateFacilityAvailability === 0 && (
                       <p className="text-[11px] text-amber-700">
                         No assigned FIC is available on this start date. Pick an available date from the facility calendar below.
+                      </p>
+                    )}
+                    {requiresFicBooking && unavailableFacilityScheduleDates.length > 0 && (
+                      <p className="text-[11px] text-amber-700">
+                        No assigned FIC is available for the selected duration date(s): {unavailableFacilityScheduleDates.join(", ")}.
                       </p>
                     )}
                   </div>
@@ -1779,7 +1982,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       min={1}
                       max={31}
                       value={testingDurationDays}
-                      onChange={(event) => setTestingDurationDays(Math.max(1, Math.floor(Number(event.target.value) || 1)))}
+                      onChange={(event) => updateTestingDuration(Number(event.target.value))}
                       className="app-input"
                       required
                     />
@@ -1830,7 +2033,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       </div>
                     </div>
                     <p className="mt-1 text-[11px] text-[#475569]">
-                      Click a date with available capacity to set your testing start date. Indicator shows how many assigned FIC users can host that date.
+                      Click available dates to book them for this study. Select exactly {normalizedTestingDuration} testing date(s).
+                      Indicator shows how many assigned FIC users can host each date.
+                    </p>
+                    <p className="mt-1 text-[11px] font-medium text-[#1e3a8a]">
+                      Selected: {normalizedSelectedTestingDates.length}/{normalizedTestingDuration}
+                      {normalizedSelectedTestingDates.length > 0 ? ` (${normalizedSelectedTestingDates.join(", ")})` : ""}
                     </p>
 
                     <div className="mt-3 grid grid-cols-7 gap-1">
@@ -1841,20 +2049,30 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       ))}
                       {facilityCalendarDays.map((day) => {
                         const isPast = day.date < todayDateKey;
-                        const isSelected = day.date === testingStartDate;
+                        const isSelectedStart = day.date === testingStartDate;
+                        const isSelectedRangeDate = selectedScheduleDateSet.has(day.date);
                         const disabled = !day.isCurrentMonth || isPast || day.availableFicCount === 0;
                         const baseClasses = "flex aspect-square flex-col items-center justify-center rounded-md border text-[11px] transition-colors";
-                        const statusClasses = disabled
-                          ? "border-[#e2e8f0] bg-[#f8fafc] text-[#94a3b8]"
-                          : "border-[#bbf7d0] bg-[#f0fdf4] text-[#166534] hover:bg-[#dcfce7]";
+                        const statusClasses = isSelectedStart
+                          ? "border-[#2563eb] bg-[#dbeafe] text-[#1e3a8a]"
+                          : isSelectedRangeDate
+                            ? "border-[#93c5fd] bg-[#eff6ff] text-[#1e40af]"
+                            : disabled
+                              ? "border-[#e2e8f0] bg-[#f8fafc] text-[#94a3b8]"
+                              : "border-[#bbf7d0] bg-[#f0fdf4] text-[#166534] hover:bg-[#dcfce7]";
 
                         return (
                           <button
                             key={`facility-calendar-day-${day.date}`}
                             type="button"
                             disabled={disabled}
-                            onClick={() => setTestingStartDate(day.date)}
-                            className={`${baseClasses} ${statusClasses} ${isSelected ? "ring-2 ring-[#2563eb]" : ""}`}
+                            onClick={() => toggleTestingDate(day.date)}
+                            title={
+                              disabled && day.isCurrentMonth && !isPast
+                                ? "No assigned FIC is available on this date"
+                                : undefined
+                            }
+                            className={`${baseClasses} ${statusClasses} ${isSelectedStart ? "ring-2 ring-[#2563eb]" : ""}`}
                           >
                             <span className="font-semibold">{day.dayOfMonth}</span>
                             <span>{day.availableFicCount > 0 ? `${day.availableFicCount} FIC` : "-"}</span>
@@ -1866,6 +2084,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       <span className="inline-flex items-center gap-1">
                         <span className="h-3 w-3 rounded-sm border border-[#bbf7d0] bg-[#f0fdf4]" />
                         Available facility date
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <span className="h-3 w-3 rounded-sm border border-[#93c5fd] bg-[#eff6ff]" />
+                        Selected testing date
                       </span>
                       <span className="inline-flex items-center gap-1">
                         <span className="h-3 w-3 rounded-sm border border-[#e2e8f0] bg-[#f8fafc]" />
@@ -1962,7 +2184,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
 
-              <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
+              <div className="order-5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
                 Questionnaire Logic generated on create:
                 <ul className="list-disc pl-5 mt-2 space-y-1">
                   <li>Overall Acceptability (9-point hedonic scale, mandatory)</li>
@@ -1972,6 +2194,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   <li>Open-ended improvement question</li>
                 </ul>
               </div>
+              </section>
             </section>
           )}
 
@@ -2017,32 +2240,101 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               {sampleSetups.map((setup, index) => (
                 <div key={`sample-setup-${index}`} className="space-y-3 rounded-lg border border-[#e2e8f0] bg-white p-4">
                   <h3 className="font-medium text-gray-900">Sample Set-up {index + 1}</h3>
-                  <div className="space-y-1">
-                    <FieldLabel text="General Description / Formulation Notes" />
-                    <input
-                      value={setup.description}
-                      onChange={(event) => updateSampleSetup(index, "description", event.target.value)}
-                      className="app-input"
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <FieldLabel text="Ingredient (Optional)" />
-                    <input
-                      value={setup.ingredient}
-                      onChange={(event) => updateSampleSetup(index, "ingredient", event.target.value)}
-                      className="app-input"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <FieldLabel text="Allergen" />
-                    <input
-                      value={setup.allergen}
-                      onChange={(event) => updateSampleSetup(index, "allergen", event.target.value)}
-                      className="app-input"
-                      required
-                    />
-                  </div>
+                  {isProductIntentMarketStudy ? (
+                    <>
+                      <div className="space-y-1">
+                        <FieldLabel text="General Description" />
+                        <textarea
+                          value={setup.description}
+                          onChange={(event) => updateSampleSetup(index, "description", event.target.value)}
+                          className="app-input min-h-24"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <FieldLabel text="Upload Image" />
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          onChange={(event) => updateSampleSetupImage(index, event.target.files?.[0] ?? null)}
+                          className="block w-full rounded-md border border-[#dbe3ec] bg-white px-3 py-2 text-sm text-[#334155] file:mr-3 file:rounded file:border-0 file:bg-[#ed7f2a] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white"
+                          required={!setup.imageDataUrl}
+                        />
+                        {setup.imageDataUrl && (
+                          <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2">
+                            <Image
+                              src={setup.imageDataUrl}
+                              alt={setup.imageName || `Sample set-up ${index + 1}`}
+                              width={640}
+                              height={360}
+                              unoptimized
+                              className="h-40 w-full rounded-md object-cover"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                updateSampleSetup(index, "imageDataUrl", "");
+                                updateSampleSetup(index, "imageName", "");
+                              }}
+                              className="mt-2 rounded-md border border-[#fecaca] px-2.5 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fef2f2]"
+                            >
+                              Remove Image
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      <div className="space-y-1">
+                        <FieldLabel text="Price" />
+                        <input
+                          value={setup.price}
+                          onChange={(event) => updateSampleSetup(index, "price", event.target.value)}
+                          className="app-input"
+                          placeholder="e.g., PHP 99.00"
+                          maxLength={80}
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <FieldLabel text="Purchase Intent Question" />
+                        <input
+                          value={setup.purchaseIntentQuestion}
+                          onChange={(event) => updateSampleSetup(index, "purchaseIntentQuestion", event.target.value)}
+                          className="app-input"
+                          maxLength={240}
+                          required
+                        />
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="space-y-1">
+                        <FieldLabel text="General Description / Formulation Notes" />
+                        <input
+                          value={setup.description}
+                          onChange={(event) => updateSampleSetup(index, "description", event.target.value)}
+                          className="app-input"
+                          required
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <FieldLabel text="Ingredient (Optional)" />
+                        <input
+                          value={setup.ingredient}
+                          onChange={(event) => updateSampleSetup(index, "ingredient", event.target.value)}
+                          className="app-input"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <FieldLabel text="Allergen" />
+                        <input
+                          value={setup.allergen}
+                          onChange={(event) => updateSampleSetup(index, "allergen", event.target.value)}
+                          className="app-input"
+                          required
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -2062,47 +2354,29 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 }
 
 function createAttributeRowsFromProfile(profileAttributes: ProfileAttributeRow[]) {
-  return profileAttributes.slice(0, 5).map((attribute, index) => ({
+  return profileAttributes.slice(0, 5).map((attribute) => ({
     name: attribute.name,
     dimension: attribute.dimension,
-    isJarTarget: index < 2,
+    isJarTarget: true,
     isCustom: false,
     actionable: true,
   }));
 }
 
-function applyObjectiveJarDefaults(attributes: AttributeRow[], objective: ConsumerObjective) {
-  const next = attributes.map((attribute) => ({ ...attribute, isJarTarget: false }));
-  if (objective === "CHECK_ACCEPTABILITY") {
-    return next;
-  }
-
-  if (objective === "IMPROVE_TASTE") {
-    const firstTasteIndex = next.findIndex((attribute) => attribute.dimension === "Taste");
-    if (firstTasteIndex >= 0) next[firstTasteIndex].isJarTarget = true;
-    return next;
-  }
-
-  if (objective === "IMPROVE_TEXTURE") {
-    const firstTextureIndex = next.findIndex((attribute) => attribute.dimension === "Texture");
-    if (firstTextureIndex >= 0) next[firstTextureIndex].isJarTarget = true;
-    return next;
-  }
-
-  if (objective === "FINE_TUNE") {
-    next.slice(0, 2).forEach((attribute) => {
-      attribute.isJarTarget = true;
-    });
-    return next;
-  }
-
-  next.slice(0, 2).forEach((attribute) => {
-    attribute.isJarTarget = true;
-  });
-  return next;
+function toggleSelection<T>(values: T[], value: T) {
+  return values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value];
 }
 
-function validateObjectiveSelection(attributes: AttributeRow[], objective: ConsumerObjective) {
+function applyObjectiveJarDefaults(attributes: AttributeRow[], objective: ConsumerObjective) {
+  return attributes.map((attribute) => ({
+    ...attribute,
+    isJarTarget: objective !== "MARKET_READINESS",
+  }));
+}
+
+function validateObjectiveSelection(attributes: AttributeRow[]) {
   if (attributes.length === 0) {
     return { valid: false, error: "Select at least one candidate attribute." };
   }
@@ -2125,38 +2399,7 @@ function validateObjectiveSelection(attributes: AttributeRow[], objective: Consu
     }
   }
 
-  const jarTargets = attributes.filter((attribute) => attribute.isJarTarget);
-  if (jarTargets.length > 3) {
-    return { valid: false, error: "Only the TOP 3 attributes can be selected for JAR questions." };
-  }
-
-  if (objective === "CHECK_ACCEPTABILITY" && jarTargets.length !== 0) {
-    return { valid: false, error: "Check acceptability requires Overall Acceptability only (no JAR attributes)." };
-  }
-  if (objective === "IMPROVE_TASTE") {
-    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Taste") {
-      return { valid: false, error: "Improve taste requires exactly 1 Taste JAR attribute." };
-    }
-  }
-  if (objective === "IMPROVE_TEXTURE") {
-    if (jarTargets.length !== 1 || jarTargets[0].dimension !== "Texture") {
-      return { valid: false, error: "Improve texture requires exactly 1 Texture JAR attribute." };
-    }
-  }
-  if (objective === "FINE_TUNE" && jarTargets.length !== 2) {
-    return { valid: false, error: "Fine-tune requires exactly 2 JAR attributes." };
-  }
-  if (objective === "FAST_ITERATION" && (jarTargets.length < 1 || jarTargets.length > 2)) {
-    return { valid: false, error: "FAST iteration requires 1 to 2 JAR attributes." };
-  }
-
   return { valid: true, error: "" };
-}
-
-function formatImportIssue(issue: { rowNumber?: number; field?: string; message: string }) {
-  const rowPrefix = issue.rowNumber ? `Row ${issue.rowNumber}: ` : "";
-  const fieldPrefix = issue.field ? `${issue.field} - ` : "";
-  return `${rowPrefix}${fieldPrefix}${issue.message}`;
 }
 
 function FieldLabel({ text }: { text: string }) {
@@ -2212,6 +2455,18 @@ function addDaysToDateInput(dateInput: string, dayOffset: number) {
   return `${year}-${month}-${day}`;
 }
 
+function normalizeTestingDateSelection(dateInputs: string[], fallbackDateInput: string, maxDates: number) {
+  const max = Math.max(1, Math.floor(maxDates));
+  const validDates = dateInputs.filter((dateInput) => parseDateInput(dateInput));
+  const uniqueDates = Array.from(new Set(validDates.length > 0 ? validDates : [fallbackDateInput]));
+  return uniqueDates.sort((left, right) => left.localeCompare(right)).slice(0, max);
+}
+
+function getDateRangeInputs(startDateInput: string, durationDays: number) {
+  const duration = Math.max(1, Math.floor(durationDays));
+  return Array.from({ length: duration }, (_, dayOffset) => addDaysToDateInput(startDateInput, dayOffset));
+}
+
 function createSessionSlotDraft(dayOffset: number, slotIndex: number): SessionSlotDraft {
   const defaults = [
     { label: "Morning", startTime: "09:00", endTime: "11:30" },
@@ -2236,6 +2491,20 @@ function createSessionSlotDraft(dayOffset: number, slotIndex: number): SessionSl
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isSafeProductImageDataUrl(value: string) {
+  if (!value) {
+    return false;
+  }
+  const match = value.match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) {
+    return false;
+  }
+  const base64 = match[2] ?? "";
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  const byteLength = Math.floor((base64.length * 3) / 4) - padding;
+  return byteLength > 0 && byteLength <= PRODUCT_IMAGE_MAX_BYTES;
 }
 
 function buildStudyTitle(input: {

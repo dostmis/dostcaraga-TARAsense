@@ -9,6 +9,7 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
 import { FACILITY_REGION_ROWS, REGIONS } from "@/lib/facility-constants";
+import type { Prisma, UserRole } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
 
@@ -26,10 +27,25 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
   const { error, message, q } = params;
   const activeView = parseAdminView(params.view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
+  const shouldLoadUsers = activeView === "users";
   const shouldLoadRequests = activeView === "role-requests";
   const shouldLoadFicAssignments = activeView === "role-requests";
+  const searchableUserRoles = ["ADMIN", "MSME", "FIC", "CONSUMER", "RESEARCHER", "FIC_MANAGER"] satisfies UserRole[];
+  const matchingUserRoles = normalizedQuery
+    ? searchableUserRoles.filter((role) => role.toLowerCase().includes(normalizedQuery))
+    : [];
+  const userWhere: Prisma.UserWhereInput | undefined =
+    shouldLoadUsers && normalizedQuery
+      ? {
+          OR: [
+            { name: { contains: normalizedQuery, mode: "insensitive" } },
+            { email: { contains: normalizedQuery, mode: "insensitive" } },
+            ...(matchingUserRoles.length > 0 ? [{ role: { in: matchingUserRoles } }] : []),
+          ],
+        }
+      : undefined;
 
-  const [studies, users, panelists, pendingRequests, approvedRequests, rejectedRequests, requests, ficUsers] = await Promise.all([
+  const [studies, userCount, panelists, pendingRequests, approvedRequests, rejectedRequests, requests, ficUsers, userRows] = await Promise.all([
     prisma.study.count(),
     prisma.user.count(),
     prisma.panelist.count(),
@@ -65,6 +81,17 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           take: 200,
         })
       : Promise.resolve([]),
+    shouldLoadUsers
+      ? prisma.user.findMany({
+          where: userWhere,
+          select: {
+            name: true,
+            email: true,
+            role: true,
+          },
+          orderBy: [{ name: "asc" }, { email: "asc" }],
+        })
+      : Promise.resolve([]),
   ]);
 
   const filteredRequests = normalizedQuery
@@ -94,6 +121,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
       statusLabel="Admin control center"
       navItems={[
         { label: "Dashboard", href: "/admin/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
+        { label: "Users", href: "/admin/dashboard?view=users", icon: Users, active: activeView === "users" },
         { label: "Profile", href: "/admin/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
         {
           label: "Role Requests",
@@ -107,7 +135,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
       ]}
       stats={[
         { label: "Total Studies", value: `${studies}`, helper: "All studies in the platform", icon: LayoutDashboard, tone: "sky" },
-        { label: "Registered Users", value: `${users}`, helper: "All active user accounts", icon: Users, tone: "mint" },
+        { label: "Registered Users", value: `${userCount}`, helper: "All active user accounts", icon: Users, tone: "mint" },
         { label: "Pending Requests", value: `${pendingRequests}`, helper: "Awaiting review decisions", icon: ShieldCheck, tone: "amber" },
         { label: "Approved Requests", value: `${approvedRequests}`, helper: "Successfully upgraded access", icon: CheckCircle2, tone: "mint" },
         { label: "Rejected Requests", value: `${rejectedRequests}`, helper: "Declined role upgrades", icon: XCircle, tone: "rose" },
@@ -139,6 +167,13 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           </CollapsibleSection>
           <section className="grid gap-4 md:grid-cols-2">
             <Link
+              href="/admin/dashboard?view=users"
+              className="rounded-2xl border border-[#e4d7cc] bg-white p-6 transition-colors hover:border-[#d7b8a1]"
+            >
+              <h2 className="text-xl font-semibold text-[#2e231c]">View Users</h2>
+              <p className="mt-2 text-sm text-[#6f5b4f]">Registered user names, emails, and assigned roles.</p>
+            </Link>
+            <Link
               href="/msme/dashboard"
               className="rounded-2xl border border-[#e4d7cc] bg-white p-6 transition-colors hover:border-[#d7b8a1]"
             >
@@ -152,6 +187,48 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
               <h2 className="text-xl font-semibold text-[#2e231c]">Open FIC Access</h2>
               <p className="mt-2 text-sm text-[#6f5b4f]">Facility queue, uploaded studies, and in-lab coordination updates.</p>
             </Link>
+          </section>
+        </>
+      )}
+
+      {activeView === "users" && (
+        <>
+          <CollapsibleSection title="System Messages" id="system-messages" defaultOpen={false}>
+            <NotificationPanel userId={session.userId} redirectTo="/admin/dashboard?view=users" />
+          </CollapsibleSection>
+          <section className="space-y-4 rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-[#2e231c]">Users</h2>
+                <p className="text-sm text-[#6f5b4f]">Admin-only list of registered accounts and platform roles.</p>
+              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.16em] text-[#8c776a]">{userRows.length} shown</p>
+            </div>
+
+            {userRows.length === 0 && <p className="text-sm text-[#6f5b4f]">No users found.</p>}
+
+            {userRows.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-[#eadfd6] bg-[#fffdfb]">
+                <table className="min-w-full divide-y divide-[#eadfd6] text-sm">
+                  <thead className="bg-[#faf6f2] text-left text-[#6f5b4f]">
+                    <tr>
+                      <th className="px-4 py-2 font-medium">Name</th>
+                      <th className="px-4 py-2 font-medium">Email</th>
+                      <th className="px-4 py-2 font-medium">Role</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#f1e5db] text-[#2e231c]">
+                    {userRows.map((user) => (
+                      <tr key={user.email}>
+                        <td className="px-4 py-2 font-medium">{user.name}</td>
+                        <td className="px-4 py-2 text-[#5b4739]">{user.email}</td>
+                        <td className="px-4 py-2">{user.role}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </section>
         </>
       )}
@@ -326,7 +403,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
 }
 
 function parseAdminView(value?: string) {
-  if (value === "profile" || value === "role-requests") {
+  if (value === "profile" || value === "role-requests" || value === "users") {
     return value;
   }
   return "dashboard";

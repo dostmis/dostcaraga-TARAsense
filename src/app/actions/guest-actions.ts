@@ -9,6 +9,15 @@ import { ensureParticipantAssignment } from "@/lib/participant-assignment";
 import { normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { applyGuestSessionCookies } from "@/lib/auth/session";
 import { lockStudyRow, runSerializableTransaction } from "@/lib/db-transaction";
+import {
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+  type TargetConsumerDietaryPref,
+  doesPanelistMatchTargetConsumer,
+} from "@/lib/target-consumer";
+
+const ALLOWED_GUEST_LIFESTYLES = new Set(TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => option.value));
+const ALLOWED_GUEST_DIETARY_PREFS = new Set(TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => option.value));
 
 export async function registerWalkInGuest(formData: FormData) {
   const studyId = String(formData.get("studyId") ?? "").trim();
@@ -19,6 +28,22 @@ export async function registerWalkInGuest(formData: FormData) {
   const address = String(formData.get("address") ?? "").trim();
   const organization = String(formData.get("organization") ?? "").trim();
   const occupation = String(formData.get("occupation") ?? "").trim();
+  const lifestyles = formData
+    .getAll("lifestyle")
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value) => ALLOWED_GUEST_LIFESTYLES.has(value));
+  const dietaryPrefs = formData
+    .getAll("dietaryPrefs")
+    .map((value) => String(value).trim().toUpperCase())
+    .filter((value): value is TargetConsumerDietaryPref =>
+      ALLOWED_GUEST_DIETARY_PREFS.has(value as TargetConsumerDietaryPref)
+    );
+  const consumptionHabits = {
+    coffeeDrinker: formData.get("coffeeDrinker") === "on",
+    snackConsumer: formData.get("snackConsumer") === "on",
+    energyDrinkConsumer: formData.get("energyDrinkConsumer") === "on",
+    snacks: formData.get("snackConsumer") === "on" ? "daily" : "rarely",
+  };
 
   if (!studyId || !slotId) {
     redirect("/?error=Invalid+walk-in+link");
@@ -71,6 +96,21 @@ export async function registerWalkInGuest(formData: FormData) {
     if (!schedule || !selectedSlot) {
       return { ok: false as const, error: "Session+slot+not+found+or+expired" };
     }
+    if (
+      !doesPanelistMatchTargetConsumer(
+        {
+          age,
+          gender,
+          lifestyle: lifestyles,
+          dietaryPrefs,
+          consumptionHabits,
+          isActive: true,
+        },
+        study.targetDemographics
+      )
+    ) {
+      return { ok: false as const, error: "This+guest+does+not+match+the+study+target+consumer" };
+    }
 
     const selectedStartIso = normalizeDateValue(selectedSlot.startsAt);
     if (!selectedStartIso) {
@@ -104,9 +144,9 @@ export async function registerWalkInGuest(formData: FormData) {
         location: address,
         organization: organization || null,
         occupation,
-        lifestyle: ["walk-in"],
-        dietaryPrefs: [],
-        consumptionHabits: { source: "walk-in-qr" },
+        lifestyle: lifestyles.length > 0 ? lifestyles : ["walk-in"],
+        dietaryPrefs,
+        consumptionHabits: { ...consumptionHabits, source: "walk-in-qr" },
         isActive: true,
         isGuest: true,
       },

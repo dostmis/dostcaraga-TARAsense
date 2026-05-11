@@ -76,15 +76,23 @@ export function isMobileTokenSecretConfigured() {
 function getMobileSecret() {
   const secret = readMobileSecret();
   if (!secret) {
-    throw new Error(`SESSION_SECRET must be set and at least ${MIN_SECRET_LENGTH} characters long for mobile tokens.`);
+    throw new Error(
+      `MOBILE_TOKEN_SECRET (or SESSION_SECRET) must be set and at least ${MIN_SECRET_LENGTH} characters long for mobile tokens.`
+    );
   }
   return secret;
 }
 
 function readMobileSecret() {
-  const secret = process.env.SESSION_SECRET ?? "";
-  if (secret.length >= MIN_SECRET_LENGTH) {
-    return secret;
+  // Prefer a dedicated secret so mobile and web tokens use independent signing keys.
+  const dedicated = process.env.MOBILE_TOKEN_SECRET ?? "";
+  if (dedicated.length >= MIN_SECRET_LENGTH) {
+    return dedicated;
+  }
+  // Fall back to SESSION_SECRET for deployments that have not yet added MOBILE_TOKEN_SECRET.
+  const fallback = process.env.SESSION_SECRET ?? "";
+  if (fallback.length >= MIN_SECRET_LENGTH) {
+    return fallback;
   }
   return null;
 }

@@ -2,16 +2,20 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import QRCode from "qrcode";
+import type { ParticipantStatus } from "@prisma/client";
 import { confirmParticipantSession, offerScheduleOptions } from "@/app/actions/participant-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/lib/participant-assignment";
-import { parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import { assignSampleCodesFromCodeBook, createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
-import { isFicTaggedStudyLocation } from "@/lib/study-access";
+import { canAccessStudyByRole, canViewRandomizedBlindCodePlan } from "@/lib/study-access";
+import { doesPanelistMatchTargetConsumer, getTargetConsumerSummary } from "@/lib/target-consumer";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
 import { StudyImportPanel } from "@/components/studies/study-import-panel";
+
+const DEFAULT_PUBLIC_QR_BASE_URL = "https://tarasense.dostcaraga.ph";
 
 type PageProps = {
   params: Promise<{ studyId: string }>;
@@ -28,6 +32,31 @@ interface StudyMeta {
   randomCodeBook?: unknown;
 }
 
+interface StudyParticipantRow {
+  id: string;
+  source: string;
+  guestCode: string | null;
+  panelistNumber: number | null;
+  randomizeCode: string | null;
+  sampleCodes: unknown;
+  offeredSessions: unknown;
+  requestedSessionAt: Date | null;
+  sessionAt: Date | null;
+  selectionOrder: number;
+  status: string;
+  panelist: { name: string; userId: string | null };
+}
+
+interface SampleSetupView {
+  description: string;
+  ingredient: string;
+  allergen: string;
+  imageDataUrl: string;
+  imageName: string;
+  price: string;
+  purchaseIntentQuestion: string;
+}
+
 export default async function StudyFormPage({ params }: PageProps) {
   await requireRole(["MSME", "FIC", "CONSUMER", "ADMIN"]);
   const session = await getCurrentSession();
@@ -37,24 +66,6 @@ export default async function StudyFormPage({ params }: PageProps) {
     include: {
       sensoryAttributes: {
         orderBy: { order: "asc" },
-      },
-      participants: {
-        where: { status: { in: ["SELECTED", "CONFIRMED", "WAITLIST"] } },
-        orderBy: [{ panelistNumber: "asc" }, { selectionOrder: "asc" }],
-        select: {
-          id: true,
-          source: true,
-          guestCode: true,
-          panelistNumber: true,
-          randomizeCode: true,
-          sampleCodes: true,
-          offeredSessions: true,
-          requestedSessionAt: true,
-          sessionAt: true,
-          selectionOrder: true,
-          status: true,
-          panelist: { select: { name: true, userId: true } },
-        },
       },
     },
   });
@@ -69,14 +80,16 @@ export default async function StudyFormPage({ params }: PageProps) {
           select: { assignedFacility: true },
         })
       : null;
-  if (session?.role === "MSME" && study.creatorId !== session.userId) {
-    notFound();
-  }
   if (
-    session?.role === "FIC" &&
-    (!isFicTaggedStudyLocation(study.location) ||
-      !ficUser?.assignedFacility ||
-      study.location.trim().toLowerCase() !== ficUser.assignedFacility.trim().toLowerCase())
+    session &&
+    session.role !== "CONSUMER" &&
+    !canAccessStudyByRole({
+      role: session.role,
+      userId: session.userId,
+      studyCreatorId: study.creatorId,
+      studyLocation: study.location,
+      ficAssignedFacility: ficUser?.assignedFacility,
+    })
   ) {
     notFound();
   }
@@ -85,13 +98,45 @@ export default async function StudyFormPage({ params }: PageProps) {
   const criteria = toCriteria(study.screeningCriteria);
   const sessionSchedule = parseStudySessionSchedule(study.targetDemographics);
   const isMarketStudy = meta.studyMode === "MARKET";
+  const isProductIntentMarketStudy = isMarketStudy && meta.marketStudyType === "PRODUCT_INTENT";
   const isConsumerView = session?.role === "CONSUMER";
-  const isMsmeView = session?.role === "MSME";
+  const canViewBlindCodePlan = Boolean(
+    session &&
+      canViewRandomizedBlindCodePlan({
+        role: session.role,
+        userId: session.userId,
+        studyCreatorId: study.creatorId,
+        targetDemographics: study.targetDemographics,
+      })
+  );
+  const consumerPanelist = isConsumerView
+    ? await prisma.panelist.findFirst({
+        where: { userId: session.userId },
+        select: {
+          age: true,
+          gender: true,
+          lifestyle: true,
+          dietaryPrefs: true,
+          consumptionHabits: true,
+          isActive: true,
+        },
+      })
+    : null;
+  const participants = await loadStudyParticipants(study.id, canViewBlindCodePlan);
   const canImportStudyData = !isMarketStudy && (session?.role === "MSME" || session?.role === "ADMIN");
   const myParticipation = isConsumerView
-    ? study.participants.find((participant) => participant.panelist.userId === session.userId) ?? null
+    ? participants.find((participant) => participant.panelist.userId === session.userId) ?? null
     : null;
-  const randomCodeBook = parseStudyRandomCodeBook(meta.randomCodeBook);
+  if (
+    isConsumerView &&
+    !myParticipation &&
+    !doesPanelistMatchTargetConsumer(consumerPanelist, study.targetDemographics)
+  ) {
+    notFound();
+  }
+  const randomCodeBook = canViewBlindCodePlan
+    ? await ensureRandomCodeBookForStudy(study.id, study.sampleSize, study.targetDemographics)
+    : parseStudyRandomCodeBook(meta.randomCodeBook);
   const codePlanRows = randomCodeBook ? buildCodePlanRows(randomCodeBook) : [];
   const totalRandomizedCodes = randomCodeBook
     ? randomCodeBook.participantCapacity * randomCodeBook.sampleCount
@@ -100,17 +145,16 @@ export default async function StudyFormPage({ params }: PageProps) {
   const attributeLikingQuestions = study.sensoryAttributes.filter((attribute) => attribute.type === "ATTRIBUTE_LIKING");
   const jarQuestions = study.sensoryAttributes.filter((attribute) => attribute.type === "JAR");
   const openEndedQuestions = study.sensoryAttributes.filter((attribute) => attribute.type === "OPEN_ENDED");
+  const evaluationAttributeGroups = buildEvaluationAttributeGroups(attributeLikingQuestions, jarQuestions);
 
-  const participantLink =
-    session?.role === "CONSUMER"
-      ? `/studies/${study.id}/start`
-      : study.participants[0]
-        ? `/test/${study.id}/${study.participants[0].id}`
-        : `/dashboard/${study.id}`;
+  const participantLink = `/studies/${study.id}/start`;
 
-  const baseUrl = process.env.NEXTAUTH_URL || "http://localhost:3000";
-  const qrTargetPath = isMarketStudy ? `/studies/${study.id}/form` : participantLink;
+  const baseUrl = getPublicQrBaseUrl();
+  const qrTargetPath = isMarketStudy
+    ? `/studies/${study.id}/form`
+    : `/login?next=${encodeURIComponent(participantLink)}`;
   const qrTargetUrl = `${baseUrl.replace(/\/$/, "")}${qrTargetPath}`;
+  const linkedFormPath = session?.role === "CONSUMER" ? participantLink : qrTargetPath;
   const qrDataUrl = await QRCode.toDataURL(qrTargetUrl, { width: 280, margin: 1 });
   const participantSessionRows = sessionSchedule
     ? await prisma.studyParticipant.findMany({
@@ -134,7 +178,8 @@ export default async function StudyFormPage({ params }: PageProps) {
             return requested === slotStart || confirmed === slotStart;
           }).length;
           const remaining = Math.max(slot.capacity - occupied, 0);
-          const path = `/guest/check-in?studyId=${encodeURIComponent(study.id)}&slotId=${encodeURIComponent(slot.id)}`;
+          const nextPath = `/studies/${study.id}/start?slotId=${encodeURIComponent(slot.id)}`;
+          const path = `/login?next=${encodeURIComponent(nextPath)}&message=Sign+in+to+check+in+for+this+session.+New+consumers+can+create+an+account+below`;
           const url = `${baseUrl.replace(/\/$/, "")}${path}`;
           const qr = await QRCode.toDataURL(url, { width: 220, margin: 1 });
           return {
@@ -165,8 +210,9 @@ export default async function StudyFormPage({ params }: PageProps) {
           <div className="grid md:grid-cols-2 gap-4 text-sm">
             <Info label="Product / Study Type" value={study.productName} />
             <Info label="Category" value={meta.categoryLabel || study.category} />
-            <Info label="Facility Type" value={study.location} />
+            <Info label="Facility" value={study.location} />
             <Info label="Target Responses" value={`${study.sampleSize}`} />
+            <Info label="Target Consumer" value={getTargetConsumerSummary(study.targetDemographics)} />
             <Info label="No. of Samples" value={`${meta.numberOfSamples ?? "N/A"}`} />
             <Info
               label="Method"
@@ -179,6 +225,7 @@ export default async function StudyFormPage({ params }: PageProps) {
           </div>
 
           {isMarketStudy ? (
+            isProductIntentMarketStudy ? null : (
             <section className="space-y-3">
               <h2 className="text-lg font-semibold text-[#0f172a]">Survey Questions</h2>
               <ol className="list-decimal pl-5 space-y-2 text-[#64748b]">
@@ -189,6 +236,7 @@ export default async function StudyFormPage({ params }: PageProps) {
                 )}
               </ol>
             </section>
+            )
           ) : (
             <div className="space-y-4">
               <section className="rounded-xl border p-4">
@@ -199,7 +247,7 @@ export default async function StudyFormPage({ params }: PageProps) {
                 </p>
               </section>
 
-              {isMsmeView && (
+              {canViewBlindCodePlan && (
                 <section className="rounded-xl border p-4">
                   <h2 className="text-lg font-semibold text-[#0f172a]">Randomized Blind Code Plan</h2>
                   {randomCodeBook ? (
@@ -207,7 +255,15 @@ export default async function StudyFormPage({ params }: PageProps) {
                       <p className="text-sm text-[#64748b]">
                         Generated at study creation: {totalRandomizedCodes} total 3-digit codes
                         ({randomCodeBook.participantCapacity} panelists x {randomCodeBook.sampleCount} samples).
+                        Each column is the true sample. The number in parentheses is the serving order used in evaluation.
                       </p>
+                      <a
+                        href={`/api/studies/${study.id}/master-list?view=blind-code-plan`}
+                        download
+                        className="app-button-secondary inline-flex w-full items-center justify-center py-2 text-sm sm:w-auto sm:px-4"
+                      >
+                        Download Blind Code Master List (CSV)
+                      </a>
                       <div className="flex flex-wrap gap-2 text-xs">
                         {randomCodeBook.codesBySample.map((bucket) => (
                           <span key={`sample-bucket-${bucket.sample}`} className="rounded-full border border-[#fed7aa] bg-[#fff7ed] px-2.5 py-1 text-[#c2410c]">
@@ -232,8 +288,8 @@ export default async function StudyFormPage({ params }: PageProps) {
                               <tr key={`code-row-${row.panelistNumber}`} className="border-t">
                                 <td className="px-3 py-2 font-medium text-[#0f172a]">{formatPanelistNumber(row.panelistNumber)}</td>
                                 {row.codes.map((code) => (
-                                  <td key={`code-${row.panelistNumber}-${code.sample}`} className="px-3 py-2 text-[#334155]">
-                                    {code.code}
+                                  <td key={`code-${row.panelistNumber}-${code.servingOrder}-${code.sample}`} className="px-3 py-2 text-[#334155]">
+                                    {code.code} <span className="text-[#94a3b8]">({code.servingOrder})</span>
                                   </td>
                                 ))}
                               </tr>
@@ -263,69 +319,63 @@ export default async function StudyFormPage({ params }: PageProps) {
               )}
 
               <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 1 - Overall Acceptability</h2>
+                <h2 className="text-lg font-semibold text-[#0f172a]">Instructions to Panelist</h2>
                 <p className="text-sm text-[#64748b]">
-                  {overallLikingQuestion?.name ?? "How much do you like this sample overall?"}
+                  You will evaluate {meta.numberOfSamples ?? 1} {study.productName} {(meta.numberOfSamples ?? 1) === 1 ? "sample" : "samples"}.
                 </p>
-                <p className="text-xs text-[#64748b]">
-                  9-point hedonic scale: 1 = Dislike Extremely, 5 = Neither Like nor Dislike, 9 = Like Extremely
-                </p>
+                <ul className="list-disc space-y-1 pl-5 text-sm text-[#64748b]">
+                  <li>Taste the samples in the order presented.</li>
+                  <li>Rinse your mouth with water between samples.</li>
+                  <li>There are no right or wrong answers - please rate based on your personal preference.</li>
+                </ul>
               </section>
 
-              <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 2 - Attribute Liking</h2>
-                {attributeLikingQuestions.length === 0 ? (
-                  <p className="text-sm text-[#64748b]">No attribute liking questions configured.</p>
-                ) : (
-                  <ul className="list-disc pl-5 text-sm text-[#64748b] space-y-1">
-                    {attributeLikingQuestions.map((attribute) => (
-                      <li key={attribute.id}>{attribute.name} (9-point scale)</li>
-                    ))}
-                  </ul>
-                )}
-              </section>
-
-              <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 3 - JAR Scale</h2>
-                {jarQuestions.length === 0 ? (
-                  <p className="text-sm text-[#64748b]">No JAR questions configured.</p>
+              <section className="rounded-xl border p-4 space-y-3">
+                <h2 className="text-lg font-semibold text-[#0f172a]">Attribute Evaluation</h2>
+                {evaluationAttributeGroups.length === 0 ? (
+                  <p className="text-sm text-[#64748b]">No attribute questions configured.</p>
                 ) : (
                   <div className="space-y-3">
-                    {jarQuestions.map((attribute) => {
-                      const options = parseJarOptions(attribute.jarOptions);
-                      return (
-                        <div key={attribute.id} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3">
-                          <p className="text-sm font-medium text-[#0f172a]">{attribute.name}</p>
-                          <p className="mt-1 text-xs text-[#64748b]">
-                            1. {options.low} / 2. {options.midLow} / 3. {options.mid} / 4. {options.midHigh} / 5. {options.high}
-                          </p>
-                        </div>
-                      );
-                    })}
+                    {evaluationAttributeGroups.map((group) => (
+                      <div key={group.name} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3">
+                        <p className="text-sm font-semibold text-[#0f172a]">{group.name}</p>
+                        <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-[#64748b]">
+                          {group.jar ? <li>JAR</li> : null}
+                          {group.liking ? <li>Attribute Liking</li> : null}
+                        </ul>
+                      </div>
+                    ))}
                   </div>
                 )}
               </section>
 
               <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 4 - Purchase Intent</h2>
-                <p className="text-sm text-[#64748b]">If available in the market, would you buy this product?</p>
-                <ul className="text-sm text-[#64748b] list-disc pl-5 space-y-1">
-                  <li>Definitely would buy</li>
-                  <li>Probably would buy</li>
-                  <li>Might or might not buy</li>
-                  <li>Probably would not buy</li>
-                  <li>Definitely would not buy</li>
-                </ul>
+                <h2 className="text-lg font-semibold text-[#0f172a]">Overall Liking</h2>
+                <p className="text-sm text-[#64748b]">
+                  {overallLikingQuestion?.name ?? "How much do you like this sample overall?"}
+                </p>
+                <p className="text-xs text-[#64748b]">
+                  Asked after the attribute questions for each sample using the 9-point hedonic scale.
+                </p>
               </section>
 
+              {(meta.numberOfSamples ?? 1) > 1 && (
+                <section className="rounded-xl border p-4 space-y-2">
+                  <h2 className="text-lg font-semibold text-[#0f172a]">Ranking</h2>
+                  <p className="text-sm text-[#64748b]">
+                    After tasting {meta.numberOfSamples} samples, panelists rank them from 1 = Most Preferred to {meta.numberOfSamples} = Least Preferred.
+                  </p>
+                </section>
+              )}
+
               <section className="rounded-xl border p-4 space-y-2">
-                <h2 className="text-lg font-semibold text-[#0f172a]">Section 5 - Open Feedback</h2>
+                <h2 className="text-lg font-semibold text-[#0f172a]">Optional Comments</h2>
                 <ul className="text-sm text-[#64748b] list-disc pl-5 space-y-1">
                   {openEndedQuestions.length > 0 ? (
                     openEndedQuestions.map((attribute) => <li key={attribute.id}>{attribute.name}</li>)
                   ) : (
                     <>
-                      <li>What did you like about this product?</li>
+                      <li>What did you like most about the {study.productName}?</li>
                       <li>What should be improved?</li>
                     </>
                   )}
@@ -341,15 +391,42 @@ export default async function StudyFormPage({ params }: PageProps) {
               {criteria.sampleSetups.map((setup, index) => (
                 <div key={`${setup.description}-${index}`} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm space-y-1">
                   <h3 className="font-medium">Set-up {index + 1}</h3>
-                  <p>
-                    <span className="font-medium">Description:</span> {setup.description}
-                  </p>
-                  <p>
-                    <span className="font-medium">Ingredient:</span> {setup.ingredient || "N/A"}
-                  </p>
-                  <p>
-                    <span className="font-medium">Allergen:</span> {setup.allergen}
-                  </p>
+                  {isProductIntentMarketStudy ? (
+                    <>
+                      {setup.imageDataUrl && (
+                        <Image
+                          src={setup.imageDataUrl}
+                          alt={setup.imageName || `Product intent sample setup ${index + 1}`}
+                          width={640}
+                          height={360}
+                          unoptimized
+                          className="mb-3 h-44 w-full rounded-md border object-cover"
+                        />
+                      )}
+                      <p>
+                        <span className="font-medium">General Description:</span> {setup.description}
+                      </p>
+                      <p>
+                        <span className="font-medium">Price:</span> {setup.price || "N/A"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Question:</span>{" "}
+                        {setup.purchaseIntentQuestion || "Are you willing to buy this product?"}
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        <span className="font-medium">Description:</span> {setup.description}
+                      </p>
+                      <p>
+                        <span className="font-medium">Ingredient:</span> {setup.ingredient || "N/A"}
+                      </p>
+                      <p>
+                        <span className="font-medium">Allergen:</span> {setup.allergen}
+                      </p>
+                    </>
+                  )}
                 </div>
               ))}
             </div>
@@ -405,7 +482,7 @@ export default async function StudyFormPage({ params }: PageProps) {
           <p className="text-sm text-[#64748b]">
             {isMarketStudy
               ? "Use this QR to open the generated survey form."
-              : "Use this QR to open the sensory form for the next available participant."}
+              : "Use this QR to send consumers to registration before sensory participation."}
           </p>
           <Image
             src={qrDataUrl}
@@ -419,10 +496,10 @@ export default async function StudyFormPage({ params }: PageProps) {
 
           <div className="space-y-2">
             <Link
-              href={qrTargetPath}
+              href={linkedFormPath}
               className="app-button-primary inline-flex w-full items-center justify-center py-2"
             >
-              {session?.role === "CONSUMER" ? "START" : "Open Linked Form"}
+              {session?.role === "CONSUMER" ? "START" : "Open Public Registration Link"}
             </Link>
             {session?.role !== "CONSUMER" && (
               <>
@@ -454,7 +531,7 @@ export default async function StudyFormPage({ params }: PageProps) {
             <div className="border-t border-[#e2e8f0] pt-3">
               <h3 className="text-sm font-semibold text-[#0f172a]">Walk-in Guest QR by Session</h3>
               <p className="mt-1 text-xs text-[#64748b]">
-                Use these QR codes for on-site guests when registered participants are below the slot capacity.
+                Use these QR codes for walk-in consumers. They sign in first, or create an account from the login page, then check in for the selected session.
               </p>
               <div className="mt-3 space-y-3">
                 {walkInSlotQrs.map((item) => (
@@ -476,7 +553,7 @@ export default async function StudyFormPage({ params }: PageProps) {
                       href={item.path}
                       className="app-button-secondary mt-2 inline-flex w-full items-center justify-center py-1.5 text-xs"
                     >
-                      Open Walk-in Check-In
+                      Open Login Check-In
                     </Link>
                   </div>
                 ))}
@@ -484,11 +561,11 @@ export default async function StudyFormPage({ params }: PageProps) {
             </div>
           )}
 
-          {!isMarketStudy && !isConsumerView && study.participants.length > 0 && (
+          {!isMarketStudy && !isConsumerView && participants.length > 0 && (
             <div className="border-t border-[#e2e8f0] pt-2">
               <h3 className="mb-2 text-sm font-semibold text-[#0f172a]">Participant Queue</h3>
               <div className="space-y-2 text-xs text-[#64748b]">
-                {study.participants.slice(0, 8).map((participant) => (
+                {participants.slice(0, 8).map((participant) => (
                   <div key={participant.id} className="rounded-md border border-[#e2e8f0] bg-[#f8fafc] p-2">
                     <p>
                       {formatPanelistNumber(participant.panelistNumber)} | {participant.panelist.name}
@@ -499,20 +576,22 @@ export default async function StudyFormPage({ params }: PageProps) {
                       )}{" "}
                       | {participant.status}
                     </p>
-                    <p className="mt-1 text-[11px] text-[#8a725f]">
-                      Codes: {parseSampleCodes(participant.sampleCodes).map((row) => `S${row.sample}:${row.code}`).join(", ") || participant.randomizeCode || "Unassigned"}
-                    </p>
+                    {canViewBlindCodePlan && (
+                      <p className="mt-1 text-[11px] text-[#8a725f]">
+                        Codes: {formatSampleCodeSummary(participant.sampleCodes) || participant.randomizeCode || "Unassigned"}
+                      </p>
+                    )}
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {!isMarketStudy && !isConsumerView && (session?.role === "MSME" || session?.role === "ADMIN") && study.participants.length > 0 && (
+          {!isMarketStudy && !isConsumerView && (session?.role === "MSME" || session?.role === "ADMIN") && participants.length > 0 && (
             <div className="border-t border-[#e2e8f0] pt-3">
               <h3 className="mb-2 text-sm font-semibold text-[#0f172a]">MSME Scheduling Controls</h3>
               <div className="space-y-3">
-                {study.participants.map((participant) => {
+                {participants.map((participant) => {
                   const offered = parseOfferedSessions(participant.offeredSessions);
                   const requested = participant.requestedSessionAt ? new Date(participant.requestedSessionAt) : null;
                   const confirmed = participant.sessionAt ? new Date(participant.sessionAt) : null;
@@ -571,9 +650,98 @@ function toStudyMeta(value: unknown): StudyMeta {
   return value as StudyMeta;
 }
 
+function buildEvaluationAttributeGroups<
+  T extends {
+    name: string;
+    sourceAttributeName: string | null;
+    jarOptions: unknown;
+  },
+>(likingQuestions: T[], jarQuestions: T[]) {
+  const jarByBaseName = new Map<string, T>();
+  jarQuestions.forEach((question) => {
+    jarByBaseName.set(getBaseAttributeName(question).toLowerCase(), question);
+  });
+
+  const handledBaseNames = new Set<string>();
+  const groups: Array<{ name: string; liking: T | null; jar: T | null }> = [];
+
+  likingQuestions.forEach((question) => {
+    const name = getBaseAttributeName(question);
+    const key = name.toLowerCase();
+    groups.push({
+      name,
+      liking: question,
+      jar: jarByBaseName.get(key) ?? null,
+    });
+    handledBaseNames.add(key);
+  });
+
+  jarQuestions.forEach((question) => {
+    const name = getBaseAttributeName(question);
+    const key = name.toLowerCase();
+    if (!handledBaseNames.has(key)) {
+      groups.push({
+        name,
+        liking: null,
+        jar: question,
+      });
+    }
+  });
+
+  return groups;
+}
+
+function getBaseAttributeName(attribute: { name: string; sourceAttributeName: string | null }) {
+  return (attribute.sourceAttributeName?.trim() || attribute.name.replace(/\s*\(JAR\)\s*$/i, "").trim()).trim();
+}
+
+async function loadStudyParticipants(studyId: string, includeBlindCodes: boolean): Promise<StudyParticipantRow[]> {
+  const commonSelect = {
+    id: true,
+    source: true,
+    guestCode: true,
+    panelistNumber: true,
+    offeredSessions: true,
+    requestedSessionAt: true,
+    sessionAt: true,
+    selectionOrder: true,
+    status: true,
+    panelist: { select: { name: true, userId: true } },
+  } as const;
+  const where = {
+    studyId,
+    status: { in: ["SELECTED", "CONFIRMED", "WAITLIST"] as ParticipantStatus[] },
+  };
+  const orderBy = [{ panelistNumber: "asc" as const }, { selectionOrder: "asc" as const }];
+
+  if (includeBlindCodes) {
+    return prisma.studyParticipant.findMany({
+      where,
+      orderBy,
+      select: {
+        ...commonSelect,
+        randomizeCode: true,
+        sampleCodes: true,
+      },
+    }) as unknown as Promise<StudyParticipantRow[]>;
+  }
+
+  const participants = await prisma.studyParticipant.findMany({
+    where,
+    orderBy,
+    select: commonSelect,
+  }) as unknown as Array<Omit<StudyParticipantRow, "randomizeCode" | "sampleCodes">>;
+
+  return participants.map((participant) => ({
+    ...participant,
+    randomizeCode: null,
+    sampleCodes: null,
+  }));
+}
+
 function toCriteria(value: unknown): {
   questions: string[];
-  sampleSetups: Array<{ description: string; ingredient: string; allergen: string }>;
+  sampleSetups: SampleSetupView[];
 } {
   if (!value || typeof value !== "object") {
     return { questions: [], sampleSetups: [] };
@@ -589,21 +757,37 @@ function toCriteria(value: unknown): {
     : [];
 
   const sampleSetups = Array.isArray(record.sampleSetups)
-    ? record.sampleSetups.reduce<Array<{ description: string; ingredient: string; allergen: string }>>(
+    ? record.sampleSetups.reduce<SampleSetupView[]>(
         (accumulator, item) => {
           if (!item || typeof item !== "object") {
             return accumulator;
           }
 
-          const row = item as { description?: unknown; ingredient?: unknown; allergen?: unknown };
-          if (typeof row.description !== "string" || typeof row.allergen !== "string") {
+          const row = item as {
+            description?: unknown;
+            ingredient?: unknown;
+            allergen?: unknown;
+            imageDataUrl?: unknown;
+            imageName?: unknown;
+            price?: unknown;
+            purchaseIntentQuestion?: unknown;
+          };
+          if (typeof row.description !== "string") {
             return accumulator;
           }
 
           accumulator.push({
             description: row.description,
             ingredient: typeof row.ingredient === "string" ? row.ingredient : "",
-            allergen: row.allergen,
+            allergen: typeof row.allergen === "string" ? row.allergen : "",
+            imageDataUrl:
+              typeof row.imageDataUrl === "string" && isSafeProductImageDataUrl(row.imageDataUrl)
+                ? row.imageDataUrl
+                : "",
+            imageName: typeof row.imageName === "string" ? row.imageName : "",
+            price: typeof row.price === "string" ? row.price : "",
+            purchaseIntentQuestion:
+              typeof row.purchaseIntentQuestion === "string" ? row.purchaseIntentQuestion : "",
           });
           return accumulator;
         },
@@ -628,32 +812,105 @@ function humanize(value: string) {
 }
 
 function buildCodePlanRows(codeBook: NonNullable<ReturnType<typeof parseStudyRandomCodeBook>>) {
-  return Array.from({ length: codeBook.participantCapacity }, (_, index) => ({
-    panelistNumber: index + 1,
-    codes: codeBook.codesBySample.map((bucket) => ({
-      sample: bucket.sample,
-      code: bucket.codes[index] ?? "",
-    })),
-  }));
+  return Array.from({ length: codeBook.participantCapacity }, (_, index) => {
+    const panelistNumber = index + 1;
+    return {
+      panelistNumber,
+      codes: sortSampleCodesByTrueSample(assignSampleCodesFromCodeBook(codeBook, panelistNumber) ?? []),
+    };
+  });
 }
 
-function parseJarOptions(value: unknown) {
-  if (!value || typeof value !== "object") {
-    return {
-      low: "Much too low",
-      midLow: "Slightly too low",
-      mid: "Just about right",
-      midHigh: "Slightly too high",
-      high: "Much too high",
-    };
+async function ensureRandomCodeBookForStudy(studyId: string, sampleSize: number, targetDemographics: unknown) {
+  const existingMeta = targetDemographics && typeof targetDemographics === "object"
+    ? (targetDemographics as Record<string, unknown>)
+    : {};
+  const existing = parseStudyRandomCodeBook(existingMeta.randomCodeBook);
+  if (existing) {
+    return existing;
   }
 
-  const options = value as { low?: unknown; midLow?: unknown; mid?: unknown; midHigh?: unknown; high?: unknown };
-  return {
-    low: typeof options.low === "string" ? options.low : "Much too low",
-    midLow: typeof options.midLow === "string" ? options.midLow : "Slightly too low",
-    mid: typeof options.mid === "string" ? options.mid : "Just about right",
-    midHigh: typeof options.midHigh === "string" ? options.midHigh : "Slightly too high",
-    high: typeof options.high === "string" ? options.high : "Much too high",
-  };
+  const generated = createStudyRandomCodeBook(sampleSize, resolveSampleCountFromTargetDemographics(existingMeta));
+  await prisma.study.update({
+    where: { id: studyId },
+    data: {
+      targetDemographics: JSON.parse(
+        JSON.stringify({
+          ...existingMeta,
+          randomCodeBook: generated,
+        })
+      ),
+    },
+  });
+
+  return generated;
+}
+
+function resolveSampleCountFromTargetDemographics(targetDemographics: Record<string, unknown>) {
+  const raw = targetDemographics.numberOfSamples;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 1) {
+    return 1;
+  }
+  return Math.max(1, Math.floor(raw));
+}
+
+function formatSampleCodeSummary(value: unknown) {
+  return parseSampleCodes(value)
+    .map((row) => `Sample ${row.sample}: ${row.code} (${row.servingOrder ?? row.sample})`)
+    .join(", ");
+}
+
+function sortSampleCodesByTrueSample<T extends { sample: number }>(rows: T[]) {
+  return [...rows].sort((left, right) => left.sample - right.sample);
+}
+
+function isSafeProductImageDataUrl(value: string) {
+  return /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(value) && value.length <= 1_400_000;
+}
+
+function getPublicQrBaseUrl() {
+  const configuredBaseUrl =
+    process.env.QR_PUBLIC_BASE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? process.env.NEXTAUTH_URL;
+
+  return normalizePublicQrBaseUrl(configuredBaseUrl) ?? DEFAULT_PUBLIC_QR_BASE_URL;
+}
+
+function normalizePublicQrBaseUrl(value: string | undefined) {
+  if (!value) return null;
+
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || isLocalOrPrivateHost(hostname)) {
+      return null;
+    }
+
+    url.pathname = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function isLocalOrPrivateHost(hostname: string) {
+  if (hostname === "localhost" || hostname === "::1" || hostname.endsWith(".local")) {
+    return true;
+  }
+
+  const ipv4Parts = hostname.split(".").map((part) => Number(part));
+  if (ipv4Parts.length !== 4 || ipv4Parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return false;
+  }
+
+  const [first, second] = ipv4Parts;
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    first === 169 && second === 254 ||
+    first === 172 && second >= 16 && second <= 31 ||
+    first === 192 && second === 168
+  );
 }

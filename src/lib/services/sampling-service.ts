@@ -1,11 +1,12 @@
 import { prisma } from "@/lib/db";
 import { notifyUser } from "@/lib/notifications";
 import { ensureParticipantAssignment, formatPanelistNumber } from "@/lib/participant-assignment";
+import { buildTargetConsumerWhere, doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
 import { Prisma } from "@prisma/client";
 
 interface TargetDemographics {
   ageRange?: [number, number];
-  genders?: ("MALE" | "FEMALE" | "NON_BINARY")[];
+  genders?: ("MALE" | "FEMALE" | "NON_BINARY" | "PREFER_NOT_SAY")[];
   lifestyles?: string[];
   experience?: string;
   location?: string;
@@ -29,7 +30,9 @@ interface PanelistRecord {
   age: number;
   gender: "MALE" | "FEMALE" | "NON_BINARY" | "PREFER_NOT_SAY";
   lifestyle: string[];
+  dietaryPrefs: string[];
   consumptionHabits: { snacks?: string } | null;
+  isActive: boolean;
   participations: Array<{ id: string }>;
 }
 
@@ -64,23 +67,8 @@ export class StratifiedSamplingService {
 
   private async filterEligiblePanelists(target: TargetDemographics): Promise<PanelistRecord[]> {
     const where: Prisma.PanelistWhereInput = {
-      isActive: true,
+      ...buildTargetConsumerWhere(target),
     };
-
-    if (target.ageRange) {
-      where.age = {
-        gte: target.ageRange[0],
-        lte: target.ageRange[1],
-      };
-    }
-
-    if (target.genders?.length) {
-      where.gender = { in: target.genders };
-    }
-
-    if (target.lifestyles?.length) {
-      where.lifestyle = { hasEvery: target.lifestyles };
-    }
 
     const records = await prisma.panelist.findMany({
       where,
@@ -90,7 +78,9 @@ export class StratifiedSamplingService {
         age: true,
         gender: true,
         lifestyle: true,
+        dietaryPrefs: true,
         consumptionHabits: true,
+        isActive: true,
         participations: {
           where: {
             status: { in: ["SELECTED", "CONFIRMED"] },
@@ -101,7 +91,9 @@ export class StratifiedSamplingService {
       },
     });
 
-    return records as unknown as PanelistRecord[];
+    return (records as unknown as PanelistRecord[]).filter((record) =>
+      doesPanelistMatchTargetConsumer(record, target)
+    );
   }
 
   private async applyScreening(

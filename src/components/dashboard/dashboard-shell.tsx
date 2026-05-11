@@ -139,7 +139,7 @@ export function DashboardShell({
           </aside>
 
           <main className="app-shell-main h-full min-h-0 overflow-y-auto">
-            <header className="sticky top-0 z-10 border-b border-[#e2e8f0] bg-white/90 px-4 py-3 backdrop-blur-sm md:px-6 lg:px-8">
+            <header className="sticky top-0 z-10 border-b border-[#e2e8f0] bg-white/90 px-3 py-3 backdrop-blur-sm sm:px-4 md:px-6 lg:px-8">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex w-full items-center gap-2 xl:max-w-md">
                   <label
@@ -163,7 +163,7 @@ export function DashboardShell({
 
                   <form method="get" className="flex min-w-0 flex-1 items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white px-3 py-2.5">
                     {activeView && <input type="hidden" name="view" value={activeView} />}
-                    <Search size={16} className="text-[#64748b]" />
+                    <Search size={16} className="shrink-0 text-[#64748b]" />
                     <input
                       name="q"
                       type="search"
@@ -174,44 +174,44 @@ export function DashboardShell({
                   </form>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-3 py-1 text-xs font-semibold text-[#334155]">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="max-w-full rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-3 py-1 text-xs font-semibold leading-5 text-[#334155]">
                     {statusLabel}
                   </span>
-                  <span className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-[#e2e8f0] bg-white text-[#64748b]">
+                  <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-[#e2e8f0] bg-white text-[#64748b]">
                     <Bell size={14} />
                   </span>
-                  <span className="inline-flex items-center gap-1 rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-3 py-1 text-xs font-medium text-[#64748b]">
-                    <CalendarDays size={12} />
-                    {today}
+                  <span className="inline-flex max-w-full items-center gap-1 rounded-full border border-[#e2e8f0] bg-[#f8fafc] px-3 py-1 text-xs font-medium leading-5 text-[#64748b]">
+                    <CalendarDays size={12} className="shrink-0" />
+                    <span className="min-w-0 truncate">{today}</span>
                   </span>
                 </div>
               </div>
             </header>
 
-            <div className="p-4 md:p-6 lg:p-8">
+            <div className="p-3 sm:p-4 md:p-6 lg:p-8">
               <header className="border-b border-[#e2e8f0] pb-5">
-                <div className="mt-1">
+                <div className="mt-1 min-w-0">
                   <p className="text-xs uppercase tracking-[0.18em] text-[#64748b]">{workspaceLabel}</p>
-                  <h1 className="mt-1 text-3xl font-semibold tracking-tight text-[#0f172a]">{title}</h1>
-                  <p className="mt-1 max-w-2xl text-sm text-[#64748b]">{subtitle}</p>
+                  <h1 className="mt-1 break-words text-2xl font-semibold leading-tight text-[#0f172a] sm:text-3xl">{title}</h1>
+                  <p className="mt-1 max-w-2xl text-sm leading-6 text-[#64748b]">{subtitle}</p>
                 </div>
 
                 {stats.length > 0 && (
                   <section className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                     {stats.map((stat) => (
                       <article key={stat.label} className="rounded-lg border border-[#e2e8f0] bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
-                        <div className="flex items-center gap-3">
+                        <div className="flex min-w-0 items-center gap-3">
                           <span
                             className={cx(
-                              "inline-flex h-10 w-10 items-center justify-center rounded-lg border",
+                              "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border",
                               statToneStyles[stat.tone ?? "slate"]
                             )}
                           >
                             <stat.icon size={18} />
                           </span>
-                          <div>
-                            <p className="text-2xl font-semibold text-[#0f172a]">{stat.value}</p>
+                          <div className="min-w-0">
+                            <p className="break-words text-2xl font-semibold leading-tight text-[#0f172a]">{stat.value}</p>
                             <p className="text-xs uppercase tracking-wide text-[#64748b]">{stat.label}</p>
                           </div>
                         </div>

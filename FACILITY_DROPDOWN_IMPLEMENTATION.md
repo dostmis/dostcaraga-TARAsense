@@ -28,7 +28,7 @@ const [region, setRegion] = useState<Region | "">("");
 - User-friendly error messages displayed
 
 #### UI Changes:
-**Before**: Single text input for "Facility Type"
+**Before**: Single text input for "Facility"
 ```html
 <input value={facilityType} onChange={...} />
 ```
