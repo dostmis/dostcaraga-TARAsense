@@ -2444,15 +2444,27 @@ function parseDateInput(dateInput: string) {
 }
 
 function addDaysToDateInput(dateInput: string, dayOffset: number) {
-  const base = new Date(`${dateInput}T00:00:00`);
+  const parts = dateInput.split('-');
+  if (parts.length !== 3) return dateInput;
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return dateInput;
+  }
+
+  const base = new Date(year, month, day);
   if (Number.isNaN(base.getTime())) {
     return dateInput;
   }
   base.setDate(base.getDate() + dayOffset);
-  const year = base.getFullYear();
-  const month = String(base.getMonth() + 1).padStart(2, "0");
-  const day = String(base.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+
+  const resultYear = base.getFullYear();
+  const resultMonth = String(base.getMonth() + 1).padStart(2, "0");
+  const resultDay = String(base.getDate()).padStart(2, "0");
+  return `${resultYear}-${resultMonth}-${resultDay}`;
 }
 
 function normalizeTestingDateSelection(dateInputs: string[], fallbackDateInput: string, maxDates: number) {
@@ -2547,7 +2559,18 @@ function humanizeEnum(value: string) {
 }
 
 function formatDateLabel(dateInput: string) {
-  const value = new Date(`${dateInput}T00:00:00`);
+  const parts = dateInput.split('-');
+  if (parts.length !== 3) return dateInput;
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return dateInput;
+  }
+
+  const value = new Date(year, month, day);
   if (Number.isNaN(value.getTime())) {
     return dateInput;
   }

@@ -600,15 +600,28 @@ function addDaysToDateInput(dateInput: string | undefined, dayOffset: number) {
   if (!dateInput) {
     return null;
   }
-  const base = new Date(`${dateInput}T00:00:00`);
+
+  const parts = dateInput.split('-');
+  if (parts.length !== 3) return null;
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10) - 1;
+  const day = parseInt(parts[2], 10);
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+
+  const base = new Date(year, month, day);
   if (Number.isNaN(base.getTime())) {
     return null;
   }
   base.setDate(base.getDate() + dayOffset);
-  const year = base.getFullYear();
-  const month = String(base.getMonth() + 1).padStart(2, "0");
-  const day = String(base.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+
+  const resultYear = base.getFullYear();
+  const resultMonth = String(base.getMonth() + 1).padStart(2, "0");
+  const resultDay = String(base.getDate()).padStart(2, "0");
+  return `${resultYear}-${resultMonth}-${resultDay}`;
 }
 
 async function checkFicBookingDates(ficUserId: string, bookingDates: string[]) {
