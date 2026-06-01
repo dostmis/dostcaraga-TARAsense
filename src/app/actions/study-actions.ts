@@ -10,11 +10,22 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
+import { notifyRole } from "@/lib/notifications";
+import { logUserUsage } from "@/lib/user-usage";
 
 const MAX_STUDY_ATTRIBUTES_STRICT = 5;
 const MAX_STUDY_QUESTION_ROWS_STRICT = 13;
 const MAX_STUDY_ATTRIBUTES_IMPORT = 25;
 const MAX_ATTRIBUTE_NAME_LENGTH = 120;
+const ALLOWED_ATTRIBUTE_TYPES = [
+  "appearance",
+  "aroma",
+  "texture",
+  "taste",
+  "mouthfeel",
+  "flavor",
+  "aftertaste",
+];
 type SopMode = "STRICT_NEW_STUDY" | "IMPORT_COMPLETED_STUDY";
 
 class StudyCreationConflictError extends Error {
@@ -72,7 +83,11 @@ const CreateStudySchema = z.object({
   }))
 });
 
-export async function createStudy(data: z.infer<typeof CreateStudySchema>, userId: string) {
+export async function createStudy(
+  data: z.infer<typeof CreateStudySchema>,
+  userId: string,
+  options: { skipBroadcast?: boolean } = {}
+) {
   try {
     // Validate
     const validated = CreateStudySchema.parse(data);
@@ -178,6 +193,34 @@ export async function createStudy(data: z.infer<typeof CreateStudySchema>, userI
     }
 
     revalidatePath("/dashboard");
+
+    if (!options.skipBroadcast) {
+      void notifyRole("CONSUMER", {
+        title: "New study available",
+        message: `${validated.title} is now recruiting participants.`,
+        category: "STUDY",
+        actionUrl: `/studies/${study.id}/form`,
+        metadata: { studyId: study.id, type: "NEW_STUDY" },
+      }).catch((error) => {
+        console.error("[push] notifyRole CONSUMER (new study) failed:", error);
+      });
+    }
+    await logUserUsage({
+      actorUserId: userId,
+      action: "STUDY_CREATED",
+      entityType: "Study",
+      entityId: study.id,
+      summary: `Created study "${validated.title}".`,
+      metadata: {
+        productName: validated.productName,
+        category: validated.category,
+        stage: validated.stage,
+        sampleSize: validated.sampleSize,
+        location: validated.location,
+        studyMode: preparedTargetDemographics.studyMode ?? "SENSORY",
+      },
+    });
+
     return { success: true, studyId: study.id };
   } catch (error) {
     if (error instanceof StudyCreationConflictError) {
@@ -373,7 +416,7 @@ function validateSensoryAttributeSetup(
         return `Attribute type is required for JAR question "${attribute.name}".`;
       }
       const normalizedType = attribute.attributeType.toLowerCase();
-      if (!["taste", "texture", "aftertaste", "mouthfeel"].includes(normalizedType)) {
+      if (!ALLOWED_ATTRIBUTE_TYPES.includes(normalizedType)) {
         return `Invalid attribute type "${attribute.attributeType}" for "${attribute.name}".`;
       }
     }
@@ -490,7 +533,7 @@ function extractSensoryAttributePlan(targetDemographics: Record<string, unknown>
     }
     const normalizedName = row.name.trim();
     const normalizedType = row.dimension.trim().toLowerCase();
-    if (!normalizedName || !["taste", "texture", "aftertaste", "mouthfeel"].includes(normalizedType)) {
+    if (!normalizedName || !ALLOWED_ATTRIBUTE_TYPES.includes(normalizedType)) {
       return accumulator;
     }
 

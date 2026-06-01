@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Beaker, Check, ListOrdered, MessageSquareText, Star } from "lucide-react";
-import { submitResponse } from "@/app/actions/response-actions";
+import { deleteResponseDraft, getResponseDraft, saveResponseDraft, submitResponse } from "@/app/actions/response-actions";
 
 type AttributeType = "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
 type EvaluationPhase = "instructions" | "sample" | "ranking" | "comments";
@@ -49,6 +49,17 @@ interface FinalComments {
   improvements: string;
 }
 
+interface EvaluationDraftPayload {
+  phase: EvaluationPhase;
+  currentSampleIndex: number;
+  currentStep: number;
+  responsesBySample: Record<number, Record<string, unknown>>;
+  sampleRanking: Record<number, number | null>;
+  comments: FinalComments;
+  samplePlanSignature: string;
+  updatedAt: string;
+}
+
 export function SensoryTestInterface({
   studyId,
   participantId,
@@ -60,6 +71,23 @@ export function SensoryTestInterface({
   const normalizedSamplePlan = useMemo(
     () => normalizeSamplePlan(samplePlan, sampleCount),
     [samplePlan, sampleCount]
+  );
+  const samplePlanSignature = useMemo(
+    () =>
+      JSON.stringify({
+        samples: normalizedSamplePlan.map((sample) => ({
+          sampleNumber: sample.sampleNumber,
+          servingOrder: sample.servingOrder,
+          code: sample.code,
+        })),
+        attributes: attributes.map((attribute) => ({
+          id: attribute.id,
+          name: attribute.name,
+          type: attribute.type,
+          sourceAttributeName: attribute.sourceAttributeName ?? null,
+        })),
+      }),
+    [attributes, normalizedSamplePlan]
   );
   const totalSamples = normalizedSamplePlan.length;
   const sampleSteps = useMemo(() => buildSampleSteps(attributes), [attributes]);
@@ -76,6 +104,8 @@ export function SensoryTestInterface({
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const latestDraftRef = useRef<EvaluationDraftPayload | null>(null);
   const router = useRouter();
 
   const currentStepConfig = sampleSteps[currentStep];
@@ -86,6 +116,10 @@ export function SensoryTestInterface({
   const isLastSample = currentSampleIndex === totalSamples - 1;
   const isCooldownActive = cooldownSeconds > 0;
   const requiresRanking = totalSamples > 1;
+  const localDraftKey = useMemo(
+    () => `tarasense-response-draft:${studyId}:${participantId}`,
+    [participantId, studyId]
+  );
 
   useEffect(() => {
     if (cooldownSeconds <= 0) {
@@ -107,6 +141,102 @@ export function SensoryTestInterface({
       window.clearTimeout(timeout);
     };
   }, [cooldownSeconds, totalSamples]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const restoreDraft = async () => {
+      const localDraft = readLocalEvaluationDraft(localDraftKey, samplePlanSignature);
+      const serverResult = await getResponseDraft(studyId, participantId);
+      const serverDraft =
+        serverResult.success && serverResult.draft
+          ? normalizeEvaluationDraft(serverResult.draft, samplePlanSignature)
+          : null;
+      const selectedDraft = chooseNewestDraft(localDraft, serverDraft);
+
+      if (cancelled) {
+        return;
+      }
+
+      if (selectedDraft) {
+        applyEvaluationDraft(selectedDraft, {
+          totalSamples,
+          sampleStepCount: sampleSteps.length,
+          setPhase,
+          setCurrentSampleIndex,
+          setCurrentStep,
+          setResponsesBySample,
+          setSampleRanking,
+          setComments,
+        });
+      }
+      setDraftReady(true);
+    };
+
+    void restoreDraft();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [localDraftKey, participantId, samplePlanSignature, sampleSteps.length, studyId, totalSamples]);
+
+  useEffect(() => {
+    if (!draftReady || isSubmitting) {
+      return;
+    }
+
+    const draft = buildEvaluationDraft({
+      phase,
+      currentSampleIndex,
+      currentStep,
+      responsesBySample,
+      sampleRanking,
+      comments,
+      samplePlanSignature,
+    });
+    latestDraftRef.current = draft;
+    writeLocalEvaluationDraft(localDraftKey, draft);
+
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      void saveResponseDraft(studyId, participantId, draft);
+    }, 900);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [
+    comments,
+    currentSampleIndex,
+    currentStep,
+    draftReady,
+    isSubmitting,
+    localDraftKey,
+    participantId,
+    phase,
+    responsesBySample,
+    samplePlanSignature,
+    sampleRanking,
+    studyId,
+  ]);
+
+  useEffect(() => {
+    const syncDraft = () => {
+      const draft = latestDraftRef.current;
+      if (!draft) {
+        return;
+      }
+      void saveResponseDraft(studyId, participantId, draft);
+    };
+
+    window.addEventListener("online", syncDraft);
+    return () => {
+      window.removeEventListener("online", syncDraft);
+    };
+  }, [participantId, studyId]);
 
   const handleValueChange = (attributeName: string, value: unknown) => {
     setResponsesBySample((previous) => ({
@@ -206,6 +336,8 @@ export function SensoryTestInterface({
 
     if (!result.success) {
       if ((result.error ?? "").toLowerCase().includes("already submitted")) {
+        removeLocalEvaluationDraft(localDraftKey);
+        await deleteResponseDraft(studyId, participantId);
         router.push(`/test/completed?studyId=${studyId}`);
         return;
       }
@@ -213,6 +345,8 @@ export function SensoryTestInterface({
       return;
     }
 
+    removeLocalEvaluationDraft(localDraftKey);
+    await deleteResponseDraft(studyId, participantId);
     router.push(`/test/completed?studyId=${studyId}`);
   };
 
@@ -843,6 +977,159 @@ function validateRanking(sampleRanking: Record<number, number | undefined>, samp
   }
 
   return { valid: true as const, error: "" };
+}
+
+function buildEvaluationDraft(input: {
+  phase: EvaluationPhase;
+  currentSampleIndex: number;
+  currentStep: number;
+  responsesBySample: Record<number, Record<string, unknown>>;
+  sampleRanking: Record<number, number | undefined>;
+  comments: FinalComments;
+  samplePlanSignature: string;
+}): EvaluationDraftPayload {
+  const normalizedRanking: Record<number, number | null> = {};
+  Object.entries(input.sampleRanking).forEach(([sampleNumber, rank]) => {
+    normalizedRanking[Number(sampleNumber)] = typeof rank === "number" ? rank : null;
+  });
+
+  return {
+    phase: input.phase,
+    currentSampleIndex: input.currentSampleIndex,
+    currentStep: input.currentStep,
+    responsesBySample: input.responsesBySample,
+    sampleRanking: normalizedRanking,
+    comments: input.comments,
+    samplePlanSignature: input.samplePlanSignature,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function readLocalEvaluationDraft(key: string, samplePlanSignature: string) {
+  if (typeof window === "undefined") {
+    return null;
+  }
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) {
+      return null;
+    }
+    return normalizeEvaluationDraft(JSON.parse(raw), samplePlanSignature);
+  } catch {
+    return null;
+  }
+}
+
+function writeLocalEvaluationDraft(key: string, draft: EvaluationDraftPayload) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(draft));
+  } catch {
+    // Local drafts are best-effort; the server draft remains the durable copy.
+  }
+}
+
+function removeLocalEvaluationDraft(key: string) {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage cleanup failures.
+  }
+}
+
+function chooseNewestDraft(left: EvaluationDraftPayload | null, right: EvaluationDraftPayload | null) {
+  if (!left) return right;
+  if (!right) return left;
+  return new Date(right.updatedAt).getTime() > new Date(left.updatedAt).getTime() ? right : left;
+}
+
+function normalizeEvaluationDraft(value: unknown, samplePlanSignature: string): EvaluationDraftPayload | null {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const row = value as Partial<EvaluationDraftPayload>;
+  if (
+    row.samplePlanSignature !== samplePlanSignature ||
+    !isEvaluationPhase(row.phase) ||
+    typeof row.currentSampleIndex !== "number" ||
+    typeof row.currentStep !== "number" ||
+    !row.updatedAt ||
+    Number.isNaN(new Date(row.updatedAt).getTime())
+  ) {
+    return null;
+  }
+
+  return {
+    phase: row.phase,
+    currentSampleIndex: Math.max(0, Math.floor(row.currentSampleIndex)),
+    currentStep: Math.max(0, Math.floor(row.currentStep)),
+    responsesBySample: normalizeDraftResponseRows(row.responsesBySample),
+    sampleRanking: normalizeDraftRanking(row.sampleRanking),
+    comments: {
+      likedMost: typeof row.comments?.likedMost === "string" ? row.comments.likedMost : "",
+      improvements: typeof row.comments?.improvements === "string" ? row.comments.improvements : "",
+    },
+    samplePlanSignature,
+    updatedAt: row.updatedAt,
+  };
+}
+
+function applyEvaluationDraft(
+  draft: EvaluationDraftPayload,
+  options: {
+    totalSamples: number;
+    sampleStepCount: number;
+    setPhase: (phase: EvaluationPhase) => void;
+    setCurrentSampleIndex: (index: number) => void;
+    setCurrentStep: (step: number) => void;
+    setResponsesBySample: (responses: Record<number, Record<string, unknown>>) => void;
+    setSampleRanking: (ranking: Record<number, number | undefined>) => void;
+    setComments: (comments: FinalComments) => void;
+  }
+) {
+  options.setPhase(draft.phase);
+  options.setCurrentSampleIndex(Math.min(draft.currentSampleIndex, Math.max(options.totalSamples - 1, 0)));
+  options.setCurrentStep(Math.min(draft.currentStep, Math.max(options.sampleStepCount - 1, 0)));
+  options.setResponsesBySample(draft.responsesBySample);
+  options.setSampleRanking(
+    Object.fromEntries(
+      Object.entries(draft.sampleRanking).map(([sampleNumber, rank]) => [Number(sampleNumber), typeof rank === "number" ? rank : undefined])
+    ) as Record<number, number | undefined>
+  );
+  options.setComments(draft.comments);
+}
+
+function normalizeDraftResponseRows(value: unknown): Record<number, Record<string, unknown>> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const rows: Record<number, Record<string, unknown>> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([sampleIndex, responseRow]) => {
+    const index = Number(sampleIndex);
+    if (!Number.isInteger(index) || index < 0 || !responseRow || typeof responseRow !== "object") {
+      return;
+    }
+    rows[index] = responseRow as Record<string, unknown>;
+  });
+  return rows;
+}
+
+function normalizeDraftRanking(value: unknown): Record<number, number | null> {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  const ranking: Record<number, number | null> = {};
+  Object.entries(value as Record<string, unknown>).forEach(([sampleNumber, rank]) => {
+    const sample = Number(sampleNumber);
+    if (!Number.isInteger(sample) || sample < 1) {
+      return;
+    }
+    ranking[sample] = typeof rank === "number" && Number.isInteger(rank) ? rank : null;
+  });
+  return ranking;
+}
+
+function isEvaluationPhase(value: unknown): value is EvaluationPhase {
+  return value === "instructions" || value === "sample" || value === "ranking" || value === "comments";
 }
 
 function getProgressStep(input: {

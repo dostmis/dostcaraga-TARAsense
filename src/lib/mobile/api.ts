@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { parseRole, type AppRole } from "@/lib/auth/roles";
 import { createMobileToken, verifyMobileToken } from "@/lib/mobile/token";
+import { checkRateLimit, type RateLimitConfig } from "@/lib/rate-limit";
 
 export type MobileUser = {
   id: string;
@@ -113,6 +114,24 @@ export function mobileAuthResponse(user: MobileUser) {
     refreshToken: createMobileToken(user.id, "refresh"),
     tokenType: "Bearer",
   });
+}
+
+export function getClientIp(request: NextRequest) {
+  return request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+}
+
+export function enforceMobileRateLimit(
+  request: NextRequest,
+  scope: string,
+  config: RateLimitConfig,
+  userId?: string,
+) {
+  const key = userId ? `${scope}:user:${userId}` : `${scope}:ip:${getClientIp(request)}`;
+  const result = checkRateLimit(key, config);
+  if (!result.allowed) {
+    return mobileError("Too many requests. Please try again later.", 429, "RATE_LIMITED");
+  }
+  return null;
 }
 
 export function readBearerToken(request: NextRequest) {

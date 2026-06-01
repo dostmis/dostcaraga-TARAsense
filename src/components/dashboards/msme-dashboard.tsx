@@ -49,7 +49,7 @@ interface PeerStudySummary extends StudySummary {
   };
 }
 
-export async function MsmeDashboard({
+export async function MSMEDashboard({
   userId,
   view,
   error,
@@ -62,7 +62,7 @@ export async function MsmeDashboard({
   message?: string;
   q?: string;
 }) {
-  const activeView = parseMsmeView(view);
+  const activeView = parseMSMEView(view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
   let historyStudies: StudySummary[] = [];
   let peerStudies: PeerStudySummary[] = [];
@@ -241,11 +241,12 @@ export async function MsmeDashboard({
         return searchable.includes(normalizedQuery);
       })
     : peerStudies;
+  const studyPipelineGroups = groupStudyPipeline(filteredStudies);
 
   return (
     <DashboardShell
-      workspaceLabel="MSME Workspace"
-      title="MSME Dashboard"
+      workspaceLabel="Innovator Workspace"
+      title="Innovator Dashboard"
       subtitle="Create and manage studies, coordinate with FIC, and monitor response progress in one view."
       searchPlaceholder="Search your studies and response status"
       searchValue={q}
@@ -268,19 +269,19 @@ export async function MsmeDashboard({
           active: activeView === "evaluate",
         },
         {
-          label: "Study History",
+          label: "Study Pipeline",
           href: "/msme/dashboard?view=history",
           icon: ClipboardList,
           badge: `${totalStudies}`,
           active: activeView === "history",
         },
       ]}
-      stats={[
-        { label: "Book to FIC", value: `${ficBookings}`, helper: "Studies using FIC facilities", icon: ClipboardList, tone: "amber" },
-        { label: "Recent / History", value: `${totalStudies}`, helper: "Total studies created", icon: LayoutDashboard, tone: "sky" },
-        { label: "Survey Responses", value: `${totalResponses}`, helper: "Responses collected", icon: ClipboardList, tone: "mint" },
+      stats={activeView === "dashboard" ? [
+        { label: "FIC collaborations", value: `${ficBookings}`, helper: "Studies using FIC facilities", icon: ClipboardList, tone: "amber" },
+        { label: "Studies completed", value: `${totalStudies}`, helper: "Total studies created", icon: LayoutDashboard, tone: "sky" },
+        { label: "Responsies collected", value: `${totalResponses}`, helper: "Responses collected", icon: ClipboardList, tone: "mint" },
         { label: "Active Studies", value: `${activeStudies}`, helper: "Recruiting or ongoing studies", icon: PlusCircle, tone: "slate" },
-      ]}
+      ] : undefined}
       sidebarFooter={
         <form action={logout}>
           <button type="submit" className="app-button-secondary w-full py-2 text-sm">
@@ -390,59 +391,79 @@ export async function MsmeDashboard({
       )}
 
       {activeView === "history" && !dbError && filteredStudies.length > 0 && (
-        <CollapsibleSection id="study-history" title="MSME Study List" countLabel={`${filteredStudies.length}`} defaultOpen={true}>
-          <div className="space-y-4">
-            {filteredStudies.map((study) => {
-              const targetReached = study._count.responses >= study.sampleSize;
-              const hasAnyParticipants = study._count.participants > 0;
-              return (
-                <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
-                  <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                    <div className="space-y-2">
-                      <h2 className="text-xl font-semibold text-[#2e231c]">{study.title}</h2>
-                      <p className="text-[#6f5b4f]">{study.productName}</p>
-                      <div className="flex flex-wrap gap-2 text-xs">
-                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.category}</span>
-                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.stage}</span>
-                        <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.status}</span>
-                        <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
-                          Responses {study._count.responses}/{study.sampleSize}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-2 sm:flex-row">
-                      <Link
-                        href={`/studies/${study.id}/form`}
-                        className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
-                      >
-                        Form + QR
-                      </Link>
-                      <Link
-                        href={`/dashboard/${study.id}`}
-                        className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
-                      >
-                        Result
-                      </Link>
-                      {targetReached ? (
-                        <span className="inline-flex items-center justify-center rounded-lg bg-[#e8f8ed] px-4 py-2 text-sm font-medium text-[#1d7c4a]">
-                          All Participants Completed
-                        </span>
-                      ) : !hasAnyParticipants ? (
-                        <span className="inline-flex items-center justify-center rounded-lg bg-[#fff7e9] px-4 py-2 text-sm font-medium text-[#8a5a00]">
-                          No Participants Assigned Yet
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center justify-center rounded-lg bg-[#edf5ff] px-4 py-2 text-sm font-medium text-[#1e4f8f]">
-                          Awaiting Consumer Responses
-                        </span>
-                      )}
-                    </div>
+        <CollapsibleSection id="study-pipeline" title="Study Pipeline" countLabel={`${filteredStudies.length}`} defaultOpen={true}>
+          <div className="space-y-6">
+            {studyPipelineGroups.map((group) => (
+              <section key={group.key} className="space-y-3">
+                <div className="flex flex-wrap items-end justify-between gap-2 border-b border-[#eadfd6] pb-2">
+                  <div>
+                    <h2 className="text-lg font-semibold text-[#2e231c]">{group.title}</h2>
+                    <p className="text-sm text-[#6f5b4f]">{group.description}</p>
                   </div>
-                  <StudyDeleteControl studyId={study.id} redirectTo="/msme/dashboard?view=history" />
-                </article>
-              );
-            })}
+                  <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
+                    {group.studies.length} {group.studies.length === 1 ? "study" : "studies"}
+                  </span>
+                </div>
+
+                {group.studies.length === 0 && (
+                  <article className="rounded-2xl border border-dashed border-[#e4d7cc] bg-white p-5 text-sm text-[#6f5b4f]">
+                    No {group.title.toLowerCase()} studies.
+                  </article>
+                )}
+
+                {group.studies.map((study) => {
+                  const targetReached = study._count.responses >= study.sampleSize;
+                  const hasAnyParticipants = study._count.participants > 0;
+                  return (
+                    <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+                      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="space-y-2">
+                          <h2 className="text-xl font-semibold text-[#2e231c]">{study.title}</h2>
+                          <p className="text-[#6f5b4f]">{study.productName}</p>
+                          <div className="flex flex-wrap gap-2 text-xs">
+                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.category}</span>
+                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.stage}</span>
+                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.status}</span>
+                            <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
+                              Responses {study._count.responses}/{study.sampleSize}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex flex-col gap-2 sm:flex-row">
+                          <Link
+                            href={`/studies/${study.id}/form`}
+                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
+                          >
+                            Form + QR
+                          </Link>
+                          <Link
+                            href={`/dashboard/${study.id}`}
+                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
+                          >
+                            Result
+                          </Link>
+                          {targetReached ? (
+                            <span className="inline-flex items-center justify-center rounded-lg bg-[#e8f8ed] px-4 py-2 text-sm font-medium text-[#1d7c4a]">
+                              All Participants Completed
+                            </span>
+                          ) : !hasAnyParticipants ? (
+                            <span className="inline-flex items-center justify-center rounded-lg bg-[#fff7e9] px-4 py-2 text-sm font-medium text-[#8a5a00]">
+                              No Participants Assigned Yet
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center justify-center rounded-lg bg-[#edf5ff] px-4 py-2 text-sm font-medium text-[#1e4f8f]">
+                              Awaiting Consumer Responses
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <StudyDeleteControl studyId={study.id} redirectTo="/msme/dashboard?view=history" />
+                    </article>
+                  );
+                })}
+              </section>
+            ))}
           </div>
         </CollapsibleSection>
       )}
@@ -450,7 +471,47 @@ export async function MsmeDashboard({
   );
 }
 
-function parseMsmeView(value?: string) {
+function groupStudyPipeline(studies: StudySummary[]) {
+  const groups = [
+    {
+      key: "scheduled",
+      title: "Scheduled",
+      description: "Set up or recruiting studies with no collected responses yet.",
+      studies: [] as StudySummary[],
+    },
+    {
+      key: "in-progress",
+      title: "In Progress",
+      description: "Studies with active collection, analysis, or partial response progress.",
+      studies: [] as StudySummary[],
+    },
+    {
+      key: "completed",
+      title: "Completed",
+      description: "Studies that reached their target responses or are marked completed/archived.",
+      studies: [] as StudySummary[],
+    },
+  ];
+  const groupByKey = new Map(groups.map((group) => [group.key, group]));
+
+  studies.forEach((study) => {
+    groupByKey.get(getStudyPipelineKey(study))?.studies.push(study);
+  });
+
+  return groups;
+}
+
+function getStudyPipelineKey(study: StudySummary) {
+  if (study.status === "COMPLETED" || study.status === "ARCHIVED" || study._count.responses >= study.sampleSize) {
+    return "completed";
+  }
+  if (study.status === "DRAFT" || (study.status === "RECRUITING" && study._count.responses === 0)) {
+    return "scheduled";
+  }
+  return "in-progress";
+}
+
+function parseMSMEView(value?: string) {
   if (
     value === "profile" ||
     value === "create-study" ||

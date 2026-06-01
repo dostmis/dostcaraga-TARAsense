@@ -1,0 +1,22 @@
+[Unit]
+Description=TARAsense Sensory Testing Platform
+After=network.target postgresql.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=talinoserver
+Group=talinoserver
+WorkingDirectory=/home/talinoserver/Documents/dostcaraga-TARAsense
+ExecStart=/home/talinoserver/Documents/dostcaraga-TARAsense/start-prod.sh
+Restart=always
+RestartSec=5
+Environment=NODE_ENV=production
+Environment=PORT=3000
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

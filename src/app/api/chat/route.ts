@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { getCurrentSession } from "@/lib/auth/session";
 import { buildTarasenseChatSystemPrompt, TARASENSE_CHATBOT_STARTER_TOPICS } from "@/lib/chatbot/system-prompt";
+import { createOpenAICompatibleClient, hasConfiguredAiProvider } from "@/lib/ai/openai-compatible";
 import { checkRateLimit, CHAT_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -86,7 +87,7 @@ async function readJson(request: NextRequest) {
 }
 
 function getChatMode() {
-  return process.env.TARASENSE_CHATBOT_LIVE === "1" && Boolean(process.env.OPENAI_API_KEY) ? "live" : "preview";
+  return process.env.TARASENSE_CHATBOT_LIVE === "1" && hasConfiguredAiProvider() ? "live" : "preview";
 }
 
 function buildPreviewReply(message: string, role: string) {
@@ -112,15 +113,17 @@ function buildPreviewReply(message: string, role: string) {
     return "TARAsense supports registered consumers and guest participants. Screening, QR check-in, and response submission should always preserve participant privacy and only collect data required for the active study.";
   }
 
-  return `The TARAsense assistant interface and API are ready in preview mode for your ${role} context. Live AI responses are disabled until TARASENSE_CHATBOT_LIVE=1 and OPENAI_API_KEY are configured. I can help with study setup, FIC coordination, participant workflows, JAR/penalty analysis, and dashboard interpretation.`;
+  return `The TARAsense assistant interface and API are ready in preview mode for your ${role} context. Live AI responses are disabled until TARASENSE_CHATBOT_LIVE=1 and a server-side AI provider API key are configured. I can help with study setup, FIC coordination, participant workflows, JAR/penalty analysis, and dashboard interpretation.`;
 }
 
 async function generateLiveReply(input: { systemPrompt: string; messages: ChatMessage[] }) {
-  const { OpenAI } = await import("openai");
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const ai = await createOpenAICompatibleClient("chat");
+  if (!ai) {
+    return "Live AI responses are not configured yet.";
+  }
 
-  const completion = await openai.chat.completions.create({
-    model: process.env.OPENAI_CHAT_MODEL ?? "gpt-4o-mini",
+  const completion = await ai.client.chat.completions.create({
+    model: ai.model,
     messages: [
       { role: "system", content: input.systemPrompt },
       ...input.messages.map((message) => ({
@@ -128,8 +131,8 @@ async function generateLiveReply(input: { systemPrompt: string; messages: ChatMe
         content: message.content,
       })),
     ],
-    temperature: 0.2,
-    max_completion_tokens: 500,
+    temperature: 0.1,
+    max_tokens: 1000,
   });
 
   return completion.choices[0]?.message?.content?.trim() || "I could not generate a response. Please try again.";

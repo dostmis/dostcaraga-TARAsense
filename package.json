@@ -11,14 +11,18 @@
     "build:api": "npm --prefix api run build",
     "start": "next start",
     "lint": "eslint",
+    "test": "npm run test:stats",
+    "test:stats": "tsc --target es2020 --module nodenext --moduleResolution nodenext --esModuleInterop --strict --outDir tests/dist src/lib/services/statistics.ts && node --test tests/statistics.test.mjs",
     "db:generate": "prisma generate",
     "db:push": "prisma db push",
     "db:sync": "prisma db push --accept-data-loss && prisma generate",
+    "db:seed:psgc": "tsx prisma/seed-psgc.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
     "@prisma/client": "^6.19.2",
     "date-fns": "^4.1.0",
+    "firebase-admin": "^13.10.0",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.7",
     "lucide-react": "^0.577.0",

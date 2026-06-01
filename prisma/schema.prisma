@@ -8,31 +8,488 @@ datasource db {
 }
 
 model User {
-  id           String   @id @default(cuid())
-  email        String   @unique
-  password     String? // For credentials auth
-  name         String
-  role         UserRole @default(CONSUMER)
-  organization String?
-  assignedRegion String?
-  assignedFacility String?
-  assignmentUpdatedAt DateTime?
+  id                    String                 @id @default(cuid())
+  email                 String                 @unique
+  password              String?
+  name                  String
+  role                  UserRole               @default(CONSUMER)
+  organization          String?
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+  assignedRegion        String?
+  assignedFacility      String?
+  assignmentUpdatedAt   DateTime?
   assignmentUpdatedById String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  // Relations
-  studies          Study[]
-  panelistProfile  Panelist?
-  roleRequests     RoleUpgradeRequest[] @relation("RequestApplicant")
-  reviewedRequests RoleUpgradeRequest[] @relation("RequestReviewer")
-  notifications    Notification[]
-  ficAvailability  FicAvailability[]
-  ficAssignmentHistory FicAssignmentHistory[]
+  deviceTokens          DeviceToken[]
+  ficAssignmentHistory  FicAssignmentHistory[]
+  ficAvailability       FicAvailability[]
+  notifications         Notification[]
+  panelistProfile       Panelist?
+  reviewedRequests      RoleUpgradeRequest[]   @relation("RequestReviewer")
+  roleRequests          RoleUpgradeRequest[]   @relation("RequestApplicant")
+  studies               Study[]
+  usageLogs             UserUsageLog[]
+  profile               UserProfile?
 
   @@index([role])
   @@index([role, organization])
   @@index([role, assignedRegion, assignedFacility])
+}
+
+model DeviceToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  platform  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([updatedAt])
+}
+
+model RoleUpgradeRequest {
+  id         String        @id @default(cuid())
+  userId     String
+  targetRole UserRole
+  status     RequestStatus @default(PENDING)
+  reason     String?
+  adminId    String?
+  reviewedAt DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  reviewedBy User?         @relation("RequestReviewer", fields: [adminId], references: [id])
+  user       User          @relation("RequestApplicant", fields: [userId], references: [id])
+
+  @@index([status, targetRole])
+  @@index([userId, status])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String               @id @default(cuid())
+  userId    String
+  title     String
+  message   String
+  level     NotificationLevel    @default(INFO)
+  category  NotificationCategory @default(SYSTEM)
+  actionUrl String?
+  metadata  Json?
+  isRead    Boolean              @default(false)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([userId, isRead])
+  @@index([userId, isRead, createdAt])
+}
+
+model UserUsageLog {
+  id          String    @id @default(cuid())
+  actorUserId String?
+  actorName   String?
+  actorEmail  String?
+  actorRole   UserRole?
+  action      String
+  entityType  String?
+  entityId    String?
+  summary     String
+  metadata    Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  actor       User?     @relation(fields: [actorUserId], references: [id])
+
+  @@index([actorUserId, createdAt])
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model Panelist {
+  id                 String              @id @default(cuid())
+  userId             String?             @unique
+  name               String
+  email              String              @unique
+  phone              String?
+  age                Int
+  gender             Gender
+  location           String
+  occupation         String?
+  lifestyle          String[]
+  dietaryPrefs       DietaryPref[]
+  consumptionHabits  Json
+  isActive           Boolean             @default(true)
+  joinedAt           DateTime            @default(now())
+  lastActive         DateTime            @updatedAt
+  isGuest            Boolean             @default(false)
+  organization       String?
+  foodConsumption    String[]
+  healthFitness      String[]
+  workDailyLiving    String[]
+  user               User?               @relation(fields: [userId], references: [id])
+  screeningResponses ScreeningResponse[]
+  participations     StudyParticipant[]
+
+  @@index([age, gender])
+  @@index([isActive])
+  @@index([isGuest])
+}
+
+model Study {
+  id                 String                 @id @default(cuid())
+  creatorId          String
+  title              String
+  productName        String
+  category           ProductCategory
+  stage              StudyStage
+  description        String?
+  targetDemographics Json
+  screeningCriteria  Json
+  stratificationVar  String?
+  sampleSize         Int
+  location           String
+  status             StudyStatus            @default(DRAFT)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  studyDesign        StudyDesign            @default(WITHIN_SUBJECT)
+  screeningResponses ScreeningResponse[]
+  sensoryAttributes  SensoryAttribute[]
+  responses          SensoryResponse[]
+  responseDrafts     SensoryResponseDraft[]
+  creator            User                   @relation(fields: [creatorId], references: [id])
+  analysis           StudyAnalysis?
+  participants       StudyParticipant[]
+  attributes         CoreAttribute[]
+  derivedMetrics     DerivedMetric[]
+  questionResponses  QuestionResponse[]
+  sensoryQuestions   SensoryQuestion[]
+  locationTarget     StudyLocationTarget?
+
+  @@index([status, creatorId])
+  @@index([creatorId, createdAt])
+  @@index([status, createdAt])
+  @@index([location, status])
+}
+
+model ScreeningResponse {
+  id          String   @id @default(cuid())
+  panelistId  String
+  studyId     String
+  responses   Json
+  isQualified Boolean
+  score       Int?
+  createdAt   DateTime @default(now())
+  panelist    Panelist @relation(fields: [panelistId], references: [id])
+  study       Study    @relation(fields: [studyId], references: [id])
+
+  @@unique([panelistId, studyId])
+}
+
+model StudyParticipant {
+  id                 String                @id @default(cuid())
+  studyId            String
+  panelistId         String
+  status             ParticipantStatus     @default(SELECTED)
+  stratum            String?
+  selectionOrder     Int
+  panelistNumber     Int?
+  randomizeCode      String?
+  sampleCodes        Json?
+  offeredSessions    Json?
+  applicationAt      DateTime?
+  requestedSessionAt DateTime?
+  consentStatus      ConsentStatus         @default(PENDING)
+  invitationSent     DateTime?
+  confirmedAt        DateTime?
+  consentedAt        DateTime?
+  declinedAt         DateTime?
+  sessionAt          DateTime?
+  reminderSentAt     DateTime?
+  completedAt        DateTime?
+  noShow             Boolean               @default(false)
+  guestCode          String?
+  source             ParticipationSource   @default(REGISTERED_CONSUMER)
+  responses          SensoryResponse[]
+  responseDraft      SensoryResponseDraft?
+  panelist           Panelist              @relation(fields: [panelistId], references: [id])
+  study              Study                 @relation(fields: [studyId], references: [id])
+
+  @@unique([studyId, panelistId])
+  @@unique([studyId, guestCode])
+  @@unique([studyId, panelistNumber])
+  @@index([studyId, panelistNumber])
+  @@index([studyId, randomizeCode])
+  @@index([studyId, status])
+  @@index([studyId, source])
+  @@index([studyId, selectionOrder])
+  @@index([studyId, requestedSessionAt])
+  @@index([studyId, sessionAt])
+  @@index([studyId, status, requestedSessionAt])
+  @@index([studyId, status, sessionAt])
+  @@index([panelistId, status])
+}
+
+model SensoryAttribute {
+  id                  String   @id @default(cuid())
+  studyId             String
+  name                String
+  type                AttrType
+  order               Int
+  jarOptions          Json?
+  attributeType       String?
+  isCustom            Boolean  @default(false)
+  sourceAttributeName String?
+  study               Study    @relation(fields: [studyId], references: [id])
+}
+
+model SensoryResponse {
+  id            String           @id @default(cuid())
+  studyId       String
+  participantId String
+  data          Json
+  submittedAt   DateTime         @default(now())
+  participant   StudyParticipant @relation(fields: [participantId], references: [id])
+  study         Study            @relation(fields: [studyId], references: [id])
+
+  @@unique([studyId, participantId])
+  @@index([studyId, submittedAt])
+  @@index([participantId, submittedAt])
+}
+
+model SensoryResponseDraft {
+  id            String           @id @default(cuid())
+  studyId       String
+  participantId String           @unique
+  data          Json
+  version       Int              @default(1)
+  expiresAt     DateTime
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+  participant   StudyParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  study         Study            @relation(fields: [studyId], references: [id], onDelete: Cascade)
+
+  @@index([studyId])
+  @@index([participantId])
+  @@index([updatedAt])
+}
+
+model StudyAnalysis {
+  id               String        @id @default(cuid())
+  studyId          String        @unique
+  overallLiking    Json
+  attributeStats   Json
+  penaltyAnalysis  Json
+  aiInterpretation String?
+  aiRecommendation String?
+  decisionFlag     DecisionType?
+  generatedAt      DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  study            Study         @relation(fields: [studyId], references: [id])
+}
+
+model CoreAttribute {
+  id            String            @id @default(cuid()) @map("attribute_id")
+  studyId       String            @map("test_id")
+  attributeName String            @map("attribute_name")
+  category      String            @default("SENSORY")
+  attributeType String            @map("attribute_type")
+  isCustom      Boolean           @default(false) @map("is_custom")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  study         Study             @relation(fields: [studyId], references: [id], onDelete: Cascade)
+  metrics       DerivedMetric[]
+  questions     SensoryQuestion[]
+
+  @@index([studyId])
+  @@index([studyId, attributeType])
+  @@map("attributes")
+}
+
+model SensoryQuestion {
+  id           String              @id @default(cuid()) @map("question_id")
+  studyId      String              @map("test_id")
+  attributeId  String?             @map("attribute_id")
+  questionText String              @map("question_text")
+  questionType SensoryQuestionType @map("question_type")
+  scaleType    SensoryScaleType    @map("scale_type")
+  order        Int                 @default(0)
+  createdAt    DateTime            @default(now()) @map("created_at")
+  updatedAt    DateTime            @updatedAt @map("updated_at")
+  responses    QuestionResponse[]
+  attribute    CoreAttribute?      @relation(fields: [attributeId], references: [id])
+  study        Study               @relation(fields: [studyId], references: [id], onDelete: Cascade)
+
+  @@index([studyId, order])
+  @@map("sensory_questions")
+}
+
+model QuestionResponse {
+  id           String          @id @default(cuid()) @map("response_id")
+  studyId      String          @map("test_id")
+  respondentId String          @map("respondent_id")
+  questionId   String          @map("question_id")
+  rawValue     Float           @map("raw_value")
+  createdAt    DateTime        @default(now()) @map("created_at")
+  updatedAt    DateTime        @updatedAt @map("updated_at")
+  question     SensoryQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  study        Study           @relation(fields: [studyId], references: [id], onDelete: Cascade)
+
+  @@index([studyId, respondentId])
+  @@index([questionId])
+  @@map("responses")
+}
+
+model DerivedMetric {
+  id          String            @id @default(cuid()) @map("metric_id")
+  studyId     String            @map("test_id")
+  attributeId String?           @map("attribute_id")
+  metricType  DerivedMetricType @map("metric_type")
+  value       Json
+  createdAt   DateTime          @default(now()) @map("created_at")
+  updatedAt   DateTime          @updatedAt @map("updated_at")
+  attribute   CoreAttribute?    @relation(fields: [attributeId], references: [id])
+  study       Study             @relation(fields: [studyId], references: [id], onDelete: Cascade)
+
+  @@index([studyId, metricType])
+  @@map("derived_metrics")
+}
+
+model FicAvailability {
+  id          String    @id @default(cuid())
+  ficUserId   String
+  date        String
+  isAvailable Boolean   @default(false)
+  isLocked    Boolean   @default(false)
+  lockedById  String?
+  lockedAt    DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  ficUser     User      @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+
+  @@unique([ficUserId, date])
+  @@index([ficUserId, date])
+  @@index([date, isAvailable, isLocked])
+  @@index([ficUserId, isAvailable, isLocked, date])
+}
+
+model PsgcRegion {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  shortName    String?
+  provinces    PsgcProvince[]
+  studyTargets StudyLocationTarget[]
+  userProfiles UserProfile[]
+
+  @@index([name])
+  @@map("psgc_regions")
+}
+
+model PsgcProvince {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  regionId     String
+  cities       PsgcCity[]
+  region       PsgcRegion            @relation(fields: [regionId], references: [id], onDelete: Cascade)
+  studyTargets StudyLocationTarget[]
+  userProfiles UserProfile[]
+
+  @@index([regionId, name])
+  @@map("psgc_provinces")
+}
+
+model PsgcCity {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  isCity       Boolean               @default(false)
+  provinceId   String
+  barangays    PsgcBarangay[]
+  province     PsgcProvince          @relation(fields: [provinceId], references: [id], onDelete: Cascade)
+  studyTargets StudyLocationTarget[]
+  userProfiles UserProfile[]
+
+  @@index([provinceId, name])
+  @@map("psgc_cities")
+}
+
+model PsgcBarangay {
+  id           String                @id @default(cuid())
+  code         String                @unique
+  name         String
+  cityId       String
+  city         PsgcCity              @relation(fields: [cityId], references: [id], onDelete: Cascade)
+  studyTargets StudyLocationTarget[]
+  userProfiles UserProfile[]
+
+  @@index([cityId, name])
+  @@map("psgc_barangays")
+}
+
+model UserProfile {
+  id             String        @id @default(cuid())
+  userId         String        @unique
+  regionId       String?
+  provinceId     String?
+  cityId         String?
+  barangayId     String?
+  addressDetails String?
+  completedAt    DateTime?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  barangay       PsgcBarangay? @relation(fields: [barangayId], references: [id])
+  city           PsgcCity?     @relation(fields: [cityId], references: [id])
+  province       PsgcProvince? @relation(fields: [provinceId], references: [id])
+  region         PsgcRegion?   @relation(fields: [regionId], references: [id])
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([regionId])
+  @@index([provinceId])
+  @@index([cityId])
+  @@index([barangayId])
+  @@map("user_profiles")
+}
+
+model StudyLocationTarget {
+  id                     String           @id @default(cuid())
+  studyId                String           @unique
+  scope                  StudyTargetScope @default(CITY)
+  regionId               String?
+  provinceId             String?
+  cityId                 String?
+  barangayId             String?
+  venueName              String?
+  addressDetails         String?
+  inheritedFromFicUserId String?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  barangay               PsgcBarangay?    @relation(fields: [barangayId], references: [id])
+  city                   PsgcCity?        @relation(fields: [cityId], references: [id])
+  province               PsgcProvince?    @relation(fields: [provinceId], references: [id])
+  region                 PsgcRegion?      @relation(fields: [regionId], references: [id])
+  study                  Study            @relation(fields: [studyId], references: [id], onDelete: Cascade)
+
+  @@index([scope, regionId, provinceId, cityId, barangayId])
+  @@map("study_location_targets")
+}
+
+model FicAssignmentHistory {
+  id               String   @id @default(cuid())
+  ficUserId        String
+  changedById      String?
+  previousRegion   String?
+  previousFacility String?
+  assignedRegion   String
+  assignedFacility String
+  createdAt        DateTime @default(now())
+  ficUser          User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
+
+  @@index([ficUserId, createdAt])
+  @@index([changedById, createdAt])
 }
 
 enum UserRole {
@@ -44,49 +501,10 @@ enum UserRole {
   FIC_MANAGER
 }
 
-model RoleUpgradeRequest {
-  id         String        @id @default(cuid())
-  userId     String
-  user       User          @relation("RequestApplicant", fields: [userId], references: [id])
-  targetRole UserRole
-  status     RequestStatus @default(PENDING)
-  reason     String?
-
-  adminId    String?
-  reviewedBy User?     @relation("RequestReviewer", fields: [adminId], references: [id])
-  reviewedAt DateTime?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status, targetRole])
-  @@index([userId, status])
-  @@index([createdAt])
-}
-
 enum RequestStatus {
   PENDING
   APPROVED
   REJECTED
-}
-
-model Notification {
-  id        String               @id @default(cuid())
-  userId    String
-  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
-  title     String
-  message   String
-  level     NotificationLevel    @default(INFO)
-  category  NotificationCategory @default(SYSTEM)
-  actionUrl String?
-  metadata  Json?
-  isRead    Boolean              @default(false)
-  createdAt DateTime             @default(now())
-  updatedAt DateTime             @updatedAt
-
-  @@index([userId, createdAt])
-  @@index([userId, isRead])
-  @@index([userId, isRead, createdAt])
 }
 
 enum NotificationLevel {
@@ -104,43 +522,6 @@ enum NotificationCategory {
   SYSTEM
 }
 
-model Panelist {
-  id     String  @id @default(cuid())
-  userId String? @unique // Optional link to user account
-  user   User?   @relation(fields: [userId], references: [id])
-
-  // Demographics for stratification
-  name       String
-  email      String   @unique
-  phone      String?
-  age        Int
-  gender     Gender
-  location   String // City/Region
-  organization String?
-  occupation String // Student, Office worker, etc.
-  lifestyle  String[] // Athlete, Fitness enthusiast, etc.
-
-  // Dietary & Consumption
-  dietaryPrefs      DietaryPref[]
-  consumptionHabits Json // {snacks: "daily", coffee: "weekly"}
-
-  // Screening History
-  screeningResponses ScreeningResponse[]
-
-  // Study Participation
-  participations StudyParticipant[]
-
-  // Metadata
-  isActive   Boolean  @default(true)
-  isGuest    Boolean  @default(false)
-  joinedAt   DateTime @default(now())
-  lastActive DateTime @updatedAt
-
-  @@index([age, gender])
-  @@index([isActive])
-  @@index([isGuest])
-}
-
 enum Gender {
   MALE
   FEMALE
@@ -156,48 +537,12 @@ enum DietaryPref {
   NUT_FREE
   HALAL
   KOSHER
-}
-
-model Study {
-  id        String @id @default(cuid())
-  creatorId String
-  creator   User   @relation(fields: [creatorId], references: [id])
-
-  // Basic Info
-  title       String
-  productName String
-  category    ProductCategory
-  stage       StudyStage
-  description String?
-
-  // Targeting & Sampling
-  targetDemographics Json // {ageRange: [18,40], lifestyles: ["Student"], experience: "Regular"}
-  screeningCriteria  Json // Array of questions/conditions
-  stratificationVar  String? // "gender", "age_group", etc.
-  sampleSize         Int
-  location           String // "FIC Lab A", "Online", etc.
-
-  // Status
-  status StudyStatus @default(DRAFT)
-
-  // Relations
-  screeningResponses ScreeningResponse[]
-  participants       StudyParticipant[]
-  sensoryAttributes  SensoryAttribute[]
-  responses          SensoryResponse[]
-  attributes         CoreAttribute[]
-  sensoryQuestions   SensoryQuestion[]
-  questionResponses  QuestionResponse[]
-  derivedMetrics     DerivedMetric[]
-  analysis           StudyAnalysis?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([status, creatorId])
-  @@index([creatorId, createdAt])
-  @@index([status, createdAt])
-  @@index([location, status])
+  NO_SPECIFIC_DIET
+  PLANT_BASED
+  FLEXITARIAN
+  KETO
+  LOW_SUGAR
+  HALAL_CONSCIOUS
 }
 
 enum ProductCategory {
@@ -224,66 +569,9 @@ enum StudyStatus {
   ARCHIVED
 }
 
-model ScreeningResponse {
-  id         String   @id @default(cuid())
-  panelistId String
-  panelist   Panelist @relation(fields: [panelistId], references: [id])
-  studyId    String
-  study      Study    @relation(fields: [studyId], references: [id])
-
-  responses   Json // {q1: "daily", q2: "no_allergies", age: 25}
-  isQualified Boolean
-  score       Int? // Screening score if applicable
-
-  createdAt DateTime @default(now())
-
-  @@unique([panelistId, studyId])
-}
-
-model StudyParticipant {
-  id         String            @id @default(cuid())
-  studyId    String
-  study      Study             @relation(fields: [studyId], references: [id])
-  panelistId String
-  panelist   Panelist          @relation(fields: [panelistId], references: [id])
-  responses  SensoryResponse[]
-
-  source         ParticipationSource @default(REGISTERED_CONSUMER)
-  guestCode      String?
-  status         ParticipantStatus @default(SELECTED)
-  stratum        String? // "male", "female", or "18-25", etc.
-  selectionOrder Int // For waitlist ordering
-  panelistNumber Int?
-  randomizeCode  String?
-  sampleCodes    Json?
-  offeredSessions Json?
-  applicationAt  DateTime?
-  requestedSessionAt DateTime?
-  consentStatus  ConsentStatus @default(PENDING)
-
-  // Participation tracking
-  invitationSent DateTime?
-  confirmedAt    DateTime?
-  consentedAt    DateTime?
-  declinedAt     DateTime?
-  sessionAt      DateTime?
-  reminderSentAt DateTime?
-  completedAt    DateTime?
-  noShow         Boolean   @default(false)
-
-  @@unique([studyId, panelistId])
-  @@unique([studyId, guestCode])
-  @@unique([studyId, panelistNumber])
-  @@index([studyId, panelistNumber])
-  @@index([studyId, randomizeCode])
-  @@index([studyId, status])
-  @@index([studyId, source])
-  @@index([studyId, selectionOrder])
-  @@index([studyId, requestedSessionAt])
-  @@index([studyId, sessionAt])
-  @@index([studyId, status, requestedSessionAt])
-  @@index([studyId, status, sessionAt])
-  @@index([panelistId, status])
+enum StudyDesign {
+  MONADIC
+  WITHIN_SUBJECT
 }
 
 enum ParticipationSource {
@@ -292,34 +580,18 @@ enum ParticipationSource {
 }
 
 enum ParticipantStatus {
-  SELECTED // In the main sample
-  WAITLIST // In waitlist
-  CONFIRMED // Confirmed participation
-  COMPLETED // Finished test
-  CANCELLED // Dropped out
-  DECLINED // Refused invitation
+  SELECTED
+  WAITLIST
+  CONFIRMED
+  COMPLETED
+  CANCELLED
+  DECLINED
 }
 
 enum ConsentStatus {
   PENDING
   AGREED
   DECLINED
-}
-
-model SensoryAttribute {
-  id      String @id @default(cuid())
-  studyId String
-  study   Study  @relation(fields: [studyId], references: [id])
-
-  name                String // "Sweetness", "Texture", etc.
-  type                AttrType // LIKING or JAR
-  order               Int // Display order
-  attributeType       String? // taste, texture, aftertaste, mouthfeel
-  sourceAttributeName String? // base attribute label for grouped reporting
-  isCustom            Boolean @default(false)
-
-  // For JAR attributes
-  jarOptions Json? // {low: "Too Low", mid: "Just Right", high: "Too High"}
 }
 
 enum AttrType {
@@ -329,66 +601,11 @@ enum AttrType {
   OPEN_ENDED
 }
 
-model SensoryResponse {
-  id            String           @id @default(cuid())
-  studyId       String
-  study         Study            @relation(fields: [studyId], references: [id])
-  participantId String
-  participant   StudyParticipant @relation(fields: [participantId], references: [id])
-
-  // Responses stored as JSON
-  // {overallLiking: 7, sweetness: {type: "JAR", value: "just_right"}, texture: 8, comment: "..."}
-  data Json
-
-  submittedAt DateTime @default(now())
-
-  @@unique([studyId, participantId])
-  @@index([studyId, submittedAt])
-  @@index([participantId, submittedAt])
-}
-
-model StudyAnalysis {
-  id      String @id @default(cuid())
-  studyId String @unique
-  study   Study  @relation(fields: [studyId], references: [id])
-
-  // Computed Statistics
-  overallLiking   Json // {mean: 7.2, stdDev: 1.4, n: 30}
-  attributeStats  Json // [{name: "Sweetness", mean: 6.8, jarDist: {...}}]
-  penaltyAnalysis Json // [{attribute: "Sweetness", tooHighPenalty: 1.3, ...}]
-
-  // AI Generated
-  aiInterpretation String?       @db.Text
-  aiRecommendation String?       @db.Text
-  decisionFlag     DecisionType?
-
-  generatedAt DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-}
-
 enum DecisionType {
   NEEDS_IMPROVEMENT
   CONTINUE_REFINEMENT
   READY_FOR_READINESS
   READY_FOR_COMMERCIALIZATION
-}
-
-model CoreAttribute {
-  id            String   @id @default(cuid()) @map("attribute_id")
-  studyId       String   @map("test_id")
-  study         Study    @relation(fields: [studyId], references: [id], onDelete: Cascade)
-  attributeName String   @map("attribute_name")
-  category      String   @default("SENSORY")
-  attributeType String   @map("attribute_type")
-  isCustom      Boolean  @default(false) @map("is_custom")
-  questions     SensoryQuestion[]
-  metrics       DerivedMetric[]
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
-
-  @@index([studyId])
-  @@index([studyId, attributeType])
-  @@map("attributes")
 }
 
 enum SensoryQuestionType {
@@ -403,97 +620,16 @@ enum SensoryScaleType {
   TEXT
 }
 
-model SensoryQuestion {
-  id           String              @id @default(cuid()) @map("question_id")
-  studyId      String              @map("test_id")
-  study        Study               @relation(fields: [studyId], references: [id], onDelete: Cascade)
-  attributeId  String?             @map("attribute_id")
-  attribute    CoreAttribute?      @relation(fields: [attributeId], references: [id], onDelete: SetNull)
-  questionText String              @map("question_text")
-  questionType SensoryQuestionType @map("question_type")
-  scaleType    SensoryScaleType    @map("scale_type")
-  order        Int                 @default(0)
-  responses    QuestionResponse[]
-  createdAt    DateTime            @default(now()) @map("created_at")
-  updatedAt    DateTime            @updatedAt @map("updated_at")
-
-  @@index([studyId, order])
-  @@map("sensory_questions")
-}
-
-model QuestionResponse {
-  id           String          @id @default(cuid()) @map("response_id")
-  studyId      String          @map("test_id")
-  study        Study           @relation(fields: [studyId], references: [id], onDelete: Cascade)
-  respondentId String          @map("respondent_id")
-  questionId   String          @map("question_id")
-  question     SensoryQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  rawValue     Float           @map("raw_value")
-  createdAt    DateTime        @default(now()) @map("created_at")
-  updatedAt    DateTime        @updatedAt @map("updated_at")
-
-  @@index([studyId, respondentId])
-  @@index([questionId])
-  @@map("responses")
-}
-
 enum DerivedMetricType {
   MEAN_LIKING
   JAR_FREQ
   PENALTY
 }
 
-model DerivedMetric {
-  id          String            @id @default(cuid()) @map("metric_id")
-  studyId     String            @map("test_id")
-  study       Study             @relation(fields: [studyId], references: [id], onDelete: Cascade)
-  attributeId String?           @map("attribute_id")
-  attribute   CoreAttribute?    @relation(fields: [attributeId], references: [id], onDelete: SetNull)
-  metricType  DerivedMetricType @map("metric_type")
-  value       Json
-  createdAt   DateTime          @default(now()) @map("created_at")
-  updatedAt   DateTime          @updatedAt @map("updated_at")
-
-  @@index([studyId, metricType])
-  @@map("derived_metrics")
-}
-
-model FicAvailability {
-  id          String   @id @default(cuid())
-  ficUserId   String
-  ficUser     User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
-  
-  // Date in YYYY-MM-DD format for easy querying and indexing
-  date        String   // e.g., "2025-03-15"
-  
-  // Availability status - FIC sets this manually
-  isAvailable Boolean  @default(false)
-  
-  // Booking lock - when a study books this date, it becomes locked
-  isLocked    Boolean  @default(false)
-  lockedById  String?  // Study ID that locked this date
-  lockedAt    DateTime?
-  
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
-  @@unique([ficUserId, date])
-  @@index([ficUserId, date])
-  @@index([date, isAvailable, isLocked])
-  @@index([ficUserId, isAvailable, isLocked, date])
-}
-
-model FicAssignmentHistory {
-  id               String   @id @default(cuid())
-  ficUserId        String
-  ficUser          User     @relation(fields: [ficUserId], references: [id], onDelete: Cascade)
-  changedById      String?
-  previousRegion   String?
-  previousFacility String?
-  assignedRegion   String
-  assignedFacility String
-  createdAt        DateTime @default(now())
-
-  @@index([ficUserId, createdAt])
-  @@index([changedById, createdAt])
+enum StudyTargetScope {
+  ALL
+  REGION
+  PROVINCE
+  CITY
+  BARANGAY
 }

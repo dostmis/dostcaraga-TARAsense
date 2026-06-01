@@ -31,24 +31,12 @@ export async function GET(request: Request, context: RouteContext) {
     }
 
     if (session.role === "MSME") {
-      const [msmeUser, ficUser] = await Promise.all([
-        prisma.user.findUnique({
-          where: { id: session.userId },
-          select: { assignedRegion: true, assignedFacility: true },
-        }),
-        prisma.user.findUnique({
-          where: { id: ficUserId, role: "FIC" },
-          select: { assignedRegion: true, assignedFacility: true },
-        }),
-      ]);
+      const ficUser = await prisma.user.findUnique({
+        where: { id: ficUserId, role: "FIC" },
+        select: { id: true },
+      });
 
-      if (
-        !ficUser ||
-        !msmeUser?.assignedRegion ||
-        !msmeUser?.assignedFacility ||
-        ficUser.assignedRegion !== msmeUser.assignedRegion ||
-        ficUser.assignedFacility !== msmeUser.assignedFacility
-      ) {
+      if (!ficUser) {
         return NextResponse.json({ error: "Forbidden" }, { status: 403 });
       }
     }

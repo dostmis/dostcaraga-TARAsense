@@ -19,6 +19,8 @@ import {
 } from "@/lib/study-schedule";
 import { lockStudyRow, runSerializableTransaction } from "@/lib/db-transaction";
 import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
+import { logUserUsage } from "@/lib/user-usage";
+import { getUserLocation, isStudyVisibleToUser } from "@/lib/locations/study-visibility";
 
 export async function participateInStudy(formData: FormData) {
   const session = await getCurrentSession();
@@ -44,6 +46,15 @@ export async function participateInStudy(formData: FormData) {
       creator: { select: { role: true } },
       targetDemographics: true,
       sensoryAttributes: { select: { id: true }, take: 1 },
+      locationTarget: {
+        select: {
+          scope: true,
+          regionId: true,
+          provinceId: true,
+          cityId: true,
+          barangayId: true,
+        },
+      },
     },
   });
 
@@ -61,6 +72,29 @@ export async function participateInStudy(formData: FormData) {
   }
   if (study.sensoryAttributes.length === 0) {
     redirect(withFeedback(defaultDashboardPath, "error", "Study has no questionnaire yet"));
+  }
+
+  // Geographic gate: enforced server-side regardless of frontend filtering.
+  if (session.role === "CONSUMER") {
+    const userLocation = await getUserLocation(session.userId);
+    if (!isStudyVisibleToUser(study.locationTarget, userLocation)) {
+      if (!userLocation) {
+        redirect(
+          withFeedback(
+            "/profile",
+            "error",
+            "Complete your profile location to participate in studies near you.",
+          ),
+        );
+      }
+      redirect(
+        withFeedback(
+          defaultDashboardPath,
+          "error",
+          "This study is restricted to participants in a different area.",
+        ),
+      );
+    }
   }
 
   const panelist = await ensurePanelistForUser(session.userId);
@@ -200,6 +234,21 @@ export async function participateInStudy(formData: FormData) {
       selectedSession: selectedSlot?.startsAt ?? null,
       panelistNumber: transactionResult.assignment.panelistNumber,
       sampleCodes: transactionResult.assignment.sampleCodes,
+    },
+  });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: selectedSlot ? "STUDY_SESSION_BOOKED" : "STUDY_PARTICIPATION_SUBMITTED",
+    entityType: "Study",
+    entityId: study.id,
+    summary: selectedSlot
+      ? `Booked a session for "${study.title}".`
+      : `Submitted participation request for "${study.title}".`,
+    metadata: {
+      studyId: study.id,
+      participantId: transactionResult.participantId,
+      selectedSession: selectedSlot?.startsAt ?? null,
+      role: session.role,
     },
   });
 
@@ -515,6 +564,25 @@ export async function confirmParticipantSession(formData: FormData) {
     });
   }
 
+  const ficAssigneeId = resolveFicAssigneeId(participant.study.targetDemographics);
+  if (ficAssigneeId) {
+    void notifyUser(ficAssigneeId, {
+      title: "Session scheduled at your facility",
+      message: `${participant.study.title}: session on ${participant.requestedSessionAt.toLocaleString()}.`,
+      level: "INFO",
+      category: "STUDY",
+      actionUrl: `/fic/dashboard`,
+      metadata: {
+        studyId,
+        participantId: participant.id,
+        sessionAt: participant.requestedSessionAt.toISOString(),
+        type: "SESSION_CONFIRMED",
+      },
+    }).catch((error) => {
+      console.error("[push] notifyUser FIC (session confirmed) failed:", error);
+    });
+  }
+
   revalidatePath("/consumer/dashboard");
   revalidatePath(redirectTo.split("?")[0] || redirectTo);
   redirect(withFeedback(redirectTo, "message", "Participant+session+confirmed"));
@@ -556,10 +624,10 @@ export async function submitStudyConsent(formData: FormData) {
   const studyId = String(formData.get("studyId") ?? "").trim();
   const guestSession = await getCurrentGuestSession();
   const isConsumer = session?.role === "CONSUMER";
-  const isMsme = session?.role === "MSME";
+  const isMSME = session?.role === "MSME";
   const isGuest = !session && guestSession?.studyId === studyId;
 
-  if (!isConsumer && !isMsme && !isGuest) {
+  if (!isConsumer && !isMSME && !isGuest) {
     redirect("/login?error=Consumer+or+MSME+login+required");
   }
 
@@ -601,20 +669,20 @@ export async function submitStudyConsent(formData: FormData) {
   if (isConsumer && participant.panelist.userId !== session?.userId) {
     redirect("/consumer/dashboard?view=available&error=Participant+slot+not+found");
   }
-  if (isMsme && participant.study.creatorId === session?.userId) {
+  if (isMSME && participant.study.creatorId === session?.userId) {
     redirect("/msme/dashboard?error=MSME+users+cannot+evaluate+their+own+studies");
   }
-  if (isMsme && participant.study.creator.role !== "MSME") {
+  if (isMSME && participant.study.creator.role !== "MSME") {
     redirect("/msme/dashboard?view=evaluate&error=MSME+users+can+only+evaluate+other+MSME+studies");
   }
-  if (isMsme && participant.panelist.userId !== session?.userId) {
+  if (isMSME && participant.panelist.userId !== session?.userId) {
     redirect("/msme/dashboard?view=evaluate&error=Participant+slot+not+found");
   }
   if (isGuest && (!guestSession || participant.source !== "WALK_IN_GUEST" || participant.id !== guestSession.participantId)) {
     redirect(`/studies/${studyId}/start?participantId=${participantId}&verified=1&error=Guest+session+is+invalid`);
   }
   const isScheduledAuthenticatedCheckIn =
-    (isConsumer || isMsme) &&
+    (isConsumer || isMSME) &&
     getStudyCoordinationMode(participant.study.targetDemographics) !== "SELF_MANAGED_PUBLIC" &&
     Boolean(parseStudySessionSchedule(participant.study.targetDemographics));
   if (isScheduledAuthenticatedCheckIn) {
@@ -661,7 +729,7 @@ export async function submitStudyConsent(formData: FormData) {
       redirect(`/test/completed?studyId=${studyId}`);
     }
     redirect(
-      isMsme
+      isMSME
         ? "/msme/dashboard?view=evaluate&message=Consent+declined.+You+will+not+proceed+to+evaluation"
         : "/consumer/dashboard?view=available&message=Consent+declined.+You+will+not+proceed+to+evaluation"
     );
@@ -810,4 +878,16 @@ function getStudyCoordinationMode(value: unknown) {
   }
   const mode = (value as { coordinationMode?: unknown }).coordinationMode;
   return mode === "FIC_ASSISTED" || mode === "SELF_MANAGED_PUBLIC" ? mode : null;
+}
+
+function resolveFicAssigneeId(value: unknown): string | null {
+  if (getStudyCoordinationMode(value) !== "FIC_ASSISTED") {
+    return null;
+  }
+  const ficAssignee = (value as { ficAssignee?: unknown }).ficAssignee;
+  if (!ficAssignee || typeof ficAssignee !== "object") {
+    return null;
+  }
+  const id = (ficAssignee as { id?: unknown }).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }

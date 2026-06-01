@@ -1,13 +1,25 @@
 import type { Prisma } from "@prisma/client";
 
 export type TargetConsumerGender = "MALE" | "FEMALE" | "NON_BINARY" | "PREFER_NOT_SAY";
-export type TargetConsumerDietaryPref = "VEGETARIAN" | "VEGAN" | "GLUTEN_FREE";
+export type TargetConsumerDietaryPref =
+  | "NO_SPECIFIC_DIET"
+  | "PLANT_BASED"
+  | "VEGETARIAN"
+  | "VEGAN"
+  | "FLEXITARIAN"
+  | "KETO"
+  | "LOW_SUGAR"
+  | "HALAL_CONSCIOUS";
 
 export type TargetConsumerProfile = {
   ageRange: [number, number];
   genders: TargetConsumerGender[];
-  lifestyles: string[];
+  workDailyLiving: string[];
+  healthFitness: string[];
+  foodConsumption: string[];
   dietaryPrefs: TargetConsumerDietaryPref[];
+  // Legacy fields, kept for backwards compatibility with stored study targets.
+  lifestyles: string[];
   consumptionHabits: {
     coffeeDrinker?: boolean;
     snackConsumer?: boolean;
@@ -19,6 +31,9 @@ export type TargetConsumerPanelist = {
   age?: number;
   gender?: string;
   lifestyle: string[];
+  workDailyLiving?: string[];
+  healthFitness?: string[];
+  foodConsumption?: string[];
   dietaryPrefs?: string[];
   consumptionHabits?: unknown;
   isActive?: boolean;
@@ -31,18 +46,49 @@ export const TARGET_CONSUMER_GENDER_OPTIONS: Array<{ value: TargetConsumerGender
   { value: "PREFER_NOT_SAY", label: "Prefer not to say" },
 ];
 
+export const TARGET_CONSUMER_DIETARY_OPTIONS: Array<{ value: TargetConsumerDietaryPref; label: string }> = [
+  { value: "NO_SPECIFIC_DIET", label: "No specific diet" },
+  { value: "PLANT_BASED", label: "Plant-based" },
+  { value: "VEGETARIAN", label: "Vegetarian" },
+  { value: "VEGAN", label: "Vegan" },
+  { value: "FLEXITARIAN", label: "Flexitarian" },
+  { value: "KETO", label: "Keto" },
+  { value: "LOW_SUGAR", label: "Low-sugar" },
+  { value: "HALAL_CONSCIOUS", label: "Halal-conscious" },
+];
+
+export const TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS = [
+  { value: "student", label: "Student" },
+  { value: "office_worker", label: "Office worker" },
+  { value: "remote_worker", label: "Remote worker" },
+  { value: "entrepreneur", label: "Entrepreneur" },
+  { value: "shift_worker", label: "Shift worker" },
+] as const;
+
+export const TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS = [
+  { value: "athlete", label: "Athlete" },
+  { value: "fitness_enthusiast", label: "Fitness enthusiast" },
+  { value: "gym_goer", label: "Gym-goer" },
+  { value: "active_lifestyle", label: "Active lifestyle" },
+  { value: "wellness_focused", label: "Wellness-focused" },
+] as const;
+
+export const TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS = [
+  { value: "foodie", label: "Foodie" },
+  { value: "convenience_seeker", label: "Convenience-seeker" },
+  { value: "budget_conscious", label: "Budget-conscious" },
+  { value: "cafe_enthusiast", label: "Café enthusiast" },
+  { value: "frequent_snacker", label: "Frequent snacker" },
+] as const;
+
+/** @deprecated Retained only for the mobile (Flutter) API surface; new code should use the categorized options. */
 export const TARGET_CONSUMER_LIFESTYLE_OPTIONS = [
   { value: "student", label: "Student" },
   { value: "athlete", label: "Athlete" },
   { value: "office_worker", label: "Office worker" },
-];
+] as const;
 
-export const TARGET_CONSUMER_DIETARY_OPTIONS: Array<{ value: TargetConsumerDietaryPref; label: string }> = [
-  { value: "VEGETARIAN", label: "Vegetarian" },
-  { value: "VEGAN", label: "Vegan" },
-  { value: "GLUTEN_FREE", label: "Gluten-free" },
-];
-
+/** @deprecated Retained only for the mobile (Flutter) API surface; new code should use the categorized options. */
 export const TARGET_CONSUMER_CONSUMPTION_OPTIONS = [
   { value: "coffeeDrinker", label: "Coffee drinker" },
   { value: "snackConsumer", label: "Snack consumer" },
@@ -52,15 +98,19 @@ export const TARGET_CONSUMER_CONSUMPTION_OPTIONS = [
 export const DEFAULT_TARGET_CONSUMER: TargetConsumerProfile = {
   ageRange: [18, 55],
   genders: ["MALE", "FEMALE", "NON_BINARY"],
-  lifestyles: [],
+  workDailyLiving: [],
+  healthFitness: [],
+  foodConsumption: [],
   dietaryPrefs: [],
+  lifestyles: [],
   consumptionHabits: {},
 };
 
 const ALLOWED_GENDERS = new Set(TARGET_CONSUMER_GENDER_OPTIONS.map((option) => option.value));
-const ALLOWED_LIFESTYLES = new Set(TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => option.value));
 const ALLOWED_DIETARY_PREFS = new Set(TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => option.value));
-const CONSUMPTION_KEYS = TARGET_CONSUMER_CONSUMPTION_OPTIONS.map((option) => option.value);
+const ALLOWED_WORK_DAILY_LIVING = new Set(TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS.map((option) => option.value));
+const ALLOWED_HEALTH_FITNESS = new Set(TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS.map((option) => option.value));
+const ALLOWED_FOOD_CONSUMPTION = new Set(TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS.map((option) => option.value));
 
 export function normalizeTargetConsumer(value: unknown): TargetConsumerProfile {
   const source = isRecord(value) && isRecord(value.targetConsumer)
@@ -72,9 +122,14 @@ export function normalizeTargetConsumer(value: unknown): TargetConsumerProfile {
   return {
     ageRange: normalizeAgeRange(source.ageRange),
     genders: normalizeStringArray(source.genders, ALLOWED_GENDERS, DEFAULT_TARGET_CONSUMER.genders),
-    lifestyles: normalizeStringArray(source.lifestyles, ALLOWED_LIFESTYLES, []),
+    workDailyLiving: normalizeStringArray(source.workDailyLiving, ALLOWED_WORK_DAILY_LIVING, []),
+    healthFitness: normalizeStringArray(source.healthFitness, ALLOWED_HEALTH_FITNESS, []),
+    foodConsumption: normalizeStringArray(source.foodConsumption, ALLOWED_FOOD_CONSUMPTION, []),
     dietaryPrefs: normalizeStringArray(source.dietaryPrefs, ALLOWED_DIETARY_PREFS, []),
-    consumptionHabits: normalizeConsumptionRequirements(source.consumptionHabits),
+    lifestyles: Array.isArray(source.lifestyles)
+      ? source.lifestyles.map((item) => String(item)).filter((item) => item.length > 0)
+      : [],
+    consumptionHabits: normalizeLegacyConsumption(source.consumptionHabits),
   };
 }
 
@@ -84,11 +139,21 @@ export function buildTargetConsumerWhere(value: unknown): Prisma.PanelistWhereIn
     isActive: true,
   };
 
-  if (target.lifestyles.length > 0) {
-    where.lifestyle = { hasEvery: target.lifestyles };
+  const and: Prisma.PanelistWhereInput[] = [];
+  if (target.workDailyLiving.length > 0) {
+    and.push({ workDailyLiving: { hasEvery: target.workDailyLiving } });
+  }
+  if (target.healthFitness.length > 0) {
+    and.push({ healthFitness: { hasEvery: target.healthFitness } });
+  }
+  if (target.foodConsumption.length > 0) {
+    and.push({ foodConsumption: { hasEvery: target.foodConsumption } });
   }
   if (target.dietaryPrefs.length > 0) {
     where.dietaryPrefs = { hasEvery: target.dietaryPrefs };
+  }
+  if (and.length > 0) {
+    where.AND = and;
   }
 
   return where;
@@ -103,34 +168,45 @@ export function doesPanelistMatchTargetConsumer(
   }
 
   const target = normalizeTargetConsumer(targetValue);
-  if (!target.lifestyles.every((lifestyle) => panelist.lifestyle.includes(lifestyle))) {
+  if (!matchesAll(target.workDailyLiving, panelist.workDailyLiving ?? [])) {
     return false;
   }
-  if (!target.dietaryPrefs.every((preference) => (panelist.dietaryPrefs ?? []).includes(preference))) {
+  if (!matchesAll(target.healthFitness, panelist.healthFitness ?? [])) {
     return false;
   }
-
-  const habits = parseConsumptionHabits(panelist.consumptionHabits);
-  return CONSUMPTION_KEYS.every((key) => !target.consumptionHabits[key] || habits[key] === true);
+  if (!matchesAll(target.foodConsumption, panelist.foodConsumption ?? [])) {
+    return false;
+  }
+  if (!matchesAll(target.dietaryPrefs, panelist.dietaryPrefs ?? [])) {
+    return false;
+  }
+  return true;
 }
 
 export function getTargetConsumerSummary(value: unknown) {
   const target = normalizeTargetConsumer(value);
-  const parts = [];
+  const parts: string[] = [];
 
-  if (target.lifestyles.length > 0) {
-    parts.push(`Lifestyle: ${target.lifestyles.map(humanizeLifestyle).join(", ")}`);
+  if (target.workDailyLiving.length > 0) {
+    parts.push(`Work & Daily Living: ${target.workDailyLiving.map((v) => humanizeOption(v, TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS)).join(", ")}`);
+  }
+  if (target.healthFitness.length > 0) {
+    parts.push(`Health & Fitness: ${target.healthFitness.map((v) => humanizeOption(v, TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS)).join(", ")}`);
+  }
+  if (target.foodConsumption.length > 0) {
+    parts.push(`Food & Consumption: ${target.foodConsumption.map((v) => humanizeOption(v, TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS)).join(", ")}`);
   }
   if (target.dietaryPrefs.length > 0) {
-    parts.push(`Dietary: ${target.dietaryPrefs.map(humanizeEnum).join(", ")}`);
-  }
-
-  const requiredHabits = CONSUMPTION_KEYS.filter((key) => target.consumptionHabits[key]);
-  if (requiredHabits.length > 0) {
-    parts.push(`Consumption: ${requiredHabits.map(humanizeCamelCase).join(", ")}`);
+    parts.push(`Dietary: ${target.dietaryPrefs.map((v) => humanizeOption(v, TARGET_CONSUMER_DIETARY_OPTIONS)).join(", ")}`);
   }
 
   return parts.length > 0 ? parts.join(" | ") : "Any consumer profile";
+}
+
+function matchesAll(required: string[], actual: string[]) {
+  if (required.length === 0) return true;
+  const actualSet = new Set(actual);
+  return required.every((value) => actualSet.has(value));
 }
 
 function normalizeAgeRange(value: unknown): [number, number] {
@@ -168,47 +244,21 @@ function normalizeStringArray<T extends string>(
   return Array.from(new Set(normalized));
 }
 
-function normalizeConsumptionRequirements(value: unknown): TargetConsumerProfile["consumptionHabits"] {
+function normalizeLegacyConsumption(value: unknown): TargetConsumerProfile["consumptionHabits"] {
   if (!isRecord(value)) {
     return {};
   }
-
-  return CONSUMPTION_KEYS.reduce<TargetConsumerProfile["consumptionHabits"]>((accumulator, key) => {
-    if (value[key] === true) {
-      accumulator[key] = true;
-    }
-    return accumulator;
-  }, {});
-}
-
-function parseConsumptionHabits(value: unknown) {
-  if (!isRecord(value)) {
-    return {};
-  }
-
-  return {
-    coffeeDrinker: value.coffeeDrinker === true,
-    snackConsumer:
-      typeof value.snackConsumer === "boolean"
-        ? value.snackConsumer
-        : value.snacks === "daily" || value.snacks === "weekly",
-    energyDrinkConsumer: value.energyDrinkConsumer === true,
-  };
+  const habits: TargetConsumerProfile["consumptionHabits"] = {};
+  if (value.coffeeDrinker === true) habits.coffeeDrinker = true;
+  if (value.snackConsumer === true) habits.snackConsumer = true;
+  if (value.energyDrinkConsumer === true) habits.energyDrinkConsumer = true;
+  return habits;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function humanizeEnum(value: string) {
-  return value.replace(/_/g, " ").toLowerCase();
-}
-
-function humanizeLifestyle(value: string) {
-  if (value === "office_worker") return "office worker";
-  return value;
-}
-
-function humanizeCamelCase(value: string) {
-  return value.replace(/([A-Z])/g, " $1").toLowerCase();
+function humanizeOption(value: string, options: ReadonlyArray<{ value: string; label: string }>) {
+  return options.find((option) => option.value === value)?.label ?? value;
 }

@@ -1,10 +1,18 @@
-import Link from "next/link";
-import { DietaryPref, Gender, Prisma } from "@prisma/client";
+import { Gender } from "@prisma/client";
 import { saveProfile } from "@/app/actions/profile-actions";
+import { getUserLocationLabels } from "@/app/actions/location-actions";
+import { AppBackButton } from "@/components/ui/app-back-button";
 import { TimedToast } from "@/components/ui/timed-toast";
 import { ROLE_DASHBOARD_PATH, type AppRole } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { SurfaceCard } from "@/components/ui/page-shell";
+import { ProfileLocationSection } from "@/components/profile/profile-location-section";
+import {
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS,
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS,
+} from "@/lib/target-consumer";
 
 type ProfileWorkspaceProps = {
   userId: string;
@@ -15,31 +23,12 @@ type ProfileWorkspaceProps = {
   embedded?: boolean;
 };
 
-const LIFESTYLE_OPTIONS = [
-  { value: "student", label: "Student" },
-  { value: "athlete", label: "Athlete" },
-  { value: "office_worker", label: "Office worker" },
-];
-
-const DIETARY_OPTIONS: Array<{ value: DietaryPref; label: string }> = [
-  { value: "VEGETARIAN", label: "Vegetarian" },
-  { value: "VEGAN", label: "Vegan" },
-  { value: "GLUTEN_FREE", label: "Gluten-free" },
-];
-
 const GENDER_OPTIONS: Array<{ value: Gender; label: string }> = [
   { value: "MALE", label: "Male" },
   { value: "FEMALE", label: "Female" },
   { value: "NON_BINARY", label: "Non-binary" },
   { value: "PREFER_NOT_SAY", label: "Prefer not to say" },
 ];
-
-type ConsumptionHabits = {
-  coffeeDrinker?: boolean;
-  snackConsumer?: boolean;
-  energyDrinkConsumer?: boolean;
-  snacks?: string;
-};
 
 export async function ProfileWorkspace({
   userId,
@@ -75,10 +64,10 @@ export async function ProfileWorkspace({
       age: true,
       gender: true,
       location: true,
-      occupation: true,
-      lifestyle: true,
+      workDailyLiving: true,
+      healthFitness: true,
+      foodConsumption: true,
       dietaryPrefs: true,
-      consumptionHabits: true,
       joinedAt: true,
       lastActive: true,
     },
@@ -102,10 +91,13 @@ export async function ProfileWorkspace({
       })
     : [];
 
-  const habits = parseConsumption(panelist?.consumptionHabits ?? null);
-  const selectedLifestyle = new Set(panelist?.lifestyle ?? []);
-  const selectedDietary = new Set(panelist?.dietaryPrefs ?? []);
+  const selectedWorkDailyLiving = new Set(panelist?.workDailyLiving ?? []);
+  const selectedHealthFitness = new Set(panelist?.healthFitness ?? []);
+  const selectedFoodConsumption = new Set(panelist?.foodConsumption ?? []);
+  const selectedDietary = new Set<string>(panelist?.dietaryPrefs ?? []);
   const redirectTo = embedded ? `${ROLE_DASHBOARD_PATH[role]}?view=profile` : "/profile";
+
+  const locationProfile = await getUserLocationLabels(user.id);
 
   return (
     <>
@@ -116,9 +108,7 @@ export async function ProfileWorkspace({
           <p className="mt-1 text-[#6f5b4f]">Maintain your panelist data for better matching in future studies.</p>
         </div>
         {backHref && (
-          <Link href={backHref} className="app-button-secondary inline-flex items-center justify-center px-4 py-2">
-            Back to Dashboard
-          </Link>
+          <AppBackButton fallbackHref={backHref} label="Back to Dashboard" />
         )}
       </SurfaceCard>
 
@@ -128,6 +118,22 @@ export async function ProfileWorkspace({
         variant={error ? "error" : "success"}
         durationMs={3000}
       />
+
+      <SurfaceCard>
+        <ProfileLocationSection
+          initialValue={
+            locationProfile?.value ?? {
+              regionId: null,
+              provinceId: null,
+              cityId: null,
+              barangayId: null,
+            }
+          }
+          initialLabels={locationProfile?.labels ?? {}}
+          initialAddressDetails={locationProfile?.addressDetails ?? null}
+          completedAt={locationProfile?.completedAt ?? null}
+        />
+      </SurfaceCard>
 
       <SurfaceCard>
         <form action={saveProfile} className="space-y-8">
@@ -176,54 +182,36 @@ export async function ProfileWorkspace({
               <Field label="Location">
                 <input name="location" defaultValue={panelist?.location ?? "Unspecified"} className="app-input" required />
               </Field>
-
-              <Field label="Occupation">
-                <input name="occupation" defaultValue={panelist?.occupation ?? "Consumer"} className="app-input" required />
-              </Field>
             </div>
           </div>
 
-          <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-[#2f241d]">Lifestyle Attributes</h2>
-            <div className="grid md:grid-cols-3 gap-3">
-              {LIFESTYLE_OPTIONS.map((option) => (
-                <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
-                  <input type="checkbox" name="lifestyle" value={option.value} defaultChecked={selectedLifestyle.has(option.value)} />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-          </div>
+          <CategorySection
+            title="Dietary Information"
+            name="dietaryPrefs"
+            options={TARGET_CONSUMER_DIETARY_OPTIONS}
+            selected={selectedDietary}
+          />
 
-          <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-[#2f241d]">Dietary Information</h2>
-            <div className="grid md:grid-cols-3 gap-3">
-              {DIETARY_OPTIONS.map((option) => (
-                <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
-                  <input type="checkbox" name="dietaryPrefs" value={option.value} defaultChecked={selectedDietary.has(option.value)} />
-                  {option.label}
-                </label>
-              ))}
-            </div>
-          </div>
+          <CategorySection
+            title="Work & Daily Living"
+            name="workDailyLiving"
+            options={TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS}
+            selected={selectedWorkDailyLiving}
+          />
 
-          <div className="space-y-4">
-            <h2 className="text-xl font-semibold text-[#2f241d]">Consumption Behavior</h2>
-            <div className="grid md:grid-cols-3 gap-3">
-              <label className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
-                <input type="checkbox" name="coffeeDrinker" defaultChecked={habits.coffeeDrinker} />
-                Coffee drinker
-              </label>
-              <label className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
-                <input type="checkbox" name="snackConsumer" defaultChecked={habits.snackConsumer} />
-                Snack consumer
-              </label>
-              <label className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
-                <input type="checkbox" name="energyDrinkConsumer" defaultChecked={habits.energyDrinkConsumer} />
-                Energy drink consumer
-              </label>
-            </div>
-          </div>
+          <CategorySection
+            title="Health & Fitness"
+            name="healthFitness"
+            options={TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS}
+            selected={selectedHealthFitness}
+          />
+
+          <CategorySection
+            title="Food & Consumption Behavior"
+            name="foodConsumption"
+            options={TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS}
+            selected={selectedFoodConsumption}
+          />
 
           <div className="flex justify-end">
             <button type="submit" className="app-button-primary inline-flex items-center justify-center px-5 py-2.5">
@@ -294,29 +282,33 @@ export async function ProfileWorkspace({
   );
 }
 
-function parseConsumption(value: Prisma.JsonValue | null): ConsumptionHabits {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return {
-      coffeeDrinker: false,
-      snackConsumer: false,
-      energyDrinkConsumer: false,
-    };
-  }
-
-  const record = value as Record<string, unknown>;
-  const snackFlag =
-    typeof record.snackConsumer === "boolean"
-      ? record.snackConsumer
-      : typeof record.snacks === "string"
-        ? record.snacks === "daily" || record.snacks === "weekly"
-        : false;
-
-  return {
-    coffeeDrinker: record.coffeeDrinker === true,
-    snackConsumer: snackFlag,
-    energyDrinkConsumer: record.energyDrinkConsumer === true,
-    snacks: typeof record.snacks === "string" ? record.snacks : undefined,
-  };
+function CategorySection({
+  title,
+  name,
+  options,
+  selected,
+}: {
+  title: string;
+  name: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+  selected: Set<string>;
+}) {
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-xl font-semibold text-[#2f241d]">{title}</h2>
+        <p className="text-xs italic text-[#8d735f]">Check all that applies</p>
+      </div>
+      <div className="grid md:grid-cols-3 gap-3">
+        {options.map((option) => (
+          <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e7ddd4] bg-[#fffaf4] p-3 text-sm">
+            <input type="checkbox" name={name} value={option.value} defaultChecked={selected.has(option.value)} />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

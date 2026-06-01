@@ -5,6 +5,7 @@ import { parseRole } from "@/lib/auth/roles";
 import { mobileAuthResponse, mobileError, parseJsonBody } from "@/lib/mobile/api";
 import { isMobileTokenSecretConfigured } from "@/lib/mobile/token";
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
+import { logUserUsage } from "@/lib/user-usage";
 
 export const dynamic = "force-dynamic";
 
@@ -47,6 +48,15 @@ export async function POST(request: NextRequest) {
   if (!user?.password || !role || !verifyPassword(password, user.password)) {
     return mobileError("Invalid email or password.", 401, "INVALID_CREDENTIALS");
   }
+  await logUserUsage({
+    actorUserId: user.id,
+    actor: { name: user.name, email: user.email, role },
+    action: "LOGIN",
+    entityType: "User",
+    entityId: user.id,
+    summary: "User logged in from mobile.",
+    metadata: { channel: "mobile", role },
+  });
 
   return mobileAuthResponse({
     ...user,

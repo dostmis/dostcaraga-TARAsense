@@ -1,6 +1,17 @@
 import { prisma } from "@/lib/db";
-import { DecisionType, Prisma } from "@prisma/client";
-import { compareSamples, formatPValue, type ComparisonResult } from "@/lib/services/statistics";
+import { DecisionType, Prisma, StudyDesign as PrismaStudyDesign } from "@prisma/client";
+import { createOpenAICompatibleClient, parseJsonObjectResponse } from "@/lib/ai/openai-compatible";
+import {
+  compareSamples,
+  computeCompactLetterDisplay,
+  formatPValue,
+  meanConfidenceInterval,
+  type ComparisonResult,
+  type ConfidenceInterval,
+  type StudyDesign,
+} from "@/lib/services/statistics";
+import { evaluateDataQuality, type DataQualityReport } from "@/lib/services/data-quality";
+import { runAdvancedAnalytics, type AdvancedAnalyticsResult } from "@/lib/services/advanced-analytics";
 
 type JarBucket = "too_low" | "just_right" | "too_high";
 type DriverLevel = "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
@@ -15,6 +26,7 @@ interface DescriptiveStats {
   stdDev: number;
   n: number;
   median: number;
+  confidenceInterval: ConfidenceInterval | null;
 }
 
 interface SampleResponseEntry {
@@ -22,6 +34,9 @@ interface SampleResponseEntry {
   sampleLabel?: string;
   overallLiking?: number;
   attributes: Record<string, unknown>;
+  startedAt?: string;
+  submittedAt?: string;
+  durationSeconds?: number;
 }
 
 interface StudyResponse {
@@ -29,6 +44,10 @@ interface StudyResponse {
   overallLiking?: number;
   attributes: Record<string, unknown>;
   sampleResponses?: SampleResponseEntry[];
+  startedAt?: string;
+  submittedAt?: string;
+  durationSeconds?: number;
+  attentionCheck?: { passed: boolean } | null;
   importMeta?: {
     sampleLabelByNumber?: Record<string, unknown>;
   };
@@ -86,16 +105,29 @@ interface SampleMeanDropRow {
   severity: DriverLevel;
 }
 
+interface AttributeLikingStats extends DescriptiveStats {
+  stdError: number;
+}
+
+interface SampleAttributeLikingRow {
+  attribute: string;
+  stats: AttributeLikingStats;
+  significanceLetter?: string | null;
+}
+
 interface SampleAnalysisBlock {
   sampleNumber: number;
   sampleLabel: string;
   overallLiking: DescriptiveStats;
+  overallLikingLetter?: string | null;
   interpretation: string;
-  attributeLiking: Array<{ attribute: string; stats: DescriptiveStats }>;
+  attributeLiking: SampleAttributeLikingRow[];
   jarBreakdown: SampleJarBreakdownRow[];
   penaltyAnalysis: PenaltyResult[];
   meanDropAnalysis: SampleMeanDropRow[];
   actionableDrivers: string[];
+  distribution: number[];
+  attributeLikingNote?: string;
 }
 
 interface SampleInsights {
@@ -124,6 +156,7 @@ export class SensoryAnalysisEngine {
           sampleSize: true,
           targetDemographics: true,
           status: true,
+          studyDesign: true,
           createdAt: true,
           updatedAt: true,
         },
@@ -143,22 +176,65 @@ export class SensoryAnalysisEngine {
       }),
     ]);
 
+    const studyDesign: StudyDesign = (study?.studyDesign as PrismaStudyDesign | undefined) === "MONADIC" ? "MONADIC" : "WITHIN_SUBJECT";
+
     const parsedResponses: StudyResponse[] = responses.map((response) => ({
       ...(response.data as unknown as Omit<StudyResponse, "respondentId">),
       respondentId: response.participantId,
+      submittedAt: response.submittedAt.toISOString(),
     }));
+
     const sampleObservations = this.buildSampleObservations(parsedResponses);
+    const expectedAttributeKeys = attributes
+      .filter((attribute) => attribute.type === "JAR" || attribute.type === "ATTRIBUTE_LIKING" || attribute.type === "OVERALL_LIKING")
+      .map((attribute) => attribute.name);
+    const sampleNumbers = Array.from(new Set(sampleObservations.map((row) => row.sampleNumber)));
+    const dataQuality = evaluateDataQuality(parsedResponses, {
+      expectedSamples: sampleNumbers.length || 1,
+      expectedAttributeKeys,
+    });
 
     const overallLikingScores = parsedResponses
       .map((response) => response.overallLiking)
       .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
     const overallStats = this.computeDescriptiveStats(overallLikingScores);
-    const sampleInsights = this.buildSampleInsights(
-      sampleObservations,
-      attributes
-    );
-    const studyOverview = this.buildStudyOverview(study, attributes, responses, sampleInsights);
-    const comparativeAnalysis = this.buildComparativeAnalysis(sampleObservations, attributes);
+
+    const sampleInsights = this.buildSampleInsights(sampleObservations, attributes);
+    const studyOverview = this.buildStudyOverview(study, attributes, responses, sampleInsights, studyDesign);
+    const comparativeAnalysis = this.buildComparativeAnalysis(sampleObservations, attributes, studyDesign);
+
+    // Decorate per-sample blocks with compact letter display from the cross-sample comparisons.
+    if (comparativeAnalysis.overallLikingComparison) {
+      const overallLetters = new Map<number, string | null>();
+      comparativeAnalysis.overallLikingComparison.samples.forEach((sample) => {
+        overallLetters.set(sample.sampleNumber, sample.letter);
+      });
+      sampleInsights.bySample.forEach((sample) => {
+        sample.overallLikingLetter = overallLetters.get(sample.sampleNumber) ?? null;
+      });
+    }
+    if (comparativeAnalysis.attributeLikingComparison.length > 0) {
+      const letterIndex = new Map<string, Map<number, string | null>>();
+      comparativeAnalysis.attributeLikingComparison.forEach((entry) => {
+        const sampleLetters = new Map<number, string | null>();
+        entry.samples.forEach((sample) => sampleLetters.set(sample.sampleNumber, sample.letter));
+        letterIndex.set(entry.attribute, sampleLetters);
+      });
+      sampleInsights.bySample.forEach((sample) => {
+        sample.attributeLiking = sample.attributeLiking.map((row) => ({
+          ...row,
+          significanceLetter: letterIndex.get(row.attribute)?.get(sample.sampleNumber) ?? null,
+        }));
+        const anyLetter = sample.attributeLiking.some((row) => row.significanceLetter);
+        sample.attributeLikingNote = anyLetter
+          ? "Values are mean +/- SE. Samples sharing a letter for the same attribute are not significantly different across samples (p < 0.05)."
+          : "Values are mean +/- SE. No significant across-sample differences detected for these attributes (p >= 0.05).";
+      });
+    } else {
+      sampleInsights.bySample.forEach((sample) => {
+        sample.attributeLikingNote = "Values are mean +/- SE.";
+      });
+    }
     const meanDropAnalysis = sampleInsights.bySample.flatMap((sample) =>
       sample.meanDropAnalysis.map((row) => ({
         sampleNumber: sample.sampleNumber,
@@ -166,11 +242,13 @@ export class SensoryAnalysisEngine {
         ...row,
       }))
     );
+    const advancedAnalytics = this.buildAdvancedAnalytics(sampleObservations, attributes);
     const automaticInterpretation = this.buildAutomaticInterpretation(
       overallStats,
       sampleInsights,
       comparativeAnalysis,
-      meanDropAnalysis
+      meanDropAnalysis,
+      dataQuality
     );
 
     const attributeResults: Array<Record<string, unknown>> = [];
@@ -207,6 +285,7 @@ export class SensoryAnalysisEngine {
     const penaltyStatsJson = JSON.parse(JSON.stringify(penaltyResults)) as Prisma.InputJsonValue;
     const overallLikingPayload = {
       ...overallStats,
+      studyDesign,
       studyOverview,
       samplePerformance: sampleInsights.samplePerformance,
       bestSample: sampleInsights.bestSample,
@@ -215,6 +294,8 @@ export class SensoryAnalysisEngine {
       comparativeAnalysis,
       meanDropAnalysis,
       automaticInterpretation,
+      dataQuality,
+      advancedAnalytics,
       jarFramework: {
         tooLow: "1-2",
         justRight: "3",
@@ -223,6 +304,11 @@ export class SensoryAnalysisEngine {
       driverRules: {
         strong: "Penalty >= 1.0 and non-JAR >= 20%",
         moderate: "Penalty 0.5-0.99 and non-JAR >= 20%",
+      },
+      acceptabilityThresholds: {
+        highly: ">= 7.0 (Highly acceptable)",
+        moderate: "5.0 to 6.99 (Moderately acceptable)",
+        low: "< 5.0 (Low acceptability)",
       },
     };
     const overallLikingJson = JSON.parse(JSON.stringify(overallLikingPayload)) as Prisma.InputJsonValue;
@@ -243,33 +329,40 @@ export class SensoryAnalysisEngine {
     });
 
     await this.writeDerivedMetrics(studyId, overallLikingPayload, attributeResults, penaltyResults);
-    await this.generateAIInterpretation(studyId, overallStats, penaltyResults);
+    await this.generateAIInterpretation(studyId, {
+      overallStats,
+      penaltyResults,
+      sampleInsights,
+      comparativeAnalysis,
+      dataQuality,
+      automaticInterpretation,
+      studyDesign,
+    });
 
     return analysis;
   }
 
   private computeDescriptiveStats(values: number[]): DescriptiveStats {
     if (values.length === 0) {
-      return { mean: 0, stdDev: 0, n: 0, median: 0 };
+      return { mean: 0, stdDev: 0, n: 0, median: 0, confidenceInterval: null };
     }
 
-    const mean = values.reduce((a, b) => a + b, 0) / values.length;
-    const variance = values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / Math.max(1, values.length - 1);
+    const meanValue = values.reduce((a, b) => a + b, 0) / values.length;
+    const variance = values.reduce((sum, value) => sum + (value - meanValue) ** 2, 0) / Math.max(1, values.length - 1);
     const stdDev = Math.sqrt(variance);
+    const ci = meanConfidenceInterval(values, 0.95);
 
     return {
-      mean: Math.round(mean * 100) / 100,
-      stdDev: Math.round(stdDev * 100) / 100,
+      mean: round2(meanValue),
+      stdDev: round2(stdDev),
       n: values.length,
       median: this.calculateMedian(values),
+      confidenceInterval: ci,
     };
   }
 
   private calculateMedian(values: number[]) {
-    if (values.length === 0) {
-      return 0;
-    }
-
+    if (values.length === 0) return 0;
     const sorted = [...values].sort((a, b) => a - b);
     const mid = Math.floor(sorted.length / 2);
     return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
@@ -282,10 +375,7 @@ export class SensoryAnalysisEngine {
 
     responses.forEach((response) => {
       const parsed = normalizeJarValue(response.attributes[attributeName]);
-      if (!parsed) {
-        return;
-      }
-
+      if (!parsed) return;
       rawCounts[parsed.rawValue as 1 | 2 | 3 | 4 | 5] += 1;
       collapsedCounts[parsed.bucket] += 1;
       total += 1;
@@ -329,15 +419,9 @@ export class SensoryAnalysisEngine {
 
     let totalValidJar = 0;
     responses.forEach((response) => {
-      if (typeof response.overallLiking !== "number" || !Number.isFinite(response.overallLiking)) {
-        return;
-      }
-
+      if (typeof response.overallLiking !== "number" || !Number.isFinite(response.overallLiking)) return;
       const parsed = normalizeJarValue(response.attributes[attributeName]);
-      if (!parsed) {
-        return;
-      }
-
+      if (!parsed) return;
       groups[parsed.bucket].push(response.overallLiking);
       totalValidJar += 1;
     });
@@ -345,13 +429,10 @@ export class SensoryAnalysisEngine {
     const jarMean = nullableMean(groups.just_right);
     const tooLowMean = nullableMean(groups.too_low);
     const tooHighMean = nullableMean(groups.too_high);
-
     const tooLowPercent = totalValidJar > 0 ? (groups.too_low.length / totalValidJar) * 100 : 0;
     const tooHighPercent = totalValidJar > 0 ? (groups.too_high.length / totalValidJar) * 100 : 0;
-
     const tooLowPenalty = jarMean !== null && tooLowMean !== null ? jarMean - tooLowMean : null;
     const tooHighPenalty = jarMean !== null && tooHighMean !== null ? jarMean - tooHighMean : null;
-
     const tooLowLevel = classifyDriverLevel(tooLowPenalty, tooLowPercent);
     const tooHighLevel = classifyDriverLevel(tooHighPenalty, tooHighPercent);
     const driverLevel = mergeDriverLevels(tooLowLevel, tooHighLevel);
@@ -411,7 +492,10 @@ export class SensoryAnalysisEngine {
     return observations;
   }
 
-  private buildSampleInsights(sampleObservations: SampleObservation[], attributes: Array<{ name: string; type: string }>): SampleInsights {
+  private buildSampleInsights(
+    sampleObservations: SampleObservation[],
+    attributes: Array<{ name: string; type: string }>
+  ): SampleInsights {
     const jarAttributeNames = attributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.name);
     const likingAttributeNames = attributes
       .filter((attribute) => attribute.type === "ATTRIBUTE_LIKING" || attribute.type === "OVERALL_LIKING")
@@ -439,14 +523,15 @@ export class SensoryAnalysisEngine {
         .map((row) => row.overallLiking)
         .filter((score): score is number => typeof score === "number" && Number.isFinite(score));
       const stats = this.computeDescriptiveStats(overallScores);
-      const attributeLiking = likingAttributeNames.map((attributeName) => {
+      const attributeLiking: SampleAttributeLikingRow[] = likingAttributeNames.map((attributeName) => {
         const values = sampleRow.responses
           .map((row) => getNumericAttributeValue(row.attributes, attributeName))
           .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
-
+        const stats = this.computeDescriptiveStats(values);
+        const stdError = values.length > 0 ? round2(stats.stdDev / Math.sqrt(values.length)) : 0;
         return {
           attribute: attributeName,
-          stats: this.computeDescriptiveStats(values),
+          stats: { ...stats, stdError },
         };
       });
       const penalties = jarAttributeNames.map((attributeName) =>
@@ -483,6 +568,7 @@ export class SensoryAnalysisEngine {
         penaltyAnalysis: penalties,
         meanDropAnalysis,
         actionableDrivers,
+        distribution: overallScores,
       };
     });
 
@@ -516,12 +602,14 @@ export class SensoryAnalysisEngine {
       sampleSize: number;
       targetDemographics: Prisma.JsonValue;
       status: string;
+      studyDesign: PrismaStudyDesign;
       createdAt: Date;
       updatedAt: Date;
     } | null,
     attributes: Array<{ name: string; type: string }>,
     responses: Array<{ submittedAt: Date }>,
-    sampleInsights: SampleInsights
+    sampleInsights: SampleInsights,
+    studyDesign: StudyDesign
   ) {
     const submittedDates = responses.map((response) => response.submittedAt.getTime()).filter(Number.isFinite);
     const conductedAt = submittedDates.length > 0 ? new Date(Math.max(...submittedDates)).toISOString() : null;
@@ -536,6 +624,8 @@ export class SensoryAnalysisEngine {
       title: study?.title ?? "Untitled study",
       productName: study?.productName ?? "",
       status: study?.status ?? "UNKNOWN",
+      studyDesign,
+      studyDesignLabel: studyDesign === "WITHIN_SUBJECT" ? "Within-subject (repeated measures)" : "Monadic (independent)",
       numberOfConsumers: responses.length,
       targetConsumers: study?.sampleSize ?? 0,
       numberOfSamples: sampleInsights.samplePerformance.length,
@@ -551,7 +641,11 @@ export class SensoryAnalysisEngine {
     };
   }
 
-  private buildComparativeAnalysis(sampleObservations: SampleObservation[], attributes: Array<{ name: string; type: string }>) {
+  private buildComparativeAnalysis(
+    sampleObservations: SampleObservation[],
+    attributes: Array<{ name: string; type: string }>,
+    studyDesign: StudyDesign
+  ) {
     const candidateVariables = [
       ...attributes
         .filter((attribute) => attribute.type === "OVERALL_LIKING")
@@ -568,16 +662,31 @@ export class SensoryAnalysisEngine {
           type: "ATTRIBUTE_LIKING" as const,
         })),
     ];
+    const jarVariableEntries = attributes
+      .filter((attribute) => attribute.type === "JAR")
+      .flatMap((attribute) => [
+        {
+          key: `__penalty__::${attribute.name}`,
+          label: `${attribute.name} (penalty)`,
+          type: "PENALTY" as const,
+        },
+        {
+          key: `__meanDrop__::${attribute.name}`,
+          label: `${attribute.name} (mean drop)`,
+          type: "MEAN_DROP" as const,
+        },
+      ]);
 
     const variables =
       candidateVariables.length > 0
-        ? candidateVariables
+        ? [...candidateVariables, ...jarVariableEntries]
         : [
             {
               key: "overallLiking",
               label: "Overall Liking",
               type: "OVERALL_LIKING" as const,
             },
+            ...jarVariableEntries,
           ];
 
     const sampleNumbers = Array.from(new Set(sampleObservations.map((row) => row.sampleNumber))).sort((left, right) => left - right);
@@ -589,49 +698,95 @@ export class SensoryAnalysisEngine {
       };
     });
 
-    const comparisons = variables.map((variable) => {
-      const sampleInputs = sampleOptions.map((sample) => {
-        const valuesByRespondent = new Map<string, number>();
-        sampleObservations
-          .filter((observation) => observation.sampleNumber === sample.sampleNumber)
-          .forEach((observation) => {
-            const value =
-              variable.key === "overallLiking"
-                ? observation.overallLiking
-                : getNumericAttributeValue(observation.attributes, variable.key);
-            if (typeof value === "number" && Number.isFinite(value)) {
-              valuesByRespondent.set(observation.respondentId, value);
-            }
-          });
-
-        return {
-          sampleNumber: sample.sampleNumber,
-          sampleLabel: sample.sampleLabel,
-          valuesByRespondent,
-        };
-      });
-
-      const result = compareSamples(sampleInputs);
-      return {
-        variableKey: variable.key,
-        variableLabel: variable.label,
-        variableType: variable.type,
-        sampleSelection: "ALL_SAMPLES",
-        sampleCount: sampleInputs.length,
-        samples: sampleInputs.map((sample) => {
-          const values = Array.from(sample.valuesByRespondent.values());
-          return {
-            sampleNumber: sample.sampleNumber,
-            sampleLabel: sample.sampleLabel,
-            stats: this.computeDescriptiveStats(values),
-          };
-        }),
-        statisticalComparison: serializeComparisonResult(result),
-        graphType: result.repeatedMeasures ? "Repeated-measures bar chart with paired comparison" : "Independent-group bar chart",
-      };
-    });
+    const comparisons = variables
+      .map((variable) => this.runComparisonForVariable(sampleObservations, sampleNumbers, variable, studyDesign))
+      .filter((entry): entry is NonNullable<ReturnType<SensoryAnalysisEngine["runComparisonForVariable"]>> => entry !== null);
 
     const primaryComparison = comparisons.find((comparison) => comparison.variableType === "OVERALL_LIKING") ?? comparisons[0] ?? null;
+
+    // Attribute-by-sample liking comparisons (one row per attribute).
+    const attributeLikingNames = attributes
+      .filter((attribute) => attribute.type === "ATTRIBUTE_LIKING")
+      .map((attribute) => attribute.name);
+    const attributeLikingComparison = attributeLikingNames
+      .map((attributeName) => {
+        const comparison = this.runComparisonForVariable(
+          sampleObservations,
+          sampleNumbers,
+          { key: attributeName, label: attributeName, type: "ATTRIBUTE_LIKING" },
+          studyDesign
+        );
+        if (!comparison) return null;
+        const postHoc = comparison.statisticalComparison.postHocResults ?? [];
+        const sampleLabels = comparison.samples.map((sample) => sample.sampleLabel);
+        const letters = computeCompactLetterDisplay(sampleLabels, postHoc);
+        return {
+          attribute: attributeName,
+          samples: comparison.samples.map((sample) => ({
+            sampleNumber: sample.sampleNumber,
+            sampleLabel: sample.sampleLabel,
+            mean: sample.stats.mean,
+            stdDev: sample.stats.stdDev,
+            n: sample.stats.n,
+            stdError: sample.stats.n > 0 ? round2(sample.stats.stdDev / Math.sqrt(sample.stats.n)) : 0,
+            confidenceInterval: sample.stats.confidenceInterval,
+            letter: letters.get(sample.sampleLabel) ?? null,
+          })),
+          statisticalComparison: comparison.statisticalComparison,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+    // Overall liking comparison (single row, mirrors primary for "Overall Liking").
+    const overallLikingComparison = (() => {
+      const overall = comparisons.find((comparison) => comparison.variableType === "OVERALL_LIKING");
+      if (!overall) return null;
+      const sampleLabels = overall.samples.map((sample) => sample.sampleLabel);
+      const letters = computeCompactLetterDisplay(sampleLabels, overall.statisticalComparison.postHocResults ?? []);
+      return {
+        samples: overall.samples.map((sample) => ({
+          sampleNumber: sample.sampleNumber,
+          sampleLabel: sample.sampleLabel,
+          mean: sample.stats.mean,
+          stdDev: sample.stats.stdDev,
+          n: sample.stats.n,
+          stdError: sample.stats.n > 0 ? round2(sample.stats.stdDev / Math.sqrt(sample.stats.n)) : 0,
+          confidenceInterval: sample.stats.confidenceInterval,
+          letter: letters.get(sample.sampleLabel) ?? null,
+        })),
+        statisticalComparison: overall.statisticalComparison,
+      };
+    })();
+
+    // JAR distribution comparison (per JAR attribute, per sample percentages).
+    const jarAttributeNames = attributes
+      .filter((attribute) => attribute.type === "JAR")
+      .map((attribute) => attribute.name);
+    const jarDistributionComparison = jarAttributeNames.map((attributeName) => {
+      const distributions = sampleNumbers.map((sampleNumber) => {
+        const sampleResponses = sampleObservations
+          .filter((observation) => observation.sampleNumber === sampleNumber)
+          .map((observation) => ({
+            respondentId: observation.respondentId,
+            overallLiking: observation.overallLiking,
+            attributes: observation.attributes,
+          }));
+        const sampleLabel =
+          sampleObservations.find((observation) => observation.sampleNumber === sampleNumber)?.sampleLabel ?? `Sample ${sampleNumber}`;
+        const distribution = this.calculateJARDistribution(attributeName, sampleResponses);
+        return {
+          sampleNumber,
+          sampleLabel,
+          tooLowPercent: distribution.tooLow.percent,
+          justRightPercent: distribution.justRight.percent,
+          tooHighPercent: distribution.tooHigh.percent,
+          tooLowCount: distribution.tooLow.count,
+          justRightCount: distribution.justRight.count,
+          tooHighCount: distribution.tooHigh.count,
+        };
+      });
+      return { attribute: attributeName, distributions };
+    });
 
     return {
       sampleOptions,
@@ -644,12 +799,117 @@ export class SensoryAnalysisEngine {
       defaultVariableKey: primaryComparison?.variableKey ?? null,
       primaryComparison,
       comparisons,
+      overallLikingComparison,
+      attributeLikingComparison,
+      jarDistributionComparison,
       guardrails: [
         "Statistical tests are selected by TARAsense, not by the user.",
-        "Complete respondent overlap is treated as repeated-measures data.",
-        "Rank-based tests are used as conservative Phase 1 defaults for small or ordinal-like hedonic datasets.",
+        "Test selection consults Shapiro-Wilk normality and Levene's variance checks before choosing parametric vs nonparametric paths.",
+        "Effect sizes accompany every comparison so practical magnitude is not lost behind p-values.",
       ],
     };
+  }
+
+  private runComparisonForVariable(
+    sampleObservations: SampleObservation[],
+    sampleNumbers: number[],
+    variable: { key: string; label: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP" },
+    studyDesign: StudyDesign
+  ) {
+    const sampleInputs = sampleNumbers.map((sampleNumber) => {
+      const sampleRows = sampleObservations.filter((observation) => observation.sampleNumber === sampleNumber);
+      const sampleLabel = sampleRows[0]?.sampleLabel ?? `Sample ${sampleNumber}`;
+      const valuesByRespondent = new Map<string, number>();
+      sampleRows.forEach((observation) => {
+        const value = this.extractVariableValue(observation, variable);
+        if (typeof value === "number" && Number.isFinite(value)) {
+          valuesByRespondent.set(observation.respondentId, value);
+        }
+      });
+      return { sampleNumber, sampleLabel, valuesByRespondent };
+    });
+
+    const result = compareSamples(sampleInputs, { studyDesign });
+    return {
+      variableKey: variable.key,
+      variableLabel: variable.label,
+      variableType: variable.type,
+      sampleSelection: "ALL_SAMPLES",
+      sampleCount: sampleInputs.length,
+      samples: sampleInputs.map((sample) => {
+        const values = Array.from(sample.valuesByRespondent.values());
+        return {
+          sampleNumber: sample.sampleNumber,
+          sampleLabel: sample.sampleLabel,
+          stats: this.computeDescriptiveStats(values),
+          values,
+        };
+      }),
+      statisticalComparison: serializeComparisonResult(result),
+      graphType: this.recommendGraphType(variable.type, result.repeatedMeasures),
+    };
+  }
+
+  private extractVariableValue(
+    observation: SampleObservation,
+    variable: { key: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP" }
+  ): number | undefined {
+    if (variable.type === "OVERALL_LIKING") {
+      return variable.key === "overallLiking"
+        ? observation.overallLiking
+        : (typeof getNumericAttributeValue(observation.attributes, variable.key) === "number"
+            ? getNumericAttributeValue(observation.attributes, variable.key)
+            : observation.overallLiking);
+    }
+    if (variable.type === "ATTRIBUTE_LIKING") {
+      return getNumericAttributeValue(observation.attributes, variable.key);
+    }
+    if (variable.type === "PENALTY" || variable.type === "MEAN_DROP") {
+      const attributeName = variable.key.split("::")[1] ?? "";
+      const jarValue = normalizeJarValue(observation.attributes[attributeName]);
+      if (!jarValue || typeof observation.overallLiking !== "number") return undefined;
+      // Encode as drop-from-JAR per respondent: liking when JAR vs liking when not.
+      // For penalty / mean drop variables, we feed liking only for non-JAR responses
+      // so that the comparison answers "does deviating from JAR cost liking?".
+      return jarValue.bucket === "just_right" ? undefined : observation.overallLiking;
+    }
+    return undefined;
+  }
+
+  private recommendGraphType(type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP", repeated: boolean) {
+    if (type === "PENALTY") return "PENALTY_PLOT";
+    if (type === "MEAN_DROP") return "BAR_WITH_ERROR";
+    if (type === "ATTRIBUTE_LIKING") return "RADAR";
+    return repeated ? "BAR_WITH_ERROR" : "BAR_WITH_ERROR";
+  }
+
+  private buildAdvancedAnalytics(
+    sampleObservations: SampleObservation[],
+    attributes: Array<{ name: string; type: string }>
+  ): AdvancedAnalyticsResult {
+    const attributeKeys = attributes
+      .filter((attribute) => attribute.type === "ATTRIBUTE_LIKING" || attribute.type === "OVERALL_LIKING")
+      .map((attribute) => attribute.name);
+
+    const rows = sampleObservations.map((observation) => ({
+      respondentId: observation.respondentId,
+      sampleNumber: observation.sampleNumber,
+      sampleLabel: observation.sampleLabel,
+      attributes: attributeKeys.reduce<Record<string, number>>((accumulator, key) => {
+        const value = getNumericAttributeValue(observation.attributes, key);
+        if (typeof value === "number" && Number.isFinite(value)) accumulator[key] = value;
+        return accumulator;
+      }, {}),
+    }));
+
+    const likingByRespondentSample = new Map<string, number>();
+    sampleObservations.forEach((observation) => {
+      if (typeof observation.overallLiking === "number" && Number.isFinite(observation.overallLiking)) {
+        likingByRespondentSample.set(`${observation.respondentId}::${observation.sampleNumber}`, observation.overallLiking);
+      }
+    });
+
+    return runAdvancedAnalytics(rows, attributeKeys, { likingByRespondentSample });
   }
 
   private calculateMeanDropAnalysis(attributeName: string, responses: StudyResponse[]): SampleMeanDropRow {
@@ -660,13 +920,9 @@ export class SensoryAnalysisEngine {
     };
 
     responses.forEach((response) => {
-      if (typeof response.overallLiking !== "number" || !Number.isFinite(response.overallLiking)) {
-        return;
-      }
+      if (typeof response.overallLiking !== "number" || !Number.isFinite(response.overallLiking)) return;
       const jarValue = normalizeJarValue(response.attributes[attributeName]);
-      if (!jarValue) {
-        return;
-      }
+      if (!jarValue) return;
       groups[jarValue.bucket].push(response.overallLiking);
     });
 
@@ -708,18 +964,24 @@ export class SensoryAnalysisEngine {
     overallStats: DescriptiveStats,
     sampleInsights: SampleInsights,
     comparativeAnalysis: ReturnType<SensoryAnalysisEngine["buildComparativeAnalysis"]>,
-    meanDropAnalysis: Array<SampleMeanDropRow & { sampleNumber: number; sampleLabel: string }>
+    meanDropAnalysis: Array<SampleMeanDropRow & { sampleNumber: number; sampleLabel: string }>,
+    dataQuality: DataQualityReport
   ) {
     const insights: string[] = [];
     if (sampleInsights.bestSample) {
       insights.push(
-        `${sampleInsights.bestSample.sampleLabel} obtained the highest overall liking score (${sampleInsights.bestSample.meanScore}).`
+        `${sampleInsights.bestSample.sampleLabel} obtained the highest overall liking score (${sampleInsights.bestSample.meanScore}, ${sampleInsights.bestSample.interpretation}).`
       );
     }
 
     const comparison = comparativeAnalysis.primaryComparison?.statisticalComparison;
     if (comparison) {
       insights.push(comparison.interpretation);
+      if (comparison.effectSize) {
+        insights.push(
+          `Effect size (${comparison.effectSize.label}) = ${comparison.effectSize.value} (${comparison.effectSize.magnitude}).`
+        );
+      }
     }
 
     const strongestDriver = [...meanDropAnalysis]
@@ -729,6 +991,10 @@ export class SensoryAnalysisEngine {
       insights.push(
         `${strongestDriver.attribute} in ${strongestDriver.sampleLabel} is the strongest actionable JAR driver with a mean drop of ${strongestDriver.meanDrop}.`
       );
+    }
+
+    if (dataQuality.findings.length > 0) {
+      insights.push(`Data quality: ${dataQuality.recommendation}`);
     }
 
     if (insights.length === 0) {
@@ -742,7 +1008,9 @@ export class SensoryAnalysisEngine {
         primaryPValue: comparison?.pValue ?? null,
         formattedPrimaryPValue: formatPValue(comparison?.pValue ?? null),
         hasSignificantDifference: comparison?.significant ?? null,
+        primaryEffectSize: comparison?.effectSize ?? null,
         strongestDriver: strongestDriver ?? null,
+        dataQualityStatus: dataQuality.status,
       },
     };
   }
@@ -762,7 +1030,12 @@ export class SensoryAnalysisEngine {
       coreAttributes.map((attribute) => [attribute.attributeName.toLowerCase(), attribute.id])
     );
 
-    const metrics: Array<{ studyId: string; attributeId?: string | null; metricType: "MEAN_LIKING" | "JAR_FREQ" | "PENALTY"; value: Prisma.InputJsonValue }> = [];
+    const metrics: Array<{
+      studyId: string;
+      attributeId?: string | null;
+      metricType: "MEAN_LIKING" | "JAR_FREQ" | "PENALTY";
+      value: Prisma.InputJsonValue;
+    }> = [];
 
     metrics.push({
       studyId,
@@ -808,49 +1081,98 @@ export class SensoryAnalysisEngine {
     });
   }
 
-  private async generateAIInterpretation(studyId: string, overallStats: DescriptiveStats, penalties: PenaltyResult[]) {
-    if (!process.env.OPENAI_API_KEY) {
+  private async generateAIInterpretation(
+    studyId: string,
+    context: {
+      overallStats: DescriptiveStats;
+      penaltyResults: PenaltyResult[];
+      sampleInsights: SampleInsights;
+      comparativeAnalysis: ReturnType<SensoryAnalysisEngine["buildComparativeAnalysis"]>;
+      dataQuality: DataQualityReport;
+      automaticInterpretation: ReturnType<SensoryAnalysisEngine["buildAutomaticInterpretation"]>;
+      studyDesign: StudyDesign;
+    }
+  ) {
+    const ai = await createOpenAICompatibleClient("analysis");
+    if (!ai) {
       return;
     }
 
-    const actionableIssues = penalties.filter((penalty) => penalty.isActionable);
+    const actionableIssues = context.penaltyResults.filter((penalty) => penalty.isActionable);
+    const primary = context.comparativeAnalysis.primaryComparison;
+    const stat = primary?.statisticalComparison;
+    const checks = stat?.assumptionChecks;
+    const postHoc = stat?.postHocResults ?? [];
+
+    const samplesRanked = [...context.sampleInsights.samplePerformance]
+      .sort((left, right) => right.meanScore - left.meanScore)
+      .map((sample, index) => `${index + 1}. ${sample.sampleLabel} mean=${sample.meanScore} (${sample.interpretation})`)
+      .join("\n");
+
+    const dataQualityLines = context.dataQuality.findings
+      .map((finding) => `- ${finding.label}: ${finding.affectedCount} respondent(s) (${finding.severity}).`)
+      .join("\n");
 
     const prompt = `
-You are a sensory analysis expert interpreting results from a consumer taste test.
-Overall Liking: Mean ${overallStats.mean}/9.0 (n=${overallStats.n})
+You are a sensory analysis expert reviewing a TARAsense Phase 1 hedonic consumer test.
 
-Penalty Analysis Results:
+STUDY DESIGN: ${context.studyDesign === "WITHIN_SUBJECT" ? "Within-subject (repeated measures)" : "Monadic (independent)"}
+
+OVERALL LIKING: mean ${context.overallStats.mean}/9.0 (n=${context.overallStats.n}, SD=${context.overallStats.stdDev}${context.overallStats.confidenceInterval ? `, 95% CI [${context.overallStats.confidenceInterval.lower}, ${context.overallStats.confidenceInterval.upper}]` : ""}).
+
+SAMPLES RANKED:
+${samplesRanked || "No sample-level data."}
+
+PRIMARY STATISTICAL TEST:
+- Variable: ${primary?.variableLabel ?? "n/a"}
+- Test: ${stat?.testLabel ?? "n/a"} (${stat?.repeatedMeasures ? "repeated measures" : "independent"})
+- p-value: ${stat ? formatPValue(stat.pValue) : "n/a"}
+- Effect size: ${stat?.effectSize ? `${stat.effectSize.label} = ${stat.effectSize.value} (${stat.effectSize.magnitude})` : "n/a"}
+- Assumption pathway: ${checks?.recommendedPathway ?? "n/a"} - ${checks?.rationale ?? ""}
+${postHoc.length > 0 ? `- Post-hoc significant pairs: ${postHoc.filter((p) => p.significant).map((p) => p.pairLabel).join(", ") || "none"}` : ""}
+
+PENALTY DRIVERS (${actionableIssues.length} actionable):
 ${actionableIssues
   .map(
     (penalty) =>
-      `- ${penalty.attribute}: low side ${penalty.tooLowPercent}% (penalty ${penalty.tooLowPenalty}, level ${penalty.tooLowLevel}); high side ${penalty.tooHighPercent}% (penalty ${penalty.tooHighPenalty}, level ${penalty.tooHighLevel})`
+      `- ${penalty.attribute}: low side ${penalty.tooLowPercent}% (penalty ${penalty.tooLowPenalty}, ${penalty.tooLowLevel}); high side ${penalty.tooHighPercent}% (penalty ${penalty.tooHighPenalty}, ${penalty.tooHighLevel})`
   )
-  .join("\n")}
+  .join("\n") || "None"}
+
+DATA QUALITY: status=${context.dataQuality.status}; flagged respondents=${context.dataQuality.totals.flaggedRespondents}/${context.dataQuality.totals.respondents}.
+${dataQualityLines || "- No data quality issues."}
 
 Provide:
-1. A 2-sentence interpretation of consumer acceptance
-2. Specific product development recommendations
-3. A decision: NEEDS_IMPROVEMENT, CONTINUE_REFINEMENT, READY_FOR_READINESS, or READY_FOR_COMMERCIALIZATION
+1. A maximum of 10 sentences interpretation of consumer acceptance grounded in the statistical test and effect size (avoid overclaiming if the effect size is small or if data quality warnings exist).
+2. Specific product development recommendations citing the strongest JAR drivers and ranked samples.
+3. A decision: NEEDS_IMPROVEMENT, CONTINUE_REFINEMENT, READY_FOR_READINESS, or READY_FOR_COMMERCIALIZATION.
 
-Format as JSON: {"interpretation": string, "recommendation": string, "decision": string}
+Format strictly as JSON: {"interpretation": string, "recommendation": string, "decision": string}
 `;
 
     try {
-      const { OpenAI } = await import("openai");
-      const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+      let raw: string;
 
-      const completion = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: prompt }],
-        response_format: { type: "json_object" },
-      });
+      try {
+        const completion = await ai.client.chat.completions.create({
+          model: ai.model,
+          messages: [{ role: "user", content: prompt }],
+          response_format: { type: "json_object" },
+        });
+        raw = completion.choices[0]?.message?.content ?? "{}";
+      } catch (error) {
+        if (!shouldRetryWithoutJsonResponseFormat(error)) {
+          throw error;
+        }
 
-      const raw = completion.choices[0]?.message?.content ?? "{}";
-      const result = JSON.parse(raw) as {
-        interpretation?: string;
-        recommendation?: string;
-        decision?: string;
-      };
+        const completion = await ai.client.chat.completions.create({
+          model: ai.model,
+          messages: [{ role: "user", content: prompt }],
+        });
+        raw = completion.choices[0]?.message?.content ?? "{}";
+      }
+
+      const result = parseJsonObjectResponse(raw);
 
       const validDecisions = new Set<DecisionType>([
         "NEEDS_IMPROVEMENT",
@@ -864,8 +1186,8 @@ Format as JSON: {"interpretation": string, "recommendation": string, "decision":
       await prisma.studyAnalysis.update({
         where: { studyId },
         data: {
-          aiInterpretation: result.interpretation ?? null,
-          aiRecommendation: result.recommendation ?? null,
+          aiInterpretation: typeof result.interpretation === "string" ? result.interpretation : null,
+          aiRecommendation: typeof result.recommendation === "string" ? result.recommendation : null,
           decisionFlag: decisionValue && validDecisions.has(decisionValue) ? decisionValue : null,
         },
       });
@@ -887,45 +1209,31 @@ Format as JSON: {"interpretation": string, "recommendation": string, "decision":
   }
 }
 
+function shouldRetryWithoutJsonResponseFormat(error: unknown) {
+  const status = typeof error === "object" && error && "status" in error ? Number(error.status) : null;
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+
+  return (
+    status === 400 &&
+    (message.includes("response_format") || message.includes("json_object") || message.includes("unsupported"))
+  );
+}
+
 function normalizeJarValue(value: unknown): ParsedJARValue | null {
-  if (!value) {
-    return null;
-  }
-
+  if (!value) return null;
   if (typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 5) {
-    return {
-      rawValue: value,
-      bucket: collapseJarBucket(value),
-    };
+    return { rawValue: value, bucket: collapseJarBucket(value) };
   }
-
-  if (typeof value !== "object") {
-    return null;
-  }
-
+  if (typeof value !== "object") return null;
   const row = value as { value?: unknown; rawValue?: unknown; bucket?: unknown };
-
   if (typeof row.rawValue === "number" && Number.isInteger(row.rawValue) && row.rawValue >= 1 && row.rawValue <= 5) {
-    return {
-      rawValue: row.rawValue,
-      bucket: collapseJarBucket(row.rawValue),
-    };
+    return { rawValue: row.rawValue, bucket: collapseJarBucket(row.rawValue) };
   }
-
   if (typeof row.value === "number" && Number.isInteger(row.value) && row.value >= 1 && row.value <= 5) {
-    return {
-      rawValue: row.value,
-      bucket: collapseJarBucket(row.value),
-    };
+    return { rawValue: row.value, bucket: collapseJarBucket(row.value) };
   }
-
-  if (typeof row.bucket === "string" && isJarBucket(row.bucket)) {
-    return mapLegacyBucketToRaw(row.bucket);
-  }
-  if (typeof row.value === "string" && isJarBucket(row.value)) {
-    return mapLegacyBucketToRaw(row.value);
-  }
-
+  if (typeof row.bucket === "string" && isJarBucket(row.bucket)) return mapLegacyBucketToRaw(row.bucket);
+  if (typeof row.value === "string" && isJarBucket(row.value)) return mapLegacyBucketToRaw(row.value);
   return null;
 }
 
@@ -946,62 +1254,39 @@ function collapseJarBucket(rawValue: number): JarBucket {
 }
 
 function classifyDriverLevel(penalty: number | null, nonJarPercent: number): DriverLevel {
-  if (penalty === null || nonJarPercent < 20) {
-    return "NOT_ACTIONABLE";
-  }
-  if (penalty >= 1.0) {
-    return "STRONG";
-  }
-  if (penalty >= 0.5) {
-    return "MODERATE";
-  }
+  if (penalty === null || nonJarPercent < 20) return "NOT_ACTIONABLE";
+  if (penalty >= 1.0) return "STRONG";
+  if (penalty >= 0.5) return "MODERATE";
   return "NOT_ACTIONABLE";
 }
 
 function mergeDriverLevels(left: DriverLevel, right: DriverLevel): DriverLevel {
-  if (left === "STRONG" || right === "STRONG") {
-    return "STRONG";
-  }
-  if (left === "MODERATE" || right === "MODERATE") {
-    return "MODERATE";
-  }
+  if (left === "STRONG" || right === "STRONG") return "STRONG";
+  if (left === "MODERATE" || right === "MODERATE") return "MODERATE";
   return "NOT_ACTIONABLE";
 }
 
 function normalizeAttributeBaseName(name: string) {
-  return name
-    .replace(/\s*\(jar\)\s*$/i, "")
-    .replace(/\s*liking\s*$/i, "")
-    .trim();
+  return name.replace(/\s*\(jar\)\s*$/i, "").replace(/\s*liking\s*$/i, "").trim();
 }
 
-function interpretSampleMean(mean: number) {
-  if (mean >= 7.5) {
-    return "Highly liked";
-  }
-  if (mean >= 6.5) {
-    return "Generally liked";
-  }
-  if (mean >= 5.5) {
-    return "Acceptable but weak";
-  }
-  return "Low liking";
+// Acceptability thresholds aligned to the TARAsense Hedonic Workflow spec:
+//   ≥ 7   = Highly acceptable (Highly liked)
+//   5-6.99 = Moderately acceptable
+//   < 5   = Low acceptability
+export function interpretSampleMean(meanValue: number) {
+  if (meanValue >= 7) return "Highly acceptable";
+  if (meanValue >= 5) return "Moderately acceptable";
+  return "Low acceptability";
 }
 
 function toSampleLabelMap(value: unknown) {
   const map = new Map<number, string>();
-  if (!value || typeof value !== "object") {
-    return map;
-  }
-
+  if (!value || typeof value !== "object") return map;
   Object.entries(value as Record<string, unknown>).forEach(([key, rawLabel]) => {
     const sampleNumber = Number(key);
-    if (!Number.isFinite(sampleNumber) || sampleNumber < 1) {
-      return;
-    }
-    if (typeof rawLabel !== "string" || !rawLabel.trim()) {
-      return;
-    }
+    if (!Number.isFinite(sampleNumber) || sampleNumber < 1) return;
+    if (typeof rawLabel !== "string" || !rawLabel.trim()) return;
     map.set(Math.floor(sampleNumber), rawLabel.trim());
   });
   return map;
@@ -1013,9 +1298,7 @@ function getNumericAttributeValue(attributes: Record<string, unknown>, attribute
 }
 
 function nullableMean(values: number[]) {
-  if (values.length === 0) {
-    return null;
-  }
+  if (values.length === 0) return null;
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
@@ -1023,10 +1306,15 @@ function roundNullable(value: number | null) {
   return value === null ? null : Math.round(value * 100) / 100;
 }
 
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
+}
+
 function serializeComparisonResult(result: ComparisonResult) {
   return {
     test: result.test,
     testLabel: result.testLabel,
+    studyDesign: result.studyDesign,
     repeatedMeasures: result.repeatedMeasures,
     pValue: result.pValue,
     formattedPValue: formatPValue(result.pValue),
@@ -1036,5 +1324,8 @@ function serializeComparisonResult(result: ComparisonResult) {
     interpretation: result.interpretation,
     assumptions: result.assumptions,
     warnings: result.warnings,
+    assumptionChecks: result.assumptionChecks,
+    effectSize: result.effectSize,
+    postHocResults: result.postHocResults,
   };
 }

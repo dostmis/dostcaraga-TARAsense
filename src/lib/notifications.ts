@@ -1,5 +1,7 @@
 import { Prisma, UserRole } from "@prisma/client";
 import { prisma } from "@/lib/db";
+import { runInBackground } from "@/lib/async-workflow";
+import { sendPushToUsers } from "@/lib/push/fcm";
 
 type NotificationInput = {
   title: string;
@@ -8,7 +10,41 @@ type NotificationInput = {
   category?: "AUTH" | "STUDY" | "ROLE" | "SURVEY" | "SYSTEM";
   actionUrl?: string;
   metadata?: Prisma.InputJsonValue;
+  /** Set to false to suppress FCM push for this notification. */
+  push?: boolean;
 };
+
+function buildPushData(input: NotificationInput): Record<string, string> {
+  const data: Record<string, string> = {
+    category: input.category ?? "SYSTEM",
+    level: input.level ?? "INFO",
+  };
+  if (input.actionUrl) {
+    data.actionUrl = input.actionUrl;
+  }
+  if (input.metadata && typeof input.metadata === "object") {
+    for (const [key, value] of Object.entries(input.metadata as Record<string, unknown>)) {
+      if (value === undefined || value === null) continue;
+      data[key] = typeof value === "string" ? value : JSON.stringify(value);
+    }
+  }
+  return data;
+}
+
+function dispatchPush(userIds: string[], input: NotificationInput) {
+  if (process.env.PUSH_NOTIFICATIONS_ENABLED !== "true") return;
+  if (input.push === false) return;
+  const recipients = Array.from(new Set(userIds.filter(Boolean)));
+  if (recipients.length === 0) return;
+
+  runInBackground("notify-push", async () => {
+    await sendPushToUsers(recipients, {
+      title: input.title,
+      body: input.message,
+      data: buildPushData(input),
+    });
+  });
+}
 
 export async function notifyUser(userId: string, input: NotificationInput) {
   if (!userId) return;
@@ -27,6 +63,8 @@ export async function notifyUser(userId: string, input: NotificationInput) {
   } catch (error) {
     console.error("Failed to create notification for user:", error);
   }
+
+  dispatchPush([userId], input);
 }
 
 export async function notifyUsers(userIds: string[], input: NotificationInput) {
@@ -48,6 +86,8 @@ export async function notifyUsers(userIds: string[], input: NotificationInput) {
   } catch (error) {
     console.error("Failed to create bulk notifications:", error);
   }
+
+  dispatchPush(uniqueUserIds, input);
 }
 
 export async function notifyRole(role: UserRole, input: NotificationInput) {

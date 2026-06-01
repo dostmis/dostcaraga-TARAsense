@@ -5,6 +5,7 @@ import { parseRole } from "@/lib/auth/roles";
 import { mobileAuthResponse, mobileError, parseJsonBody } from "@/lib/mobile/api";
 import { isMobileTokenSecretConfigured } from "@/lib/mobile/token";
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
+import { logUserUsage } from "@/lib/user-usage";
 
 export const dynamic = "force-dynamic";
 
@@ -68,6 +69,15 @@ export async function POST(request: NextRequest) {
   if (!role) {
     return mobileError("Unsupported role configuration.", 500, "ROLE_CONFIG_ERROR");
   }
+  await logUserUsage({
+    actorUserId: user.id,
+    actor: { name: user.name, email: user.email, role },
+    action: "USER_REGISTERED",
+    entityType: "User",
+    entityId: user.id,
+    summary: `${user.name} registered a new mobile account.`,
+    metadata: { channel: "mobile", role, organization: user.organization },
+  });
 
   return mobileAuthResponse({
     ...user,

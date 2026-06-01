@@ -43,5 +43,12 @@ export default async function StudyDashboardPage({ params }: PageProps) {
     notFound();
   }
 
-  return <ResultsDashboard studyId={studyId} />;
+  const fallbackHref =
+    session.role === "FIC"
+      ? "/fic/dashboard?view=dashboards"
+      : session.role === "ADMIN"
+        ? "/admin/dashboard?view=dashboard"
+        : "/msme/dashboard?view=history";
+
+  return <ResultsDashboard studyId={studyId} backHref={fallbackHref} />;
 }

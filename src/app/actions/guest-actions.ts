@@ -11,13 +11,33 @@ import { applyGuestSessionCookies } from "@/lib/auth/session";
 import { lockStudyRow, runSerializableTransaction } from "@/lib/db-transaction";
 import {
   TARGET_CONSUMER_DIETARY_OPTIONS,
-  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS,
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS,
   type TargetConsumerDietaryPref,
   doesPanelistMatchTargetConsumer,
 } from "@/lib/target-consumer";
+import type { DietaryPref } from "@prisma/client";
 
-const ALLOWED_GUEST_LIFESTYLES = new Set(TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => option.value));
-const ALLOWED_GUEST_DIETARY_PREFS = new Set(TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => option.value));
+const ALLOWED_GUEST_DIETARY_PREFS = new Set<TargetConsumerDietaryPref>(
+  TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_WORK_DAILY_LIVING = new Set<string>(
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_HEALTH_FITNESS = new Set<string>(
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_FOOD_CONSUMPTION = new Set<string>(
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS.map((option) => option.value)
+);
+
+function collectFromForm(formData: FormData, key: string, allowed: Set<string>) {
+  return formData
+    .getAll(key)
+    .map((value) => String(value).trim())
+    .filter((value) => allowed.has(value));
+}
 
 export async function registerWalkInGuest(formData: FormData) {
   const studyId = String(formData.get("studyId") ?? "").trim();
@@ -27,23 +47,15 @@ export async function registerWalkInGuest(formData: FormData) {
   const age = Number(String(formData.get("age") ?? "").trim());
   const address = String(formData.get("address") ?? "").trim();
   const organization = String(formData.get("organization") ?? "").trim();
-  const occupation = String(formData.get("occupation") ?? "").trim();
-  const lifestyles = formData
-    .getAll("lifestyle")
-    .map((value) => String(value).trim().toLowerCase())
-    .filter((value) => ALLOWED_GUEST_LIFESTYLES.has(value));
   const dietaryPrefs = formData
     .getAll("dietaryPrefs")
     .map((value) => String(value).trim().toUpperCase())
     .filter((value): value is TargetConsumerDietaryPref =>
       ALLOWED_GUEST_DIETARY_PREFS.has(value as TargetConsumerDietaryPref)
-    );
-  const consumptionHabits = {
-    coffeeDrinker: formData.get("coffeeDrinker") === "on",
-    snackConsumer: formData.get("snackConsumer") === "on",
-    energyDrinkConsumer: formData.get("energyDrinkConsumer") === "on",
-    snacks: formData.get("snackConsumer") === "on" ? "daily" : "rarely",
-  };
+    ) as DietaryPref[];
+  const workDailyLiving = collectFromForm(formData, "workDailyLiving", ALLOWED_WORK_DAILY_LIVING);
+  const healthFitness = collectFromForm(formData, "healthFitness", ALLOWED_HEALTH_FITNESS);
+  const foodConsumption = collectFromForm(formData, "foodConsumption", ALLOWED_FOOD_CONSUMPTION);
 
   if (!studyId || !slotId) {
     redirect("/?error=Invalid+walk-in+link");
@@ -56,9 +68,6 @@ export async function registerWalkInGuest(formData: FormData) {
   }
   if (!address) {
     redirect(withFeedback(studyId, slotId, "error", "Address+is+required"));
-  }
-  if (!occupation) {
-    redirect(withFeedback(studyId, slotId, "error", "Occupation+is+required"));
   }
 
   const gender = normalizeGender(genderInput);
@@ -101,9 +110,11 @@ export async function registerWalkInGuest(formData: FormData) {
         {
           age,
           gender,
-          lifestyle: lifestyles,
+          lifestyle: [],
+          workDailyLiving,
+          healthFitness,
+          foodConsumption,
           dietaryPrefs,
-          consumptionHabits,
           isActive: true,
         },
         study.targetDemographics
@@ -143,10 +154,11 @@ export async function registerWalkInGuest(formData: FormData) {
         gender,
         location: address,
         organization: organization || null,
-        occupation,
-        lifestyle: lifestyles.length > 0 ? lifestyles : ["walk-in"],
+        workDailyLiving,
+        healthFitness,
+        foodConsumption,
         dietaryPrefs,
-        consumptionHabits: { ...consumptionHabits, source: "walk-in-qr" },
+        consumptionHabits: { source: "walk-in-qr" },
         isActive: true,
         isGuest: true,
       },

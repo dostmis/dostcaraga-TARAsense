@@ -188,7 +188,7 @@ export async function getFicBookedSessions(user: MobileUser, query?: string, lim
         sessionState: row.sessionAt ? "CONFIRMED" : "PENDING_CONFIRMATION",
         scheduledAt: scheduledAt.toISOString(),
         dateKey: formatDateKeyInTimeZone(scheduledAt, FIC_TIMEZONE),
-        msme: {
+        MSME: {
           id: row.study.creator.id,
           name: row.study.creator.name,
           organization: row.study.creator.organization,
@@ -213,8 +213,8 @@ export async function getFicBookedSessions(user: MobileUser, query?: string, lim
         row.panelistName,
         row.panelistNumber,
         row.participantStatus,
-        row.msme.name,
-        row.msme.organization ?? "",
+        row.MSME.name,
+        row.MSME.organization ?? "",
       ]
         .join(" ")
         .toLowerCase()
@@ -406,7 +406,7 @@ function serializeStudy<T extends {
     sampleSize: study.sampleSize,
     createdAt: study.createdAt.toISOString(),
     updatedAt: study.updatedAt.toISOString(),
-    msme: {
+    MSME: {
       id: study.creator.id,
       name: study.creator.name,
       organization: study.creator.organization,

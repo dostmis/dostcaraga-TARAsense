@@ -20,7 +20,7 @@ export const SENSORY_STUDY_TYPES = [
 ];
 
 export const CONSUMER_OBJECTIVES = [
-  { value: "MARKET_READINESS", label: "Market Readiness", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
+  { value: "MARKET_READINESS", label: "Consumer Acceptability", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
   { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
   { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
 ];
@@ -37,8 +37,8 @@ export const CATEGORY_PROFILES = [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Sourness / Acidity", dimension: "Taste" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Mouthfeel / Body", dimension: "Mouthfeel" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Mouthfeel / Body", dimension: "mouthfeel" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -50,7 +50,7 @@ export const CATEGORY_PROFILES = [
       { name: "Moistness", dimension: "Texture" },
       { name: "Crumb softness", dimension: "Texture" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Aftertaste", dimension: "Aftertaste" },
+      { name: "Aftertaste", dimension: "aftertaste" },
     ],
   },
   {
@@ -61,8 +61,8 @@ export const CATEGORY_PROFILES = [
       { name: "Saltiness", dimension: "Taste" },
       { name: "Crunchiness", dimension: "Texture" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Oiliness", dimension: "Mouthfeel" },
-      { name: "Aftertaste", dimension: "Aftertaste" },
+      { name: "Oiliness", dimension: "mouthfeel" },
+      { name: "Aftertaste", dimension: "aftertaste" },
     ],
   },
   {
@@ -72,9 +72,9 @@ export const CATEGORY_PROFILES = [
     attributes: [
       { name: "Sourness", dimension: "Taste" },
       { name: "Sweetness", dimension: "Taste" },
-      { name: "Creaminess", dimension: "Mouthfeel" },
+      { name: "Creaminess", dimension: "mouthfeel" },
       { name: "Thickness", dimension: "Texture" },
-      { name: "Aftertaste", dimension: "Aftertaste" },
+      { name: "Aftertaste", dimension: "aftertaste" },
     ],
   },
   {
@@ -85,8 +85,8 @@ export const CATEGORY_PROFILES = [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Bitterness", dimension: "Taste" },
       { name: "Texture", dimension: "Texture" },
-      { name: "Mouthfeel", dimension: "Mouthfeel" },
-      { name: "Aftertaste", dimension: "Aftertaste" },
+      { name: "Mouthfeel", dimension: "mouthfeel" },
+      { name: "Aftertaste", dimension: "aftertaste" },
     ],
   },
 ];
@@ -110,7 +110,7 @@ export function getStudyBuilderOptions() {
     categoryProfiles: CATEGORY_PROFILES,
     regions: REGIONS,
     facilitiesByRegion: FACILITIES_BY_REGION,
-    attributeDimensions: ["Taste", "Texture", "Aftertaste", "Mouthfeel"],
+    attributeDimensions: ["Appearance", "Aroma", "Texture", "Taste", "mouthfeel", "Flavor", "aftertaste"],
     targetConsumerOptions: {
       genders: TARGET_CONSUMER_GENDER_OPTIONS,
       lifestyles: TARGET_CONSUMER_LIFESTYLE_OPTIONS,

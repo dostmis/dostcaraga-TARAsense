@@ -9,11 +9,63 @@ import { Prisma } from "@prisma/client";
 import { notifyUser } from "@/lib/notifications";
 import { clearGuestSessionCookies, getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
+import { logUserUsage } from "@/lib/user-usage";
 
 const MAX_ATTRIBUTE_KEYS = 40;
 const MAX_SAMPLE_RESPONSES = 20;
 const MAX_OPEN_ENDED_LENGTH = 2000;
+const MAX_DRAFT_JSON_BYTES = 80_000;
+const DRAFT_RETENTION_DAYS = 14;
 const JAR_BUCKET_VALUES = new Set(["too_low", "just_right", "too_high"]);
+
+const DraftAttributeValueSchema = z.union([
+  z.number().min(1).max(9),
+  z.string().max(MAX_OPEN_ENDED_LENGTH),
+  z
+    .object({
+      type: z.string().max(40).optional(),
+      value: z.union([z.number().int().min(1).max(5), z.string().max(40)]).optional(),
+      rawValue: z.number().int().min(1).max(5).optional(),
+      bucket: z.enum(["too_low", "just_right", "too_high"]).optional(),
+    })
+    .passthrough(),
+]);
+
+const ResponseDraftSchema = z
+  .object({
+    phase: z.enum(["instructions", "sample", "ranking", "comments"]),
+    currentSampleIndex: z.number().int().min(0).max(MAX_SAMPLE_RESPONSES - 1),
+    currentStep: z.number().int().min(0).max(MAX_ATTRIBUTE_KEYS),
+    responsesBySample: z
+      .record(
+        z.string().regex(/^\d+$/),
+        z
+          .record(z.string().min(1).max(120), DraftAttributeValueSchema)
+          .refine((row) => Object.keys(row).length <= MAX_ATTRIBUTE_KEYS, {
+            message: `Too many draft attribute fields. Maximum is ${MAX_ATTRIBUTE_KEYS}.`,
+          })
+      )
+      .refine((row) => Object.keys(row).length <= MAX_SAMPLE_RESPONSES, {
+        message: `Too many draft sample responses. Maximum is ${MAX_SAMPLE_RESPONSES}.`,
+      }),
+    sampleRanking: z
+      .record(
+        z.string().regex(/^\d+$/),
+        z.union([z.number().int().min(1).max(MAX_SAMPLE_RESPONSES), z.null()])
+      )
+      .default({}),
+    comments: z
+      .object({
+        likedMost: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
+        improvements: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
+      })
+      .default({}),
+    samplePlanSignature: z.string().min(1).max(12_000),
+    updatedAt: z.string().datetime(),
+  })
+  .refine((payload) => Buffer.byteLength(JSON.stringify(payload), "utf8") <= MAX_DRAFT_JSON_BYTES, {
+    message: `Draft is too large. Maximum is ${MAX_DRAFT_JSON_BYTES} bytes.`,
+  });
 
 const SubmitResponseSchema = z.object({
   overallLiking: z.number().min(1).max(9),
@@ -97,93 +149,182 @@ type NormalizePayloadResult =
       error: string;
     };
 
+type ResponseDraftPayload = z.infer<typeof ResponseDraftSchema>;
+
 class AlreadySubmittedError extends Error {
   constructor() {
     super("ALREADY_SUBMITTED");
   }
 }
 
-export async function submitResponse(studyId: string, participantId: string, payload: unknown) {
-  try {
-    const session = await getCurrentSession();
-    const guestSession = await getCurrentGuestSession();
-    if (!session && !guestSession) {
-      return { success: false, error: "Please login to submit responses." };
-    }
-
-    const validated = SubmitResponseSchema.parse(payload);
-
-    const participant = await prisma.studyParticipant.findFirst({
-      where: {
-        id: participantId,
-        studyId,
-      },
-      select: {
-        id: true,
-        status: true,
-        source: true,
-        consentStatus: true,
-        study: {
-          select: {
-            id: true,
-            title: true,
-            creatorId: true,
-            creator: { select: { role: true } },
-            targetDemographics: true,
-            sensoryAttributes: {
-              select: {
-                name: true,
-                type: true,
-              },
-              orderBy: {
-                order: "asc",
-              },
-            },
-            sensoryQuestions: {
-              select: {
-                id: true,
-                questionText: true,
-                questionType: true,
-              },
-            },
-          },
+const responseParticipantSelect = {
+  id: true,
+  status: true,
+  source: true,
+  consentStatus: true,
+  study: {
+    select: {
+      id: true,
+      title: true,
+      creatorId: true,
+      creator: { select: { role: true } },
+      targetDemographics: true,
+      sensoryAttributes: {
+        select: {
+          name: true,
+          type: true,
         },
-        panelist: {
-          select: {
-            userId: true,
-          },
+        orderBy: {
+          order: "asc",
         },
       },
-    });
+      sensoryQuestions: {
+        select: {
+          id: true,
+          questionText: true,
+          questionType: true,
+        },
+      },
+    },
+  },
+  panelist: {
+    select: {
+      userId: true,
+    },
+  },
+} satisfies Prisma.StudyParticipantSelect;
 
-    if (!participant) {
-      return { success: false, error: "Participant not found for this study." };
+type ResponseParticipant = Prisma.StudyParticipantGetPayload<{ select: typeof responseParticipantSelect }>;
+
+type AuthorizedResponseParticipant =
+  | {
+      success: true;
+      session: Awaited<ReturnType<typeof getCurrentSession>>;
+      guestSession: Awaited<ReturnType<typeof getCurrentGuestSession>>;
+      participant: ResponseParticipant;
     }
-    if (session?.role === "CONSUMER" && participant.panelist.userId !== session.userId) {
+  | {
+      success: false;
+      error: string;
+    };
+
+async function authorizeResponseParticipant(
+  studyId: string,
+  participantId: string,
+  options: { allowCompleted?: boolean } = {}
+): Promise<AuthorizedResponseParticipant> {
+  const session = await getCurrentSession();
+  const guestSession = await getCurrentGuestSession();
+  if (!session && !guestSession) {
+    return { success: false, error: "Please login to continue evaluation." };
+  }
+
+  const participant = await prisma.studyParticipant.findFirst({
+    where: {
+      id: participantId,
+      studyId,
+    },
+    select: responseParticipantSelect,
+  });
+
+  if (!participant) {
+    return { success: false, error: "Participant not found for this study." };
+  }
+  if (!options.allowCompleted && participant.status === "COMPLETED") {
+    return { success: false, error: "Participant slot has already submitted responses." };
+  }
+  if (session?.role === "CONSUMER" && participant.panelist.userId !== session.userId) {
+    return { success: false, error: "You are not allowed to answer this study participant slot." };
+  }
+  if (session?.role === "MSME") {
+    if (participant.study.creatorId === session.userId) {
+      return { success: false, error: "MSME users cannot answer their own created studies." };
+    }
+    if (participant.study.creator.role !== "MSME") {
+      return { success: false, error: "MSME users can only answer other MSME studies." };
+    }
+    if (participant.panelist.userId !== session.userId) {
       return { success: false, error: "You are not allowed to answer this study participant slot." };
     }
-    if (session?.role === "MSME") {
-      if (participant.study.creatorId === session.userId) {
-        return { success: false, error: "MSME users cannot answer their own created studies." };
+  }
+  if (session && !["CONSUMER", "MSME", "ADMIN"].includes(session.role)) {
+    return { success: false, error: "Your account role is not allowed to submit sensory responses." };
+  }
+  if (!session && guestSession) {
+    if (participant.source !== "WALK_IN_GUEST") {
+      return { success: false, error: "Guest session is not allowed for this participant slot." };
+    }
+    if (guestSession.studyId !== studyId || guestSession.participantId !== participant.id) {
+      return { success: false, error: "Guest session does not match this participant slot." };
+    }
+  }
+
+  return { success: true, session, guestSession, participant };
+}
+
+function validateParticipantCanDraft(participant: ResponseParticipant) {
+  if (participant.status === "COMPLETED") {
+    return { success: false as const, error: "Participant slot has already submitted responses." };
+  }
+  if (participant.status !== "CONFIRMED") {
+    return { success: false as const, error: "Participant slot is not confirmed for evaluation." };
+  }
+  if (participant.consentStatus !== "AGREED") {
+    return { success: false as const, error: "Please complete consent before continuing evaluation." };
+  }
+  if (participant.study.sensoryAttributes.length === 0) {
+    return { success: false as const, error: "Study has no configured sensory attributes." };
+  }
+  return { success: true as const };
+}
+
+function validateDraftResponsesAgainstStudy(
+  payload: ResponseDraftPayload,
+  attributes: StudyAttributeConfig[],
+  sampleCount: number
+) {
+  const sampleAttributes = attributes.filter((attribute) => attribute.type !== "OPEN_ENDED");
+  const sampleAttributeByName = new Map(sampleAttributes.map((attribute) => [attribute.name, attribute]));
+
+  for (const [sampleIndexKey, row] of Object.entries(payload.responsesBySample)) {
+    const sampleIndex = Number(sampleIndexKey);
+    if (!Number.isInteger(sampleIndex) || sampleIndex < 0 || sampleIndex >= sampleCount) {
+      return { success: false as const, error: "Draft contains a sample outside this study plan." };
+    }
+
+    for (const [attributeName, value] of Object.entries(row)) {
+      const attribute = sampleAttributeByName.get(attributeName);
+      if (!attribute) {
+        return { success: false as const, error: `Unknown draft attribute "${attributeName}".` };
       }
-      if (participant.study.creator.role !== "MSME") {
-        return { success: false, error: "MSME users can only answer other MSME studies." };
-      }
-      if (participant.panelist.userId !== session.userId) {
-        return { success: false, error: "You are not allowed to answer this study participant slot." };
+      const parsed = parseAttributeValue(attribute, value, attributeName);
+      if (!parsed.success) {
+        return { success: false as const, error: parsed.error };
       }
     }
-    if (session && !["CONSUMER", "MSME", "ADMIN"].includes(session.role)) {
-      return { success: false, error: "Your account role is not allowed to submit sensory responses." };
+  }
+
+  for (const [sampleNumberKey, rank] of Object.entries(payload.sampleRanking)) {
+    const sampleNumber = Number(sampleNumberKey);
+    if (!Number.isInteger(sampleNumber) || sampleNumber < 1 || sampleNumber > sampleCount) {
+      return { success: false as const, error: "Draft ranking contains a sample outside this study plan." };
     }
-    if (!session && guestSession) {
-      if (participant.source !== "WALK_IN_GUEST") {
-        return { success: false, error: "Guest session is not allowed for this participant slot." };
-      }
-      if (guestSession.studyId !== studyId || guestSession.participantId !== participant.id) {
-        return { success: false, error: "Guest session does not match this participant slot." };
-      }
+    if (rank !== null && (rank < 1 || rank > sampleCount)) {
+      return { success: false as const, error: "Draft ranking is outside this study plan." };
     }
+  }
+
+  return { success: true as const };
+}
+
+export async function submitResponse(studyId: string, participantId: string, payload: unknown) {
+  try {
+    const validated = SubmitResponseSchema.parse(payload);
+    const access = await authorizeResponseParticipant(studyId, participantId, { allowCompleted: true });
+    if (!access.success) {
+      return { success: false, error: access.error };
+    }
+    const { session, guestSession, participant } = access;
 
     if (participant.status === "COMPLETED") {
       return { success: true, alreadySubmitted: true };
@@ -249,6 +390,13 @@ export async function submitResponse(studyId: string, participantId: string, pay
           },
         });
 
+        await tx.sensoryResponseDraft.deleteMany({
+          where: {
+            studyId,
+            participantId,
+          },
+        });
+
         const numericQuestionRows = buildQuestionResponses(
           studyId,
           participantId,
@@ -278,6 +426,19 @@ export async function submitResponse(studyId: string, participantId: string, pay
             await analysisEngine.analyzeStudy(studyId);
           })(),
           (async () => {
+            await logUserUsage({
+              actorUserId: session?.userId ?? participant.panelist.userId,
+              action: "SENSORY_RESPONSE_SUBMITTED",
+              entityType: "Study",
+              entityId: studyId,
+              summary: `Submitted sensory response for "${participant.study.title}".`,
+              metadata: {
+                studyId,
+                participantId,
+                channel: session ? "web" : "guest",
+                sampleResponseCount: normalized.sampleResponses.length,
+              },
+            });
             await notifyUser(participant.study.creatorId, {
               title: "New sensory response submitted",
               message: `A participant submitted responses for "${participant.study.title}".`,
@@ -325,6 +486,134 @@ export async function submitResponse(studyId: string, participantId: string, pay
 
     console.error("Submit response error:", error);
     return { success: false, error: "Failed to submit response." };
+  }
+}
+
+export async function getResponseDraft(studyId: string, participantId: string) {
+  try {
+    const access = await authorizeResponseParticipant(studyId, participantId, { allowCompleted: true });
+    if (!access.success) {
+      return { success: false, error: access.error };
+    }
+    const { participant } = access;
+    if (participant.status === "COMPLETED") {
+      return { success: true, draft: null };
+    }
+    const readiness = validateParticipantCanDraft(participant);
+    if (!readiness.success) {
+      return { success: false, error: readiness.error };
+    }
+
+    const draft = await prisma.sensoryResponseDraft.findUnique({
+      where: { participantId },
+      select: {
+        data: true,
+        updatedAt: true,
+        expiresAt: true,
+      },
+    });
+    if (!draft) {
+      return { success: true, draft: null };
+    }
+
+    if (draft.expiresAt.getTime() <= Date.now()) {
+      await prisma.sensoryResponseDraft.deleteMany({ where: { participantId, studyId } });
+      return { success: true, draft: null };
+    }
+
+    const parsed = ResponseDraftSchema.safeParse(draft.data);
+    if (!parsed.success) {
+      await prisma.sensoryResponseDraft.deleteMany({ where: { participantId, studyId } });
+      return { success: true, draft: null };
+    }
+
+    return {
+      success: true,
+      draft: {
+        ...parsed.data,
+        updatedAt: draft.updatedAt.toISOString(),
+      },
+    };
+  } catch (error) {
+    console.error("Get response draft error:", error);
+    return { success: false, error: "Failed to load response draft." };
+  }
+}
+
+export async function saveResponseDraft(studyId: string, participantId: string, payload: unknown) {
+  try {
+    const access = await authorizeResponseParticipant(studyId, participantId);
+    if (!access.success) {
+      return { success: false, error: access.error };
+    }
+    const { participant } = access;
+    const readiness = validateParticipantCanDraft(participant);
+    if (!readiness.success) {
+      return { success: false, error: readiness.error };
+    }
+
+    const validated = ResponseDraftSchema.parse(payload);
+    const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
+    if (validated.currentSampleIndex >= sampleCount) {
+      return { success: false, error: "Draft sample position is outside this study plan." };
+    }
+
+    const draftValidation = validateDraftResponsesAgainstStudy(
+      validated,
+      participant.study.sensoryAttributes as StudyAttributeConfig[],
+      sampleCount
+    );
+    if (!draftValidation.success) {
+      return { success: false, error: draftValidation.error };
+    }
+
+    const data = JSON.parse(JSON.stringify(validated)) as Prisma.InputJsonValue;
+    const expiresAt = new Date(Date.now() + DRAFT_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    const draft = await prisma.sensoryResponseDraft.upsert({
+      where: { participantId },
+      create: {
+        studyId,
+        participantId,
+        data,
+        version: 1,
+        expiresAt,
+      },
+      update: {
+        data,
+        version: { increment: 1 },
+        expiresAt,
+      },
+      select: {
+        updatedAt: true,
+      },
+    });
+
+    return { success: true, updatedAt: draft.updatedAt.toISOString() };
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      return { success: false, error: error.issues[0]?.message ?? "Invalid draft payload." };
+    }
+    console.error("Save response draft error:", error);
+    return { success: false, error: "Failed to save response draft." };
+  }
+}
+
+export async function deleteResponseDraft(studyId: string, participantId: string) {
+  try {
+    const access = await authorizeResponseParticipant(studyId, participantId, { allowCompleted: true });
+    if (!access.success) {
+      return { success: false, error: access.error };
+    }
+    await prisma.sensoryResponseDraft.deleteMany({
+      where: {
+        studyId,
+        participantId,
+      },
+    });
+    return { success: true };
+  } catch (error) {
+    console.error("Delete response draft error:", error);
+    return { success: false, error: "Failed to delete response draft." };
   }
 }
 

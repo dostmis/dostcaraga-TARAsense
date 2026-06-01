@@ -529,7 +529,7 @@ export function TarasenseLanding() {
               </h1>
 
               <p className="tara-reveal mt-8 max-w-xl text-body">
-                TARAsense is a food innovation platform that connects MSMEs, Food Innovation Centers (FICs), and participants to enable structured sensory evaluation, packaging and concept testing, and data-driven product improvement at scale.
+                TARAsense is a food innovation platform that connects Innovator, Food Innovation Centers (FICs), and participants to enable structured sensory evaluation, packaging and concept testing, and data-driven product improvement at scale.
               </p>
 
               <div className="tara-reveal mt-10 flex flex-col gap-4 sm:flex-row">

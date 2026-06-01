@@ -9,10 +9,29 @@ import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 import { formatDateKeyInTimeZone } from "@/lib/date-time";
 import { DEFAULT_TARGET_CONSUMER, normalizeTargetConsumer } from "@/lib/target-consumer";
+import { logUserUsage } from "@/lib/user-usage";
+import { validateLocationConsistency } from "@/lib/locations/psgc-queries";
+import { findUsersMatchingTarget } from "@/lib/locations/study-visibility";
 import { z } from "zod";
+import type { StudyTargetScope } from "@prisma/client";
 
 type ConsumerObjective = "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING";
 type StudyStageValue = "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS";
+const ATTRIBUTE_DIMENSIONS = [
+  "Appearance",
+  "Aroma",
+  "Texture",
+  "Taste",
+  "mouthfeel",
+  "Flavor",
+  "aftertaste",
+] as const;
+type AttributeDimension = (typeof ATTRIBUTE_DIMENSIONS)[number];
+const AttributeDimensionSchema = z.preprocess((value) => {
+  if (value === "Mouthfeel") return "mouthfeel";
+  if (value === "Aftertaste") return "aftertaste";
+  return value;
+}, z.enum(ATTRIBUTE_DIMENSIONS));
 const PRODUCT_IMAGE_MAX_BYTES = 1_000_000;
 const PRODUCT_IMAGE_DATA_URL_MAX_LENGTH = 1_400_000;
 
@@ -89,7 +108,7 @@ const BuilderPayloadSchema = z.object({
     .array(
       z.object({
         name: z.string().min(1),
-        dimension: z.enum(["Taste", "Texture", "Aftertaste", "Mouthfeel"]),
+        dimension: AttributeDimensionSchema,
         isJarTarget: z.boolean().optional(),
         isCustom: z.boolean().optional(),
         actionable: z.boolean().optional(),
@@ -113,6 +132,15 @@ const BuilderPayloadSchema = z.object({
   testingDurationDays: z.number().int().min(1).max(31).optional(),
   sessionSlots: z.array(BuilderSessionSlotSchema).default([]),
   questions: z.array(z.string().min(1)).default([]),
+  locationTarget: z
+    .object({
+      scope: z.enum(["ALL", "REGION", "PROVINCE", "CITY", "BARANGAY"]).default("CITY"),
+      regionId: z.string().nullable().optional(),
+      provinceId: z.string().nullable().optional(),
+      cityId: z.string().nullable().optional(),
+      barangayId: z.string().nullable().optional(),
+    })
+    .optional(),
 });
 
 const OBJECTIVE_PANEL_REQUIREMENTS: Record<ConsumerObjective, number> = {
@@ -165,11 +193,21 @@ export async function createStudyFromBuilder(
 
     if (validated.studyMode === "MARKET") {
       const result = await createMarketStudy(validated, creator.id, locationContext.value);
+      if (result.success && result.studyId) {
+        await persistStudyLocationTarget(result.studyId, validated, locationContext.value, null);
+      }
       scheduleStudyNotifications(validated, creator.id, session.role, result);
       return result;
     }
 
     const result = await createSensoryStudy(validated, creator.id, locationContext.value);
+    if (result.success && result.studyId) {
+      const ficUserId =
+        locationContext.value.coordinationMode === "FIC_ASSISTED" && validated.ficUserId
+          ? validated.ficUserId
+          : null;
+      await persistStudyLocationTarget(result.studyId, validated, locationContext.value, ficUserId);
+    }
     scheduleStudyNotifications(validated, creator.id, session.role, result);
     return result;
   } catch (error) {
@@ -287,6 +325,20 @@ async function createMarketStudy(
       sampleSize: payload.targetResponses,
       location: locationContext.location,
       status: "DRAFT",
+    },
+  });
+  await logUserUsage({
+    actorUserId: creatorId,
+    action: "STUDY_CREATED",
+    entityType: "Study",
+    entityId: study.id,
+    summary: `Created market study "${payload.studyTitle}".`,
+    metadata: {
+      studyMode: "MARKET",
+      marketStudyType: payload.marketStudyType,
+      targetResponses: payload.targetResponses,
+      coordinationMode: locationContext.coordinationMode,
+      location: locationContext.location,
     },
   });
 
@@ -489,7 +541,8 @@ async function createSensoryStudy(
         },
       ],
     },
-    creatorId
+    creatorId,
+    { skipBroadcast: true }
   );
 
   if (!studyResult.success || !studyResult.studyId) {
@@ -760,7 +813,7 @@ function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
 function buildSensoryQuestionnaire(
   attributes: Array<{
     name: string;
-    dimension: "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
+    dimension: AttributeDimension;
     isJarTarget: boolean;
     isCustom: boolean;
   }>,
@@ -851,7 +904,7 @@ function mapStage(
 }
 
 function formatConsumerObjectiveLabel(objective: ConsumerObjective) {
-  if (objective === "MARKET_READINESS") return "Market Readiness";
+  if (objective === "MARKET_READINESS") return "Consumer Acceptability";
   if (objective === "REFINEMENT") return "Refinement";
   return "Prototyping";
 }
@@ -859,7 +912,7 @@ function formatConsumerObjectiveLabel(objective: ConsumerObjective) {
 function validateSensoryAttributePlan(
   attributes: Array<{
     name: string;
-    dimension: "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
+    dimension: AttributeDimension;
     isJarTarget?: boolean;
     isCustom?: boolean;
     actionable?: boolean;
@@ -949,6 +1002,176 @@ async function ensurePanelists(minPanelists: number) {
   });
 }
 
+async function persistStudyLocationTarget(
+  studyId: string,
+  payload: z.infer<typeof BuilderPayloadSchema>,
+  locationContext: ResolvedLocationContext,
+  ficUserId: string | null,
+) {
+  const requestedScope = (payload.locationTarget?.scope ?? "CITY") as StudyTargetScope;
+
+  // FIC_ASSISTED mode: inherit location from the chosen FIC's profile.
+  if (locationContext.coordinationMode === "FIC_ASSISTED" && ficUserId) {
+    const ficProfile = await prisma.userProfile.findUnique({
+      where: { userId: ficUserId },
+      select: {
+        regionId: true,
+        provinceId: true,
+        cityId: true,
+        barangayId: true,
+        completedAt: true,
+      },
+    });
+
+    // Find a fallback PSGC region match using the FIC's assignedRegion string,
+    // for FICs that haven't completed their geographic profile yet.
+    let fallbackRegionId: string | null = null;
+    if ((!ficProfile || !ficProfile.completedAt) && locationContext.region) {
+      const region = await prisma.psgcRegion.findFirst({
+        where: {
+          OR: [
+            { name: { contains: locationContext.region, mode: "insensitive" } },
+            { shortName: { contains: locationContext.region, mode: "insensitive" } },
+          ],
+        },
+        select: { id: true },
+      });
+      fallbackRegionId = region?.id ?? null;
+    }
+
+    const inheritedRegionId = ficProfile?.regionId ?? fallbackRegionId;
+    const inheritedProvinceId = ficProfile?.provinceId ?? null;
+    const inheritedCityId = ficProfile?.cityId ?? null;
+    const inheritedBarangayId = ficProfile?.barangayId ?? null;
+
+    // Coerce scope down if higher precision is unavailable
+    let effectiveScope: StudyTargetScope = requestedScope;
+    if (effectiveScope === "BARANGAY" && !inheritedBarangayId) effectiveScope = inheritedCityId ? "CITY" : effectiveScope;
+    if (effectiveScope === "CITY" && !inheritedCityId) effectiveScope = inheritedProvinceId ? "PROVINCE" : effectiveScope;
+    if (effectiveScope === "PROVINCE" && !inheritedProvinceId) effectiveScope = inheritedRegionId ? "REGION" : effectiveScope;
+    if (effectiveScope === "REGION" && !inheritedRegionId) effectiveScope = "ALL";
+
+    await prisma.studyLocationTarget.upsert({
+      where: { studyId },
+      create: {
+        studyId,
+        scope: effectiveScope,
+        regionId: inheritedRegionId,
+        provinceId: inheritedProvinceId,
+        cityId: inheritedCityId,
+        barangayId: inheritedBarangayId,
+        inheritedFromFicUserId: ficUserId,
+      },
+      update: {
+        scope: effectiveScope,
+        regionId: inheritedRegionId,
+        provinceId: inheritedProvinceId,
+        cityId: inheritedCityId,
+        barangayId: inheritedBarangayId,
+        inheritedFromFicUserId: ficUserId,
+      },
+    });
+    return;
+  }
+
+  // SELF_MANAGED_PUBLIC: persist explicit PSGC ids from the builder.
+  const target = payload.locationTarget ?? null;
+  const ids = {
+    regionId: target?.regionId ?? null,
+    provinceId: target?.provinceId ?? null,
+    cityId: target?.cityId ?? null,
+    barangayId: target?.barangayId ?? null,
+  };
+
+  // ALL scope is always allowed.
+  if (requestedScope !== "ALL") {
+    const consistency = await validateLocationConsistency(ids);
+    if (!consistency.ok) {
+      // Drop to ALL rather than fail the entire study creation — we already
+      // persisted the study. Log so it's visible.
+      console.warn(`[study-target] Location consistency failed for study ${studyId}: ${consistency.error}`);
+    }
+  }
+
+  await prisma.studyLocationTarget.upsert({
+    where: { studyId },
+    create: {
+      studyId,
+      scope: requestedScope,
+      regionId: ids.regionId,
+      provinceId: ids.provinceId,
+      cityId: ids.cityId,
+      barangayId: ids.barangayId,
+      venueName:
+        locationContext.coordinationMode === "SELF_MANAGED_PUBLIC"
+          ? locationContext.publicVenueName
+          : null,
+      addressDetails:
+        locationContext.coordinationMode === "SELF_MANAGED_PUBLIC"
+          ? locationContext.publicAddressDetails || null
+          : null,
+    },
+    update: {
+      scope: requestedScope,
+      regionId: ids.regionId,
+      provinceId: ids.provinceId,
+      cityId: ids.cityId,
+      barangayId: ids.barangayId,
+      venueName:
+        locationContext.coordinationMode === "SELF_MANAGED_PUBLIC"
+          ? locationContext.publicVenueName
+          : null,
+      addressDetails:
+        locationContext.coordinationMode === "SELF_MANAGED_PUBLIC"
+          ? locationContext.publicAddressDetails || null
+          : null,
+    },
+  });
+}
+
+async function notifyLocationMatchedConsumers(
+  studyId: string,
+  studyTitle: string,
+) {
+  const target = await prisma.studyLocationTarget.findUnique({
+    where: { studyId },
+    select: {
+      scope: true,
+      regionId: true,
+      provinceId: true,
+      cityId: true,
+      barangayId: true,
+    },
+  });
+  if (!target) {
+    // No target set — fall back to global consumer broadcast
+    await notifyRole("CONSUMER", {
+      title: "New study available",
+      message: `${studyTitle} is now recruiting participants.`,
+      category: "STUDY",
+      actionUrl: `/studies/${studyId}/form`,
+      metadata: { studyId, type: "NEW_STUDY" },
+    });
+    return;
+  }
+
+  const matchedUserIds = await findUsersMatchingTarget(target, { roles: ["CONSUMER"] });
+  if (matchedUserIds.length === 0) {
+    return;
+  }
+
+  // Direct user-level notifications so audit trails reflect who was targeted.
+  for (const userId of matchedUserIds) {
+    await notifyUser(userId, {
+      title: "New study near you",
+      message: `${studyTitle} is recruiting participants in your area.`,
+      category: "STUDY",
+      actionUrl: `/studies/${studyId}/form`,
+      metadata: { studyId, type: "NEW_STUDY_TARGETED" },
+    });
+  }
+}
+
 async function pushStudyNotifications(
   payload: z.infer<typeof BuilderPayloadSchema>,
   creatorId: string,
@@ -982,15 +1205,8 @@ async function pushStudyNotifications(
     return;
   }
 
-  if (payload.studyMode === "SENSORY") {
-    await notifyRole("CONSUMER", {
-      title: "New study available",
-      message: `${payload.studyTitle} is now open for sensory participation.`,
-      level: "INFO",
-      category: "SURVEY",
-      actionUrl: `/studies/${result.studyId}/start`,
-      metadata: { studyId: result.studyId },
-    });
+  if (payload.studyMode === "SENSORY" || payload.studyMode === "MARKET") {
+    await notifyLocationMatchedConsumers(result.studyId, payload.studyTitle);
   }
 
   if (payload.coordinationMode === "FIC_ASSISTED") {

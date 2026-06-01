@@ -5,14 +5,21 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
+import { AppBackButton } from "@/components/ui/app-back-button";
+import { TimedToast } from "@/components/ui/timed-toast";
+import {
+  StudyTargetingSection,
+  type StudyTargetingState,
+} from "@/components/studies/study-targeting-section";
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
 import type { Region } from "@/lib/facility-constants";
 import {
   DEFAULT_TARGET_CONSUMER,
-  TARGET_CONSUMER_CONSUMPTION_OPTIONS,
   TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
   TARGET_CONSUMER_GENDER_OPTIONS,
-  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS,
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS,
   type TargetConsumerDietaryPref,
   type TargetConsumerGender,
 } from "@/lib/target-consumer";
@@ -37,8 +44,10 @@ type ConsumerObjective =
   | "MARKET_READINESS"
   | "REFINEMENT"
   | "PROTOTYPING";
-type AttributeDimension = "Taste" | "Texture" | "Aftertaste" | "Mouthfeel";
-type TargetConsumptionHabit = (typeof TARGET_CONSUMER_CONSUMPTION_OPTIONS)[number]["value"];
+type AttributeDimension = "Appearance" | "Aroma" | "Texture" | "Taste" | "mouthfeel" | "Flavor" | "aftertaste";
+type TargetWorkDailyLiving = (typeof TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS)[number]["value"];
+type TargetHealthFitness = (typeof TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS)[number]["value"];
+type TargetFoodConsumption = (typeof TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS)[number]["value"];
 
 interface AttributeRow {
   name: string;
@@ -98,7 +107,7 @@ const CONSUMER_OBJECTIVES: Array<{
   bufferCount: number;
   defaultTarget: number;
 }> = [
-  { value: "MARKET_READINESS", label: "Market Readiness", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
+  { value: "MARKET_READINESS", label: "Consumer Acceptability", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
   { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
   { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
 ];
@@ -120,8 +129,8 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Sourness / Acidity", dimension: "Taste" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Mouthfeel / Body", dimension: "Mouthfeel" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Mouthfeel / Body", dimension: "mouthfeel" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -131,9 +140,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     attributes: [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Sourness / Acidity", dimension: "Taste" },
-      { name: "Carbonation level", dimension: "Mouthfeel" },
+      { name: "Carbonation level", dimension: "mouthfeel" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -157,7 +166,7 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
       { name: "Crispness", dimension: "Texture" },
       { name: "Hardness", dimension: "Texture" },
       { name: "Buttery flavor", dimension: "Taste" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -167,9 +176,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     attributes: [
       { name: "Saltiness", dimension: "Taste" },
       { name: "Crunchiness", dimension: "Texture" },
-      { name: "Oiliness", dimension: "Mouthfeel" },
+      { name: "Oiliness", dimension: "mouthfeel" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -191,9 +200,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     attributes: [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Sourness", dimension: "Taste" },
-      { name: "Creaminess", dimension: "Mouthfeel" },
+      { name: "Creaminess", dimension: "mouthfeel" },
       { name: "Thickness", dimension: "Texture" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -202,7 +211,7 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     categoryCode: "DAIRY",
     attributes: [
       { name: "Sweetness", dimension: "Taste" },
-      { name: "Creaminess", dimension: "Mouthfeel" },
+      { name: "Creaminess", dimension: "mouthfeel" },
       { name: "Iciness", dimension: "Texture" },
       { name: "Melting rate", dimension: "Texture" },
       { name: "Flavor intensity", dimension: "Taste" },
@@ -216,8 +225,8 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
       { name: "Saltiness", dimension: "Taste" },
       { name: "Thickness / Consistency", dimension: "Texture" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Oiliness", dimension: "Mouthfeel" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Oiliness", dimension: "mouthfeel" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -227,9 +236,9 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     attributes: [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Thickness", dimension: "Texture" },
-      { name: "Stickiness", dimension: "Mouthfeel" },
+      { name: "Stickiness", dimension: "mouthfeel" },
       { name: "Flavor intensity", dimension: "Taste" },
-      { name: "Aftertaste sweetness", dimension: "Aftertaste" },
+      { name: "Aftertaste sweetness", dimension: "aftertaste" },
     ],
   },
   {
@@ -240,8 +249,8 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
       { name: "Saltiness", dimension: "Taste" },
       { name: "Flavor intensity", dimension: "Taste" },
       { name: "Tenderness", dimension: "Texture" },
-      { name: "Oiliness", dimension: "Mouthfeel" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Oiliness", dimension: "mouthfeel" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
     ],
   },
   {
@@ -251,8 +260,8 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
     attributes: [
       { name: "Flavor intensity", dimension: "Taste" },
       { name: "Texture firmness", dimension: "Texture" },
-      { name: "Juiciness", dimension: "Mouthfeel" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Juiciness", dimension: "mouthfeel" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
       { name: "Off-flavor intensity", dimension: "Taste" },
     ],
   },
@@ -264,7 +273,7 @@ const CATEGORY_PROFILES: CategoryProfile[] = [
       { name: "Sweetness", dimension: "Taste" },
       { name: "Texture firmness", dimension: "Texture" },
       { name: "Dryness", dimension: "Texture" },
-      { name: "Aftertaste intensity", dimension: "Aftertaste" },
+      { name: "Aftertaste intensity", dimension: "aftertaste" },
       { name: "Flavor acceptability", dimension: "Taste" },
     ],
   },
@@ -281,7 +290,15 @@ const EMPTY_SAMPLE_SETUP: SampleSetupRow = {
 };
 
 const STUDY_TIMEZONE = "Asia/Manila";
-const ATTRIBUTE_DIMENSIONS: AttributeDimension[] = ["Taste", "Texture", "Aftertaste", "Mouthfeel"];
+const ATTRIBUTE_DIMENSIONS: AttributeDimension[] = [
+  "Appearance",
+  "Aroma",
+  "Texture",
+  "Taste",
+  "mouthfeel",
+  "Flavor",
+  "aftertaste",
+];
 const PRODUCT_IMAGE_MAX_BYTES = 1_000_000;
 const PRODUCT_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
@@ -302,17 +319,20 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [publicVenueName, setPublicVenueName] = useState("");
   const [publicCityMunicipality, setPublicCityMunicipality] = useState("");
   const [publicAddressDetails, setPublicAddressDetails] = useState("");
+  const [targeting, setTargeting] = useState<StudyTargetingState>({
+    scope: "CITY",
+    location: { regionId: null, provinceId: null, cityId: null, barangayId: null },
+    labels: {},
+  });
   const [targetResponses, setTargetResponses] = useState(35);
   const [targetAgeMin, setTargetAgeMin] = useState(DEFAULT_TARGET_CONSUMER.ageRange[0]);
   const [targetAgeMax, setTargetAgeMax] = useState(DEFAULT_TARGET_CONSUMER.ageRange[1]);
   const [targetGenders, setTargetGenders] = useState<TargetConsumerGender[]>(DEFAULT_TARGET_CONSUMER.genders);
-  const [targetLifestyles, setTargetLifestyles] = useState<string[]>([]);
   const [targetDietaryPrefs, setTargetDietaryPrefs] = useState<TargetConsumerDietaryPref[]>([]);
-  const [targetConsumptionHabits, setTargetConsumptionHabits] = useState<Record<TargetConsumptionHabit, boolean>>({
-    coffeeDrinker: false,
-    snackConsumer: false,
-    energyDrinkConsumer: false,
-  });
+  const [targetWorkDailyLiving, setTargetWorkDailyLiving] = useState<TargetWorkDailyLiving[]>([]);
+  const [targetHealthFitness, setTargetHealthFitness] = useState<TargetHealthFitness[]>([]);
+  const [targetFoodConsumption, setTargetFoodConsumption] = useState<TargetFoodConsumption[]>([]);
+  const [consumerProfileExpanded, setConsumerProfileExpanded] = useState(false);
 
   const [productName, setProductName] = useState("");
   const [profileKey, setProfileKey] = useState(CATEGORY_PROFILES[0].key);
@@ -345,6 +365,8 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [ficError, setFicError] = useState<string | null>(null);
   const [facilityCalendarYear, setFacilityCalendarYear] = useState(() => new Date().getFullYear());
   const [facilityCalendarMonth, setFacilityCalendarMonth] = useState(() => new Date().getMonth());
+  const [randomizePanelSelection, setRandomizePanelSelection] = useState(false);
+  const [showStudySummary, setShowStudySummary] = useState(false);
 
   // Cascade region/facility logic
   useEffect(() => {
@@ -770,6 +792,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     setAttributes((previous) => applyObjectiveJarDefaults(previous, consumerObjective));
   }, [consumerObjective, sensoryStudyType, studyMode]);
 
+  useEffect(() => {
+    if (!error) {
+      return;
+    }
+    const invalidField = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(
+      "form input:invalid, form select:invalid, form textarea:invalid"
+    );
+    invalidField?.focus();
+  }, [error]);
+
   const updateAttributeName = (index: number, value: string) => {
     setAttributes((previous) =>
       previous.map((row, rowIndex) => {
@@ -997,19 +1029,20 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     setTargetGenders((previous) => toggleSelection(previous, value));
   };
 
-  const toggleTargetLifestyle = (value: string) => {
-    setTargetLifestyles((previous) => toggleSelection(previous, value));
-  };
-
   const toggleTargetDietaryPref = (value: TargetConsumerDietaryPref) => {
     setTargetDietaryPrefs((previous) => toggleSelection(previous, value));
   };
 
-  const toggleTargetConsumptionHabit = (value: TargetConsumptionHabit) => {
-    setTargetConsumptionHabits((previous) => ({
-      ...previous,
-      [value]: !previous[value],
-    }));
+  const toggleTargetWorkDailyLiving = (value: TargetWorkDailyLiving) => {
+    setTargetWorkDailyLiving((previous) => toggleSelection(previous, value));
+  };
+
+  const toggleTargetHealthFitness = (value: TargetHealthFitness) => {
+    setTargetHealthFitness((previous) => toggleSelection(previous, value));
+  };
+
+  const toggleTargetFoodConsumption = (value: TargetFoodConsumption) => {
+    setTargetFoodConsumption((previous) => toggleSelection(previous, value));
   };
 
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
@@ -1036,6 +1069,18 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       }
       if (!publicCityMunicipality.trim()) {
         setError("Please enter city/municipality for the public venue.");
+        return;
+      }
+    }
+
+    if (coordinationMode === "SELF_MANAGED_PUBLIC" && targeting.scope !== "ALL") {
+      const missing =
+        (targeting.scope === "REGION" && !targeting.location.regionId) ||
+        (targeting.scope === "PROVINCE" && !targeting.location.provinceId) ||
+        (targeting.scope === "CITY" && !targeting.location.cityId) ||
+        (targeting.scope === "BARANGAY" && !targeting.location.barangayId);
+      if (missing) {
+        setError("Complete the target location selection for the chosen visibility scope.");
         return;
       }
     }
@@ -1218,9 +1263,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         targetConsumer: {
           ageRange: [targetAgeMin, targetAgeMax],
           genders: targetGenders,
-          lifestyles: targetLifestyles,
           dietaryPrefs: targetDietaryPrefs,
-          consumptionHabits: targetConsumptionHabits,
+          workDailyLiving: targetWorkDailyLiving,
+          healthFitness: targetHealthFitness,
+          foodConsumption: targetFoodConsumption,
         },
         region: coordinationMode === "FIC_ASSISTED" ? region : undefined,
         facilityType: coordinationMode === "FIC_ASSISTED" ? facilityType : undefined,
@@ -1255,6 +1301,14 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   .filter((question) => question.length > 0)
               : marketQuestions.filter((question) => question.trim().length > 0)
             : [],
+        locationTarget: {
+          scope: targeting.scope,
+          regionId: targeting.location.regionId,
+          provinceId: targeting.location.provinceId,
+          cityId: targeting.location.cityId,
+          barangayId: targeting.location.barangayId,
+        },
+        randomizePanelSelection,
       };
 
       const result = await createStudyFromBuilder(payload);
@@ -1279,18 +1333,24 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
   return (
     <div className={embedded ? "" : "min-h-screen bg-[#f8fafc] px-4 py-8"}>
+      <div className="fixed right-4 top-4 z-50 w-[min(24rem,calc(100vw-2rem))]" aria-live="assertive">
+        <TimedToast title="Create Study Error" message={error} variant="error" durationMs={5000} />
+      </div>
       <div
         className={`space-y-8 rounded-[28px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)] ${
           embedded ? "p-5 sm:p-6 md:p-8" : "mx-auto max-w-5xl p-5 sm:p-8"
         }`}
       >
-        <header className="space-y-2">
-          <h1 className="text-2xl font-bold text-[#0f172a]">Create Study</h1>
-          <p className="text-[#64748b]">Configure Market or Sensory studies and generate a form with QR code.</p>
+        <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-2">
+            <h1 className="text-2xl font-bold text-[#0f172a]">Create Study</h1>
+            <p className="text-[#64748b]">Configure Market or Sensory studies and generate a form with QR code.</p>
+          </div>
+          {embedded && <AppBackButton fallbackHref="/msme/dashboard?view=dashboard" label="Back" />}
         </header>
 
         {error && (
-          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700" aria-live="assertive">
             {error}
           </div>
         )}
@@ -1320,7 +1380,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   required
                 >
                   <option value="FIC_ASSISTED">Coordinate with FIC</option>
-                  <option value="SELF_MANAGED_PUBLIC">Self-managed Public Recruitment</option>
+                  <option value="SELF_MANAGED_PUBLIC">Self-managed Sensory Test</option>
                 </select>
               </div>
             </div>
@@ -1370,7 +1430,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     required
                   >
                     <option value="">Select Region</option>
-                    {REGIONS.map((regionOption) => (
+                    {[...REGIONS].sort().map((regionOption) => (
                       <option key={regionOption} value={regionOption}>
                         {regionOption}
                       </option>
@@ -1396,6 +1456,31 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
             )}
+          </section>
+
+          <section
+            className="space-y-4 rounded-2xl border p-5"
+            style={{
+              borderColor: "var(--border)",
+              background: "var(--surface-strong)",
+            }}
+          >
+            <StudyTargetingSection
+              coordinationMode={coordinationMode}
+              value={targeting}
+              onChange={setTargeting}
+              inheritedPreview={
+                coordinationMode === "FIC_ASSISTED"
+                  ? {
+                      facilityName: facilityType || null,
+                      region: region || null,
+                      province: null,
+                      city: null,
+                      barangay: null,
+                    }
+                  : null
+              }
+            />
           </section>
 
           {studyMode === "MARKET" && (
@@ -1574,55 +1659,72 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   </div>
                 </div>
 
-                <div className="grid gap-4 lg:grid-cols-3">
-                  <div className="space-y-2">
-                    <FieldLabel text="Lifestyle" />
-                    <div className="space-y-2">
-                      {TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => (
-                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
-                          <input
-                            type="checkbox"
-                            checked={targetLifestyles.includes(option.value)}
-                            onChange={() => toggleTargetLifestyle(option.value)}
-                          />
-                          {option.label}
-                        </label>
-                      ))}
+                {!consumerProfileExpanded ? (
+                  <button
+                    type="button"
+                    onClick={() => setConsumerProfileExpanded(true)}
+                    className="inline-flex items-center gap-2 rounded-lg border border-dashed border-[#cbd5e1] bg-white px-4 py-2 text-sm font-medium text-[#0f172a] hover:bg-[#f8fafc]"
+                  >
+                    + Add Consumer Profile Preference
+                  </button>
+                ) : (
+                  <div className="space-y-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-xs italic text-[#64748b]">Check all that applies</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setConsumerProfileExpanded(false);
+                          setTargetDietaryPrefs([]);
+                          setTargetWorkDailyLiving([]);
+                          setTargetHealthFitness([]);
+                          setTargetFoodConsumption([]);
+                        }}
+                        className="text-xs font-medium text-[#dc2626] hover:underline"
+                      >
+                        Remove
+                      </button>
                     </div>
-                  </div>
 
-                  <div className="space-y-2">
-                    <FieldLabel text="Dietary Preference" />
-                    <div className="space-y-2">
-                      {TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => (
-                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
-                          <input
-                            type="checkbox"
-                            checked={targetDietaryPrefs.includes(option.value)}
-                            onChange={() => toggleTargetDietaryPref(option.value)}
-                          />
-                          {option.label}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
+                    <ConsumerCategory
+                      label="Dietary Information"
+                      options={TARGET_CONSUMER_DIETARY_OPTIONS}
+                      selected={targetDietaryPrefs}
+                      onToggle={toggleTargetDietaryPref}
+                    />
 
-                  <div className="space-y-2">
-                    <FieldLabel text="Consumption Behavior" />
-                    <div className="space-y-2">
-                      {TARGET_CONSUMER_CONSUMPTION_OPTIONS.map((option) => (
-                        <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
-                          <input
-                            type="checkbox"
-                            checked={targetConsumptionHabits[option.value]}
-                            onChange={() => toggleTargetConsumptionHabit(option.value)}
-                          />
-                          {option.label}
-                        </label>
-                      ))}
-                    </div>
+                    <ConsumerCategory
+                      label="Work & Daily Living"
+                      options={TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS}
+                      selected={targetWorkDailyLiving}
+                      onToggle={toggleTargetWorkDailyLiving}
+                    />
+
+                    <ConsumerCategory
+                      label="Health & Fitness"
+                      options={TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS}
+                      selected={targetHealthFitness}
+                      onToggle={toggleTargetHealthFitness}
+                    />
+
+                    <ConsumerCategory
+                      label="Food & Consumption Behavior"
+                      options={TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS}
+                      selected={targetFoodConsumption}
+                      onToggle={toggleTargetFoodConsumption}
+                    />
                   </div>
-                </div>
+                )}
+
+                <label className="inline-flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 text-sm font-medium text-[#334155] cursor-pointer hover:bg-[#f1f5f9]">
+                  <input
+                    type="checkbox"
+                    checked={randomizePanelSelection}
+                    onChange={(event) => setRandomizePanelSelection(event.target.checked)}
+                    className="h-4 w-4 rounded border-[#cbd5e1] accent-[#ed7f2a]"
+                  />
+                  Activate Randomize Panel Selection
+                </label>
               </section>
 
               <section className="space-y-2">
@@ -1631,7 +1733,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
                   <p className="mt-1 text-xs text-[#64748b]">
                     {consumerObjective === "MARKET_READINESS"
-                      ? "Market Readiness does not add JAR diagnostics; listed attributes use Attribute Liking only."
+                      ? "Consumer Acceptability does not add JAR diagnostics; listed attributes use Attribute Liking only."
                       : "Each listed attribute will be evaluated with JAR first, followed by Attribute Liking."}
                   </p>
                   {consumerObjective !== "MARKET_READINESS" && (
@@ -1639,6 +1741,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       JAR shows whether each attribute is too low, just right, or too high; Attribute Liking captures preference on the 9-point scale.
                     </p>
                   )}
+                  <p className="mt-2 text-xs font-medium text-[#0f172a]">
+                    Overall Liking (9-point hedonic scale) is always included as the first question for each sample.
+                  </p>
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
                   <table className="w-full min-w-[560px] text-sm">
@@ -1651,8 +1756,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       </tr>
                     </thead>
                     <tbody>
-                      {attributes.map((attribute, index) => {
-                        return (
+                      {attributes
+                        .map((attribute, index) => ({ attribute, index }))
+                        .sort(({ attribute: a }, { attribute: b }) =>
+                          ATTRIBUTE_DIMENSIONS.indexOf(a.dimension) - ATTRIBUTE_DIMENSIONS.indexOf(b.dimension)
+                        )
+                        .map(({ attribute, index }) => (
                           <tr key={`${attribute.name}-${index}`} className="border-t">
                             <td className="px-4 py-2">
                               <input
@@ -1694,8 +1803,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               </button>
                             </td>
                           </tr>
-                        );
-                      })}
+                        ))}
                     </tbody>
                   </table>
                 </div>
@@ -1743,6 +1851,17 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </section>
 
+              <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
+                Questionnaire Logic generated on create:
+                <ul className="list-disc pl-5 mt-2 space-y-1">
+                  <li>Overall Acceptability (9-point hedonic scale, mandatory)</li>
+                  <li>JAR only for selected TOP attributes (max 3)</li>
+                  <li>5-point standardized JAR scale: Much too low → Much too high</li>
+                  <li>Reporting collapses to Too Low (1-2), JAR (3), Too High (4-5)</li>
+                  <li>Open-ended improvement question</li>
+                </ul>
+              </div>
+
               <section className="flex flex-col gap-4">
                 <h2 className="text-lg font-semibold text-gray-900">{requiresFicBooking ? "Book FIC" : "Testing Schedule"}</h2>
               {requiresFicBooking && (
@@ -1784,7 +1903,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               )}
 
               {requiresFicBooking && (
-                <div className="order-3 space-y-3 rounded-xl border border-[#c7d2fe] bg-[#191b29] p-4">
+                <div className="order-3 space-y-3 rounded-xl border border-[#c7d2fe] bg-[#f8fafc] p-4">
                   <div className="grid md:grid-cols-2 gap-4">
                     <div className="space-y-1">
                       <FieldLabel text="Assigned FIC User" />
@@ -1820,7 +1939,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     <div className="rounded-lg border border-[#dbeafe] bg-white p-3 text-xs text-[#1e3a8a]">
                       <p className="font-semibold">FIC Calendar Rules</p>
                       <p className="mt-1">Select Region + Facility first, then choose one assigned FIC user.</p>
-                      <p className="mt-1">MSME can schedule sessions only on dates marked Available by selected FIC.</p>
+                      <p className="mt-1">Innovator can schedule sessions only on dates marked Available by selected FIC.</p>
                       <p className="mt-1">Locked dates are already booked by other studies.</p>
                     </div>
                   </div>
@@ -2041,9 +2160,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       {normalizedSelectedTestingDates.length > 0 ? ` (${normalizedSelectedTestingDates.join(", ")})` : ""}
                     </p>
 
-                    <div className="mt-3 grid grid-cols-7 gap-1">
+                    <div className="mt-3 grid grid-cols-7 gap-0.5">
                       {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((label) => (
-                        <div key={`facility-calendar-header-${label}`} className="py-1 text-center text-[11px] font-semibold text-[#64748b]">
+                        <div key={`facility-calendar-header-${label}`} className="py-0.5 text-center text-[10px] font-semibold text-[#64748b]">
                           {label}
                         </div>
                       ))}
@@ -2052,7 +2171,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                         const isSelectedStart = day.date === testingStartDate;
                         const isSelectedRangeDate = selectedScheduleDateSet.has(day.date);
                         const disabled = !day.isCurrentMonth || isPast || day.availableFicCount === 0;
-                        const baseClasses = "flex aspect-square flex-col items-center justify-center rounded-md border text-[11px] transition-colors";
+                        const baseClasses = "flex flex-col items-center justify-center rounded border text-[10px] transition-colors py-1 h-10";
                         const statusClasses = isSelectedStart
                           ? "border-[#2563eb] bg-[#dbeafe] text-[#1e3a8a]"
                           : isSelectedRangeDate
@@ -2184,16 +2303,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               </div>
 
-              <div className="order-5 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
-                Questionnaire Logic generated on create:
-                <ul className="list-disc pl-5 mt-2 space-y-1">
-                  <li>Overall Acceptability (9-point hedonic scale, mandatory)</li>
-                  <li>JAR only for selected TOP attributes (max 3)</li>
-                  <li>5-point standardized JAR scale: Much too low → Much too high</li>
-                  <li>Reporting collapses to Too Low (1-2), JAR (3), Too High (4-5)</li>
-                  <li>Open-ended improvement question</li>
-                </ul>
-              </div>
               </section>
             </section>
           )}
@@ -2340,6 +2449,72 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             </div>
           </section>
 
+          <div className="space-y-3">
+            <button
+              type="button"
+              onClick={() => setShowStudySummary((previous) => !previous)}
+              className="w-full rounded-xl border border-[#cbd5e1] bg-[#f8fafc] py-3 text-sm font-semibold text-[#0f172a] hover:bg-[#f1f5f9] transition-colors"
+            >
+              {showStudySummary ? "Hide Study Summary" : "Study Summary"}
+            </button>
+
+            {showStudySummary && (
+              <div className="rounded-xl border border-[#e2e8f0] bg-white p-5 text-sm text-[#334155]">
+                <p className="font-semibold text-[#0f172a] mb-3">Study Summary</p>
+                <ul className="space-y-1.5 list-disc pl-5">
+                  <li><span className="font-medium">Study Type:</span> {studyMode === "SENSORY" ? "Sensory Study" : "Market Study"}</li>
+                  {studyMode === "SENSORY" && (
+                    <li><span className="font-medium">Sensory Method:</span> {sensoryStudyType === "CONSUMER_TEST" ? "Consumer Test" : sensoryStudyType === "DISCRIMINATIVE" ? `Discriminative — ${sensoryMethod}` : `Descriptive — ${sensoryMethod}`}</li>
+                  )}
+                  {studyMode === "MARKET" && (
+                    <li><span className="font-medium">Market Study Type:</span> {MARKET_TYPE_OPTIONS.find((o) => o.value === marketStudyType)?.label ?? marketStudyType}</li>
+                  )}
+                  <li><span className="font-medium">Coordination:</span> {coordinationMode === "FIC_ASSISTED" ? "Coordinate with FIC" : "Self-managed Sensory Test"}</li>
+                  {studyMode === "SENSORY" && productName && (
+                    <li><span className="font-medium">Product Name:</span> {productName}</li>
+                  )}
+                  {studyMode === "SENSORY" && (
+                    <li><span className="font-medium">Category Profile:</span> {selectedProfile.label}</li>
+                  )}
+                  {studyMode === "SENSORY" && (
+                    <li><span className="font-medium">Development Stage:</span> {selectedConsumerObjective.label}</li>
+                  )}
+                  <li><span className="font-medium">Target Age:</span> {targetAgeMin}–{targetAgeMax}</li>
+                  <li><span className="font-medium">Target Gender(s):</span> {targetGenders.length > 0 ? targetGenders.join(", ") : "None selected"}</li>
+                  {randomizePanelSelection && (
+                    <li><span className="font-medium">Panel Selection:</span> Randomized</li>
+                  )}
+                  {studyMode === "SENSORY" && attributes.length > 0 && (
+                    <li>
+                      <span className="font-medium">Attributes ({attributes.length}):</span>{" "}
+                      {[...attributes]
+                        .sort((a, b) => ATTRIBUTE_DIMENSIONS.indexOf(a.dimension) - ATTRIBUTE_DIMENSIONS.indexOf(b.dimension))
+                        .map((attr) => attr.name)
+                        .join(", ")}
+                    </li>
+                  )}
+                  <li><span className="font-medium">Target Responses:</span> {targetResponses}</li>
+                  <li><span className="font-medium">Number of Samples:</span> {sampleSetupCount}</li>
+                  {studyMode === "SENSORY" && normalizedSelectedTestingDates.length > 0 && (
+                    <li><span className="font-medium">Testing Date(s):</span> {normalizedSelectedTestingDates.join(", ")}</li>
+                  )}
+                  {coordinationMode === "FIC_ASSISTED" && region && (
+                    <li><span className="font-medium">Region / Facility:</span> {region}{facilityType ? ` — ${facilityType}` : ""}</li>
+                  )}
+                  {coordinationMode === "FIC_ASSISTED" && selectedFic && (
+                    <li><span className="font-medium">Assigned FIC:</span> {selectedFic.name}</li>
+                  )}
+                  {coordinationMode === "SELF_MANAGED_PUBLIC" && publicVenueName && (
+                    <li><span className="font-medium">Venue:</span> {publicVenueName}{publicCityMunicipality ? `, ${publicCityMunicipality}` : ""}</li>
+                  )}
+                  {sessionSlots.length > 0 && studyMode === "SENSORY" && (
+                    <li><span className="font-medium">Sessions:</span> {sessionSlots.length} slot(s), total capacity {totalSessionCapacity}</li>
+                  )}
+                </ul>
+              </div>
+            )}
+          </div>
+
           <button
             type="submit"
             disabled={isPending}
@@ -2404,6 +2579,36 @@ function validateObjectiveSelection(attributes: AttributeRow[]) {
 
 function FieldLabel({ text }: { text: string }) {
   return <label className="text-sm font-medium text-[#334155]">{text}</label>;
+}
+
+function ConsumerCategory<T extends string>({
+  label,
+  options,
+  selected,
+  onToggle,
+}: {
+  label: string;
+  options: ReadonlyArray<{ value: T; label: string }>;
+  selected: T[];
+  onToggle: (value: T) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <FieldLabel text={label} />
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {options.map((option) => (
+          <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#334155]">
+            <input
+              type="checkbox"
+              checked={selected.includes(option.value)}
+              onChange={() => onToggle(option.value)}
+            />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function getTodayDateInput() {

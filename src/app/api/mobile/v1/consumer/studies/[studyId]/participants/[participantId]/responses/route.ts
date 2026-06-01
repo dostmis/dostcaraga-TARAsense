@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
-import { mobileError, mobileJson, parseJsonBody, requireMobileUser } from "@/lib/mobile/api";
+import {
+  enforceMobileRateLimit,
+  mobileError,
+  mobileJson,
+  parseJsonBody,
+  requireMobileUser,
+} from "@/lib/mobile/api";
 import { submitMobileConsumerResponse } from "@/lib/mobile/consumer-response";
+import { SUBMIT_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -15,6 +22,11 @@ export async function POST(request: NextRequest, context: RouteContext) {
   const auth = await requireMobileUser(request, ["CONSUMER"]);
   if ("response" in auth) {
     return auth.response;
+  }
+
+  const limited = enforceMobileRateLimit(request, "mobile-submit-response", SUBMIT_RATE_LIMIT, auth.user.id);
+  if (limited) {
+    return limited;
   }
 
   const { studyId, participantId } = await context.params;

@@ -4,9 +4,10 @@ import { prisma } from "@/lib/db";
 import { registerWalkInGuest } from "@/app/actions/guest-actions";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import {
-  TARGET_CONSUMER_CONSUMPTION_OPTIONS,
   TARGET_CONSUMER_DIETARY_OPTIONS,
-  TARGET_CONSUMER_LIFESTYLE_OPTIONS,
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS,
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS,
 } from "@/lib/target-consumer";
 
 type PageProps = {
@@ -152,47 +153,32 @@ export default async function GuestCheckInPage({ searchParams }: PageProps) {
               <input name="address" required className="app-input mt-1" placeholder="City / Region / Address" />
             </label>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <label className="block text-sm text-[#334155]">
-                Organization
-                <input name="organization" required className="app-input mt-1" placeholder="Company/School or N/A" />
-              </label>
-              <label className="block text-sm text-[#334155]">
-                Occupation
-                <input name="occupation" required className="app-input mt-1" placeholder="e.g. Student" />
-              </label>
-            </div>
+            <label className="block text-sm text-[#334155]">
+              Organization
+              <input name="organization" required className="app-input mt-1" placeholder="Company/School or N/A" />
+            </label>
 
-            <div className="grid gap-4 md:grid-cols-3">
-              <fieldset className="space-y-2">
-                <legend className="text-sm text-[#334155]">Lifestyle</legend>
-                {TARGET_CONSUMER_LIFESTYLE_OPTIONS.map((option) => (
-                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
-                    <input type="checkbox" name="lifestyle" value={option.value} />
-                    {option.label}
-                  </label>
-                ))}
-              </fieldset>
-
-              <fieldset className="space-y-2">
-                <legend className="text-sm text-[#334155]">Dietary Preference</legend>
-                {TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => (
-                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
-                    <input type="checkbox" name="dietaryPrefs" value={option.value} />
-                    {option.label}
-                  </label>
-                ))}
-              </fieldset>
-
-              <fieldset className="space-y-2">
-                <legend className="text-sm text-[#334155]">Consumption Behavior</legend>
-                {TARGET_CONSUMER_CONSUMPTION_OPTIONS.map((option) => (
-                  <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
-                    <input type="checkbox" name={option.value} />
-                    {option.label}
-                  </label>
-                ))}
-              </fieldset>
+            <div className="space-y-4">
+              <CheckInCategory
+                title="Dietary Information"
+                name="dietaryPrefs"
+                options={TARGET_CONSUMER_DIETARY_OPTIONS}
+              />
+              <CheckInCategory
+                title="Work & Daily Living"
+                name="workDailyLiving"
+                options={TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS}
+              />
+              <CheckInCategory
+                title="Health & Fitness"
+                name="healthFitness"
+                options={TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS}
+              />
+              <CheckInCategory
+                title="Food & Consumption Behavior"
+                name="foodConsumption"
+                options={TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS}
+              />
             </div>
 
             <button type="submit" className="app-button-primary w-full py-2.5">
@@ -202,5 +188,30 @@ export default async function GuestCheckInPage({ searchParams }: PageProps) {
         )}
       </section>
     </main>
+  );
+}
+
+function CheckInCategory({
+  title,
+  name,
+  options,
+}: {
+  title: string;
+  name: string;
+  options: ReadonlyArray<{ value: string; label: string }>;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium text-[#334155]">{title}</legend>
+      <p className="text-xs italic text-[#64748b]">Check all that applies</p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {options.map((option) => (
+          <label key={option.value} className="flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-2 text-sm text-[#334155]">
+            <input type="checkbox" name={name} value={option.value} />
+            {option.label}
+          </label>
+        ))}
+      </div>
+    </fieldset>
   );
 }

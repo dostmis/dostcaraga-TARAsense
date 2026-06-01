@@ -59,7 +59,14 @@ ADMIN_EMAIL="admin@your-domain.com"
 ADMIN_PASSWORD="strong-admin-password"
 ```
 
-`OPENAI_API_KEY` is optional.
+AI provider keys are optional. To use OpenRouter for AI interpretation/chat, keep the key server-side in `.env`:
+
+```env
+TARASENSE_AI_PROVIDER="openrouter"
+OPENROUTER_API_KEY="your-openrouter-key"
+OPENROUTER_MODEL="google/gemini-3.1-flash-lite"
+TARASENSE_CHATBOT_LIVE="1"
+```
 
 ## 6) Initialize Prisma and build app
 

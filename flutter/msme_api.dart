@@ -1,32 +1,32 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:tarasense_mobile/core/network/api_client.dart';
 import 'package:tarasense_mobile/features/auth/state/auth_providers.dart';
-import 'package:tarasense_mobile/features/msme/domain/msme_models.dart';
+import 'package:tarasense_mobile/features/MSME/domain/MSME_models.dart';
 
-class MsmeApi {
-  MsmeApi(this._client);
+class MSMEApi {
+  MSMEApi(this._client);
 
   final ApiClient _client;
 
-  Future<MsmeDashboardData> fetchDashboard(
+  Future<MSMEDashboardData> fetchDashboard(
     String accessToken, {
     String? query,
   }) async {
     final response = await _client.getJson(
-      '/msme/dashboard',
+      '/MSME/dashboard',
       bearerToken: accessToken,
       queryParameters: (query ?? '').trim().isEmpty
           ? null
           : <String, dynamic>{'q': query!.trim()},
     );
-    return MsmeDashboardData.fromJson(response);
+    return MSMEDashboardData.fromJson(response);
   }
 
   Future<StudyBuilderOptionsData> fetchStudyBuilderOptions(
     String accessToken,
   ) async {
     final response = await _client.getJson(
-      '/msme/study-builder-options',
+      '/MSME/study-builder-options',
       bearerToken: accessToken,
     );
     return StudyBuilderOptionsData.fromJson(response);
@@ -37,21 +37,21 @@ class MsmeApi {
     required Map<String, dynamic> payload,
   }) {
     return _client.postJson(
-      '/msme/studies',
+      '/MSME/studies',
       bearerToken: accessToken,
       data: payload,
     );
   }
 
-  Future<MsmeProfileData> fetchProfile(String accessToken) async {
+  Future<MSMEProfileData> fetchProfile(String accessToken) async {
     final response = await _client.getJson(
       '/profile',
       bearerToken: accessToken,
     );
-    return MsmeProfileData.fromJson(response);
+    return MSMEProfileData.fromJson(response);
   }
 
-  Future<MsmeProfileData> updateProfile(
+  Future<MSMEProfileData> updateProfile(
     String accessToken, {
     required Map<String, dynamic> payload,
   }) async {
@@ -60,10 +60,10 @@ class MsmeApi {
       bearerToken: accessToken,
       data: payload,
     );
-    return MsmeProfileData.fromJson(response);
+    return MSMEProfileData.fromJson(response);
   }
 }
 
-final msmeApiProvider = Provider<MsmeApi>((ref) {
-  return MsmeApi(ref.watch(apiClientProvider));
+final MSMEApiProvider = Provider<MSMEApi>((ref) {
+  return MSMEApi(ref.watch(apiClientProvider));
 });

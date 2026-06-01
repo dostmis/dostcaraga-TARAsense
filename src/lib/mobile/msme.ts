@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 
-export async function getMsmeDashboardData(userId: string, query?: string) {
+export async function getMSMEDashboardData(userId: string, query?: string) {
   const normalizedQuery = (query ?? "").trim().toLowerCase();
 
   const [totalStudies, ficBookings, totalResponses, activeStudies, studies] = await Promise.all([

@@ -12,7 +12,9 @@ import { assignSampleCodesFromCodeBook, createStudyRandomCodeBook, parseStudyRan
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { canAccessStudyByRole, canViewRandomizedBlindCodePlan } from "@/lib/study-access";
 import { doesPanelistMatchTargetConsumer, getTargetConsumerSummary } from "@/lib/target-consumer";
+import { getUserLocation, isStudyVisibleToUser } from "@/lib/locations/study-visibility";
 import { PageShell, SurfaceCard } from "@/components/ui/page-shell";
+import { AppBackButton } from "@/components/ui/app-back-button";
 import { StudyImportPanel } from "@/components/studies/study-import-panel";
 
 const DEFAULT_PUBLIC_QR_BASE_URL = "https://tarasense.dostcaraga.ph";
@@ -67,11 +69,28 @@ export default async function StudyFormPage({ params }: PageProps) {
       sensoryAttributes: {
         orderBy: { order: "asc" },
       },
+      locationTarget: {
+        select: {
+          scope: true,
+          regionId: true,
+          provinceId: true,
+          cityId: true,
+          barangayId: true,
+        },
+      },
     },
   });
 
   if (!study) {
     notFound();
+  }
+
+  // Enforce geo visibility for consumers (server-side, regardless of UI hiding).
+  if (session?.role === "CONSUMER") {
+    const userLocation = await getUserLocation(session.userId);
+    if (!isStudyVisibleToUser(study.locationTarget, userLocation)) {
+      notFound();
+    }
   }
   const ficUser =
     session?.role === "FIC"
@@ -197,6 +216,7 @@ export default async function StudyFormPage({ params }: PageProps) {
 
   return (
     <PageShell maxWidthClassName="max-w-6xl">
+      <AppBackButton fallbackHref={dashboardHref} label="Back" />
       <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <SurfaceCard className="space-y-6">
           <header className="space-y-2">

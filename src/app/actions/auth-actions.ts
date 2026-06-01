@@ -11,6 +11,7 @@ import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/sessio
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { normalizeRegionFacility } from "@/lib/facility-constants";
+import { logUserUsage } from "@/lib/user-usage";
 
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
 const ALLOWED_LIFESTYLES = new Set(["student", "athlete", "office_worker"]);
@@ -66,6 +67,14 @@ export async function login(formData: FormData) {
     level: "SUCCESS",
     category: "AUTH",
     actionUrl: postLoginPath,
+  });
+  await logUserUsage({
+    actorUserId: user.id,
+    action: "LOGIN",
+    entityType: "User",
+    entityId: user.id,
+    summary: "User logged in.",
+    metadata: { role },
   });
 
   redirect(postLoginPath);
@@ -191,6 +200,15 @@ export async function register(formData: FormData) {
     category: "SYSTEM",
     actionUrl: "/admin/dashboard",
   });
+  await logUserUsage({
+    actorUserId: created.id,
+    actor: { name, email, role: "CONSUMER" },
+    action: "USER_REGISTERED",
+    entityType: "User",
+    entityId: created.id,
+    summary: `${name} registered a new account.`,
+    metadata: { role: "CONSUMER", organization: organization || null },
+  });
 
   redirect(redirectTo);
 }
@@ -256,6 +274,14 @@ export async function applyForRole(formData: FormData) {
     category: "ROLE",
     actionUrl: "/admin/dashboard",
     metadata: { requestId: roleRequest.id, targetRole },
+  });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "ROLE_REQUEST_SUBMITTED",
+    entityType: "RoleUpgradeRequest",
+    entityId: roleRequest.id,
+    summary: `User requested ${targetRole} access.`,
+    metadata: { targetRole },
   });
 
   redirect("/consumer/dashboard?message=Application+submitted+for+admin+review");
@@ -367,6 +393,19 @@ export async function reviewRoleApplication(formData: FormData) {
       category: "ROLE",
       actionUrl: redirectTo,
     });
+    await logUserUsage({
+      actorUserId: session.userId,
+      action: "ROLE_REQUEST_APPROVED",
+      entityType: "RoleUpgradeRequest",
+      entityId: request.id,
+      summary: `Admin approved ${request.targetRole} access request.`,
+      metadata: {
+        targetUserId: request.userId,
+        targetRole: request.targetRole,
+        assignedRegion: assignment?.region ?? null,
+        assignedFacility: assignment?.facility ?? null,
+      },
+    });
 
     redirect(withFeedback(redirectTo, "message", "Application approved"));
   }
@@ -393,6 +432,14 @@ export async function reviewRoleApplication(formData: FormData) {
     level: "INFO",
     category: "ROLE",
     actionUrl: redirectTo,
+  });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "ROLE_REQUEST_REJECTED",
+    entityType: "RoleUpgradeRequest",
+    entityId: request.id,
+    summary: `Admin rejected ${request.targetRole} access request.`,
+    metadata: { targetUserId: request.userId, targetRole: request.targetRole },
   });
 
   redirect(withFeedback(redirectTo, "message", "Application rejected"));
@@ -486,6 +533,18 @@ export async function reassignFicFacility(formData: FormData) {
     category: "ROLE",
     actionUrl: redirectTo,
   });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "FIC_ASSIGNMENT_UPDATED",
+    entityType: "User",
+    entityId: ficUserId,
+    summary: `Admin updated FIC assignment to ${assignment.facility}, ${assignment.region}.`,
+    metadata: {
+      ficUserId,
+      assignedRegion: assignment.region,
+      assignedFacility: assignment.facility,
+    },
+  });
 
   redirect(withFeedback(redirectTo, "message", "FIC assignment updated"));
 }
@@ -499,6 +558,14 @@ export async function logout() {
       level: "INFO",
       category: "AUTH",
       actionUrl: "/login",
+    });
+    await logUserUsage({
+      actorUserId: session.userId,
+      action: "LOGOUT",
+      entityType: "User",
+      entityId: session.userId,
+      summary: "User logged out.",
+      metadata: { role: session.role },
     });
   }
 

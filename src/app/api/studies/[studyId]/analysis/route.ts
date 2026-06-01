@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { getCurrentSession } from "@/lib/auth/session";
 import { canAccessStudyByRole } from "@/lib/study-access";
+import { hasConfiguredAiProvider } from "@/lib/ai/openai-compatible";
 
 type RouteContext = {
   params: Promise<{ studyId: string }>;
@@ -26,7 +27,12 @@ export async function GET(request: Request, context: RouteContext) {
         creatorId: true,
         location: true,
         analysis: {
-          select: { id: true },
+          select: {
+            id: true,
+            aiInterpretation: true,
+            aiRecommendation: true,
+            decisionFlag: true,
+          },
         },
       },
     });
@@ -86,7 +92,12 @@ export async function GET(request: Request, context: RouteContext) {
       });
     }
 
-    if (!study.analysis || shouldRefresh) {
+    const needsAiBackfill =
+      Boolean(study.analysis) &&
+      hasConfiguredAiProvider() &&
+      (!study.analysis?.aiInterpretation || !study.analysis?.aiRecommendation || !study.analysis?.decisionFlag);
+
+    if (!study.analysis || shouldRefresh || needsAiBackfill) {
       const engine = new SensoryAnalysisEngine();
       await engine.analyzeStudy(studyId);
     }

@@ -1,6 +1,13 @@
 import { NextRequest } from "next/server";
 import { createStudyFromBuilder } from "@/app/actions/study-builder-actions";
-import { mobileError, mobileJson, parseJsonBody, requireMobileUser } from "@/lib/mobile/api";
+import {
+  enforceMobileRateLimit,
+  mobileError,
+  mobileJson,
+  parseJsonBody,
+  requireMobileUser,
+} from "@/lib/mobile/api";
+import { MUTATION_RATE_LIMIT } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -8,6 +15,11 @@ export async function POST(request: NextRequest) {
   const auth = await requireMobileUser(request, ["MSME", "ADMIN"]);
   if ("response" in auth) {
     return auth.response;
+  }
+
+  const limited = enforceMobileRateLimit(request, "mobile-create-study", MUTATION_RATE_LIMIT, auth.user.id);
+  if (limited) {
+    return limited;
   }
 
   const payload = await parseJsonBody(request);

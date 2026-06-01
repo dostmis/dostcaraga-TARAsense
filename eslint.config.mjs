@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // NestJS API is linted from ./api with its own config.
     "api/**",
+    // Compiled test output should not be linted.
+    "tests/dist/**",
   ]),
 ]);
 

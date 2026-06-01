@@ -1,8 +1,9 @@
-import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { SensoryTestInterface } from "@/components/sensory-test/test-interface";
+import { AppBackButton } from "@/components/ui/app-back-button";
 import { getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
+import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { parseSampleCodes } from "@/lib/participant-assignment";
 import { assignSampleCodesFromCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
 
@@ -119,9 +120,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
           <p className="mt-2 text-[#64748b]">
             MSME users cannot answer their own created studies. Please use a consumer account or share the QR form.
           </p>
-          <Link className="mt-4 inline-block font-medium text-[#f97316] hover:text-[#ea580c]" href="/msme/dashboard">
-            Return to MSME Dashboard
-          </Link>
+          <AppBackButton fallbackHref="/msme/dashboard" label="Return to MSME Dashboard" className="mt-4" />
         </div>
       </div>
     );
@@ -138,9 +137,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
           <p className="mt-2 text-[#64748b]">
             Add sensory attributes to this study before launching test sessions.
           </p>
-          <Link className="mt-4 inline-block font-medium text-[#f97316] hover:text-[#ea580c]" href="/dashboard">
-            Return to Dashboard
-          </Link>
+          <AppBackButton fallbackHref={session ? ROLE_DASHBOARD_PATH[session.role] : "/dashboard"} label="Return to Dashboard" className="mt-4" />
         </div>
       </div>
     );

@@ -7,7 +7,7 @@ import { TimedToast } from "@/components/ui/timed-toast";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
-import { Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
+import { Activity, Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
 import { FACILITY_REGION_ROWS, REGIONS } from "@/lib/facility-constants";
 import type { Prisma, UserRole } from "@prisma/client";
 
@@ -30,6 +30,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
   const shouldLoadUsers = activeView === "users";
   const shouldLoadRequests = activeView === "role-requests";
   const shouldLoadFicAssignments = activeView === "role-requests";
+  const shouldLoadUsage = activeView === "user-usage";
   const searchableUserRoles = ["ADMIN", "MSME", "FIC", "CONSUMER", "RESEARCHER", "FIC_MANAGER"] satisfies UserRole[];
   const matchingUserRoles = normalizedQuery
     ? searchableUserRoles.filter((role) => role.toLowerCase().includes(normalizedQuery))
@@ -44,8 +45,22 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           ],
         }
       : undefined;
+  const usageWhere: Prisma.UserUsageLogWhereInput | undefined =
+    shouldLoadUsage && normalizedQuery
+      ? {
+          OR: [
+            { actorName: { contains: normalizedQuery, mode: "insensitive" } },
+            { actorEmail: { contains: normalizedQuery, mode: "insensitive" } },
+            { action: { contains: normalizedQuery, mode: "insensitive" } },
+            { summary: { contains: normalizedQuery, mode: "insensitive" } },
+            { entityType: { contains: normalizedQuery, mode: "insensitive" } },
+            { entityId: { contains: normalizedQuery, mode: "insensitive" } },
+            ...(matchingUserRoles.length > 0 ? [{ actorRole: { in: matchingUserRoles } }] : []),
+          ],
+        }
+      : undefined;
 
-  const [studies, userCount, panelists, pendingRequests, approvedRequests, rejectedRequests, requests, ficUsers, userRows] = await Promise.all([
+  const [studies, userCount, panelists, pendingRequests, approvedRequests, rejectedRequests, requests, ficUsers, userRows, usageRows, usageTotal] = await Promise.all([
     prisma.study.count(),
     prisma.user.count(),
     prisma.panelist.count(),
@@ -92,6 +107,25 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           orderBy: [{ name: "asc" }, { email: "asc" }],
         })
       : Promise.resolve([]),
+    shouldLoadUsage
+      ? prisma.userUsageLog.findMany({
+          where: usageWhere,
+          select: {
+            id: true,
+            actorName: true,
+            actorEmail: true,
+            actorRole: true,
+            action: true,
+            entityType: true,
+            entityId: true,
+            summary: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+        })
+      : Promise.resolve([]),
+    shouldLoadUsage ? prisma.userUsageLog.count({ where: usageWhere }) : Promise.resolve(0),
   ]);
 
   const filteredRequests = normalizedQuery
@@ -122,6 +156,7 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
       navItems={[
         { label: "Dashboard", href: "/admin/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
         { label: "Users", href: "/admin/dashboard?view=users", icon: Users, active: activeView === "users" },
+        { label: "User Usage", href: "/admin/dashboard?view=user-usage", icon: Activity, active: activeView === "user-usage" },
         { label: "Profile", href: "/admin/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
         {
           label: "Role Requests",
@@ -133,14 +168,14 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
         { label: "MSME View", href: "/msme/dashboard", icon: Building2 },
         { label: "FIC View", href: "/fic/dashboard", icon: FlaskConical },
       ]}
-      stats={[
+      stats={activeView === "dashboard" ? [
         { label: "Total Studies", value: `${studies}`, helper: "All studies in the platform", icon: LayoutDashboard, tone: "sky" },
         { label: "Registered Users", value: `${userCount}`, helper: "All active user accounts", icon: Users, tone: "mint" },
         { label: "Pending Requests", value: `${pendingRequests}`, helper: "Awaiting review decisions", icon: ShieldCheck, tone: "amber" },
         { label: "Approved Requests", value: `${approvedRequests}`, helper: "Successfully upgraded access", icon: CheckCircle2, tone: "mint" },
         { label: "Rejected Requests", value: `${rejectedRequests}`, helper: "Declined role upgrades", icon: XCircle, tone: "rose" },
         { label: "Panelist Profiles", value: `${panelists}`, helper: "Profiles used for recruitment", icon: UserRound, tone: "slate" },
-      ]}
+      ] : undefined}
       sidebarFooter={
         <form action={logout}>
           <button type="submit" className="app-button-secondary w-full py-2 text-sm">
@@ -223,6 +258,61 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                         <td className="px-4 py-2 font-medium">{user.name}</td>
                         <td className="px-4 py-2 text-[#5b4739]">{user.email}</td>
                         <td className="px-4 py-2">{user.role}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      {activeView === "user-usage" && (
+        <>
+          <CollapsibleSection title="System Messages" id="system-messages" defaultOpen={false}>
+            <NotificationPanel userId={session.userId} redirectTo="/admin/dashboard?view=user-usage" />
+          </CollapsibleSection>
+          <section className="space-y-4 rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <div className="flex flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-[#2e231c]">User Usage</h2>
+                <p className="text-sm text-[#6f5b4f]">Admin-only activity log of account, role, study, participation, and response actions.</p>
+              </div>
+              <p className="text-xs font-medium uppercase tracking-[0.16em] text-[#8c776a]">
+                {usageRows.length} shown{usageTotal > usageRows.length ? ` of ${usageTotal}` : ""}
+              </p>
+            </div>
+
+            {usageRows.length === 0 && <p className="text-sm text-[#6f5b4f]">No usage activity found.</p>}
+
+            {usageRows.length > 0 && (
+              <div className="overflow-x-auto rounded-xl border border-[#eadfd6] bg-[#fffdfb]">
+                <table className="min-w-full divide-y divide-[#eadfd6] text-sm">
+                  <thead className="bg-[#faf6f2] text-left text-[#6f5b4f]">
+                    <tr>
+                      <th className="px-4 py-2 font-medium">Timestamp</th>
+                      <th className="px-4 py-2 font-medium">User</th>
+                      <th className="px-4 py-2 font-medium">Role</th>
+                      <th className="px-4 py-2 font-medium">Action</th>
+                      <th className="px-4 py-2 font-medium">Details</th>
+                      <th className="px-4 py-2 font-medium">Entity</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#f1e5db] text-[#2e231c]">
+                    {usageRows.map((row) => (
+                      <tr key={row.id}>
+                        <td className="whitespace-nowrap px-4 py-2 text-xs text-[#6f5b4f]">{new Date(row.createdAt).toLocaleString()}</td>
+                        <td className="px-4 py-2">
+                          <p className="font-medium">{row.actorName ?? "Unknown user"}</p>
+                          {row.actorEmail && <p className="text-xs text-[#8c776a]">{row.actorEmail}</p>}
+                        </td>
+                        <td className="whitespace-nowrap px-4 py-2">{row.actorRole ?? "-"}</td>
+                        <td className="whitespace-nowrap px-4 py-2 font-medium">{formatUsageAction(row.action)}</td>
+                        <td className="min-w-[260px] px-4 py-2 text-[#5b4739]">{row.summary}</td>
+                        <td className="whitespace-nowrap px-4 py-2 text-xs text-[#8c776a]">
+                          {row.entityType ? `${row.entityType}${row.entityId ? `: ${row.entityId}` : ""}` : "-"}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -403,8 +493,12 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
 }
 
 function parseAdminView(value?: string) {
-  if (value === "profile" || value === "role-requests" || value === "users") {
+  if (value === "profile" || value === "role-requests" || value === "users" || value === "user-usage") {
     return value;
   }
   return "dashboard";
+}
+
+function formatUsageAction(action: string) {
+  return action.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
 }

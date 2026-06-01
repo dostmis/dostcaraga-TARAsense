@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { getMsmeDashboardData } from "@/lib/mobile/msme";
+import { getMSMEDashboardData } from "@/lib/mobile/msme";
 import { mobileJson, requireMobileUser } from "@/lib/mobile/api";
 
 export const dynamic = "force-dynamic";
@@ -11,6 +11,6 @@ export async function GET(request: NextRequest) {
   }
 
   const query = request.nextUrl.searchParams.get("q") ?? undefined;
-  const data = await getMsmeDashboardData(auth.user.id, query);
+  const data = await getMSMEDashboardData(auth.user.id, query);
   return mobileJson(data);
 }

@@ -51,6 +51,22 @@ export async function getMobileProfile(user: MobileUser) {
     },
   });
 
+  const profileLocation = await prisma.userProfile.findUnique({
+    where: { userId: user.id },
+    select: {
+      regionId: true,
+      provinceId: true,
+      cityId: true,
+      barangayId: true,
+      addressDetails: true,
+      completedAt: true,
+      region: { select: { id: true, code: true, name: true, shortName: true } },
+      province: { select: { id: true, code: true, name: true } },
+      city: { select: { id: true, code: true, name: true, isCity: true } },
+      barangay: { select: { id: true, code: true, name: true } },
+    },
+  });
+
   const participationHistory = panelist
     ? await prisma.studyParticipant.findMany({
         where: { panelistId: panelist.id },
@@ -100,6 +116,20 @@ export async function getMobileProfile(user: MobileUser) {
       dietaryPrefs: DIETARY_OPTIONS,
       genders: GENDER_OPTIONS,
     },
+    profileLocation: profileLocation
+      ? {
+          completedAt: profileLocation.completedAt?.toISOString() ?? null,
+          regionId: profileLocation.regionId,
+          provinceId: profileLocation.provinceId,
+          cityId: profileLocation.cityId,
+          barangayId: profileLocation.barangayId,
+          addressDetails: profileLocation.addressDetails,
+          region: profileLocation.region,
+          province: profileLocation.province,
+          city: profileLocation.city,
+          barangay: profileLocation.barangay,
+        }
+      : null,
   };
 }
 

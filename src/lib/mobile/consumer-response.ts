@@ -4,6 +4,7 @@ import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { prisma } from "@/lib/db";
 import { notifyUser } from "@/lib/notifications";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
+import { logUserUsage } from "@/lib/user-usage";
 
 const MAX_ATTRIBUTE_KEYS = 40;
 const MAX_SAMPLE_RESPONSES = 20;
@@ -257,6 +258,20 @@ export async function submitMobileConsumerResponse(input: {
             await analysisEngine.analyzeStudy(input.studyId);
           })(),
           (async () => {
+            await logUserUsage({
+              actorUserId: input.userId,
+              action: "SENSORY_RESPONSE_SUBMITTED",
+              entityType: "Study",
+              entityId: input.studyId,
+              summary: `Submitted sensory response for "${participant.study.title}" from mobile.`,
+              metadata: {
+                channel: "mobile",
+                studyId: input.studyId,
+                participantId: input.participantId,
+                responseId,
+                sampleResponseCount: normalized.sampleResponses.length,
+              },
+            });
             await notifyUser(participant.study.creatorId, {
               title: "New sensory response submitted",
               message: `A participant submitted responses for "${participant.study.title}".`,

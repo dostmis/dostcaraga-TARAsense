@@ -1,6 +1,5 @@
 // Client-side service for FIC availability integration
 import { FACILITIES_BY_REGION } from "@/lib/facility-constants";
-import { buildApiUrl } from "@/lib/api-config";
 
 /** Custom error class for API errors */
 class ApiError extends Error {
@@ -18,45 +17,35 @@ function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
-/** Make API request with enhanced error handling */
-async function makeApiRequest(url: string, options: RequestInit = {}) {
-  const requestUrl = buildApiUrl(url);
+/**
+ * Make a request to Next.js internal API routes (not the external Laravel backend).
+ * Always uses /api/... paths regardless of NEXT_PUBLIC_API_URL.
+ */
+async function makeInternalRequest(internalPath: string, options: RequestInit = {}) {
+  const normalized = internalPath.startsWith("/") ? internalPath : `/${internalPath}`;
+  const requestUrl = `/api${normalized}`;
 
-  try {
-    // Ensure credentials are always included for auth
-    const fetchOptions = {
-      ...options,
-      credentials: 'include' as RequestCredentials,
-      headers: {
-        'Content-Type': 'application/json',
-        ...options.headers,
-      },
-    };
+  const fetchOptions = {
+    ...options,
+    credentials: 'include' as RequestCredentials,
+    headers: {
+      'Content-Type': 'application/json',
+      ...options.headers,
+    },
+  };
 
-    const response = await fetch(requestUrl, fetchOptions);
-    
-    // Handle non-OK responses
-    if (!response.ok) {
-      const errorData = await response.text().catch(() => "No error details");
-      throw new ApiError(
-        `API Error: ${response.status} ${response.statusText}. ${errorData}`,
-        response.status,
-        response.statusText
-      );
-    }
+  const response = await fetch(requestUrl, fetchOptions);
 
-    return response;
-  } catch (error) {
-    // Network error or CORS error
-    if (error instanceof TypeError && error.message === 'Failed to fetch') {
-      throw new ApiError(
-        `Failed to connect to the calendar service. Please refresh and try again.`
-      );
-    }
-    
-    // Re-throw other errors
-    throw error;
+  if (!response.ok) {
+    const errorData = await response.text().catch(() => "No error details");
+    throw new ApiError(
+      `API Error: ${response.status} ${response.statusText}. ${errorData}`,
+      response.status,
+      response.statusText
+    );
   }
+
+  return response;
 }
 
 export interface FicAvailability {
@@ -149,7 +138,7 @@ export async function getAvailableFics(
       params.append('facility', facility);
     }
 
-    const response = await makeApiRequest(
+    const response = await makeInternalRequest(
       `/fic-availability/available-fics?${params.toString()}`
     );
 
@@ -184,7 +173,7 @@ export async function getFacilityAvailabilityOverview(
       includeOverview: "1",
     });
 
-    const response = await makeApiRequest(
+    const response = await makeInternalRequest(
       `/fic-availability/available-fics?${params.toString()}`
     );
 
@@ -209,7 +198,7 @@ export async function getFicCalendar(
       endDate,
     });
 
-    const response = await makeApiRequest(`/fic-availability/calendar/${ficUserId}?${params.toString()}`);
+    const response = await makeInternalRequest(`/fic-availability/calendar/${ficUserId}?${params.toString()}`);
 
     const data = await response.json();
     return data;
@@ -227,7 +216,7 @@ export async function bulkSetAvailability(
   dates: { date: string; isAvailable: boolean }[]
 ): Promise<BulkAvailabilityResult> {
   try {
-    const response = await makeApiRequest(
+    const response = await makeInternalRequest(
       `/fic-availability/bulk?ficUserId=${ficUserId}`,
       {
         method: 'POST',
@@ -255,7 +244,7 @@ export async function setAvailability(
   isAvailable: boolean
 ): Promise<FicAvailability | null> {
   try {
-    const response = await makeApiRequest(
+    const response = await makeInternalRequest(
       `/fic-availability/${ficUserId}/${date}`,
       {
         method: 'PATCH',

@@ -67,3 +67,6 @@ export function checkRateLimit(key: string, config: RateLimitConfig): RateLimitR
 // Pre-configured limiters for common endpoints.
 export const AUTH_RATE_LIMIT: RateLimitConfig = { limit: 10, windowMs: 15 * 60 * 1000 };
 export const CHAT_RATE_LIMIT: RateLimitConfig = { limit: 30, windowMs: 60 * 1000 };
+export const REFRESH_RATE_LIMIT: RateLimitConfig = { limit: 30, windowMs: 15 * 60 * 1000 };
+export const MUTATION_RATE_LIMIT: RateLimitConfig = { limit: 60, windowMs: 60 * 1000 };
+export const SUBMIT_RATE_LIMIT: RateLimitConfig = { limit: 20, windowMs: 60 * 1000 };

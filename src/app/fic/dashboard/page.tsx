@@ -30,8 +30,8 @@ type CalendarEvent = {
   panelistNumber: string;
   sessionState: "CONFIRMED" | "PENDING_CONFIRMATION";
   scheduledAt: Date;
-  msmeName: string;
-  msmeOrganization: string | null;
+  MSMEName: string;
+  MSMEOrganization: string | null;
 };
 
 export default async function FicDashboardPage({ searchParams }: PageProps) {
@@ -255,8 +255,8 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         panelistNumber: formatPanelistNumber(row.panelistNumber),
         sessionState: row.sessionAt ? "CONFIRMED" : "PENDING_CONFIRMATION",
         scheduledAt,
-        msmeName: row.study.creator.name,
-        msmeOrganization: row.study.creator.organization,
+        MSMEName: row.study.creator.name,
+        MSMEOrganization: row.study.creator.organization,
       };
     })
     .filter((event): event is CalendarEvent => Boolean(event))
@@ -308,14 +308,14 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
           active: activeView === "calendar",
         },
       ]}
-      stats={[
+      stats={activeView === "dashboard" ? [
         { label: "Booking Notifications", value: `${ficStudyCount}`, helper: "Studies tagged for FIC facilities", icon: MapPin, tone: "amber" },
         { label: "Upcoming Sessions", value: `${upcomingSessionCount}`, helper: "Requested + confirmed session slots", icon: CalendarDays, tone: "sky" },
         { label: "Pending Confirmation", value: `${pendingSessionCount}`, helper: "Waiting MSME session confirmation", icon: Clock3, tone: "amber" },
         { label: "Uploaded Studies", value: `${uploadedStudyCount}`, helper: "Visible MSME study submissions", icon: TestTube2, tone: "sky" },
         { label: "Active Studies", value: `${activeStudyCount}`, helper: "Recruiting or currently running", icon: LayoutDashboard, tone: "mint" },
         { label: "Total Responses", value: `${totalResponseCount}`, helper: "Responses across visible studies", icon: ClipboardCheck, tone: "slate" },
-      ]}
+      ] : undefined}
       sidebarFooter={
         <form action={logout}>
           <button type="submit" className="app-button-secondary w-full py-2 text-sm">
@@ -538,8 +538,8 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
                               Panelist {event.panelistNumber}: {event.panelistName}
                             </p>
                             <p className="mt-1 text-xs text-[#8c776a]">
-                              MSME: {event.msmeName}
-                              {event.msmeOrganization ? ` (${event.msmeOrganization})` : ""}
+                              MSME: {event.MSMEName}
+                              {event.MSMEOrganization ? ` (${event.MSMEOrganization})` : ""}
                             </p>
                             <div className="mt-3 flex flex-wrap gap-2 text-xs">
                               <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{event.location}</span>

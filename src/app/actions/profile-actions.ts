@@ -7,10 +7,34 @@ import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
 import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { notifyUser } from "@/lib/notifications";
+import {
+  TARGET_CONSUMER_DIETARY_OPTIONS,
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS,
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS,
+  type TargetConsumerDietaryPref,
+} from "@/lib/target-consumer";
 
-const ALLOWED_LIFESTYLES = new Set(["student", "athlete", "office_worker"]);
-const ALLOWED_DIETARY_PREFS = new Set<DietaryPref>(["VEGETARIAN", "VEGAN", "GLUTEN_FREE"]);
+const ALLOWED_DIETARY_PREFS = new Set<TargetConsumerDietaryPref>(
+  TARGET_CONSUMER_DIETARY_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_WORK_DAILY_LIVING = new Set<string>(
+  TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_HEALTH_FITNESS = new Set<string>(
+  TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS.map((option) => option.value)
+);
+const ALLOWED_FOOD_CONSUMPTION = new Set<string>(
+  TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS.map((option) => option.value)
+);
 const ALLOWED_GENDERS = new Set<Gender>(["MALE", "FEMALE", "NON_BINARY", "PREFER_NOT_SAY"]);
+
+function collectFromForm(formData: FormData, key: string, allowed: Set<string>) {
+  return formData
+    .getAll(key)
+    .map((value) => String(value).trim())
+    .filter((value) => allowed.has(value));
+}
 
 export async function saveProfile(formData: FormData) {
   const session = await getCurrentSession();
@@ -30,23 +54,19 @@ export async function saveProfile(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const organizationRaw = String(formData.get("organization") ?? "").trim();
   const location = String(formData.get("location") ?? "").trim();
-  const occupation = String(formData.get("occupation") ?? "").trim();
   const genderInput = String(formData.get("gender") ?? "").toUpperCase() as Gender;
   const age = Number(formData.get("age") ?? "0");
 
-  const lifestyles = formData
-    .getAll("lifestyle")
-    .map((value) => String(value).trim().toLowerCase())
-    .filter((value) => ALLOWED_LIFESTYLES.has(value));
-
   const dietaryPrefs = formData
     .getAll("dietaryPrefs")
-    .map((value) => String(value).trim().toUpperCase() as DietaryPref)
-    .filter((value) => ALLOWED_DIETARY_PREFS.has(value));
+    .map((value) => String(value).trim().toUpperCase())
+    .filter((value): value is TargetConsumerDietaryPref =>
+      ALLOWED_DIETARY_PREFS.has(value as TargetConsumerDietaryPref)
+    ) as DietaryPref[];
 
-  const coffeeDrinker = formData.get("coffeeDrinker") === "on";
-  const snackConsumer = formData.get("snackConsumer") === "on";
-  const energyDrinkConsumer = formData.get("energyDrinkConsumer") === "on";
+  const workDailyLiving = collectFromForm(formData, "workDailyLiving", ALLOWED_WORK_DAILY_LIVING);
+  const healthFitness = collectFromForm(formData, "healthFitness", ALLOWED_HEALTH_FITNESS);
+  const foodConsumption = collectFromForm(formData, "foodConsumption", ALLOWED_FOOD_CONSUMPTION);
 
   if (name.length < 2) {
     redirect(withFeedback(redirectTo, "error", "Name must be at least 2 characters"));
@@ -59,9 +79,6 @@ export async function saveProfile(formData: FormData) {
   }
   if (location.length < 2) {
     redirect(withFeedback(redirectTo, "error", "Location is required"));
-  }
-  if (occupation.length < 2) {
-    redirect(withFeedback(redirectTo, "error", "Occupation is required"));
   }
 
   await prisma.user.update({
@@ -79,15 +96,10 @@ export async function saveProfile(formData: FormData) {
     age,
     gender: genderInput,
     location,
-    occupation,
-    lifestyle: lifestyles,
     dietaryPrefs,
-    consumptionHabits: {
-      coffeeDrinker,
-      snackConsumer,
-      energyDrinkConsumer,
-      snacks: snackConsumer ? "daily" : "weekly",
-    },
+    workDailyLiving,
+    healthFitness,
+    foodConsumption,
     isActive: true,
   };
 
@@ -105,7 +117,7 @@ export async function saveProfile(formData: FormData) {
     });
   } else {
     await prisma.panelist.create({
-      data: panelistData,
+      data: { ...panelistData, consumptionHabits: {} },
     });
   }
 

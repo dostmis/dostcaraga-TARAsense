@@ -46,11 +46,11 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
     notFound();
   }
   const isConsumer = session?.role === "CONSUMER";
-  const isMsmePeerEvaluator =
+  const isMSMEPeerEvaluator =
     session?.role === "MSME" &&
     study.creatorId !== session.userId &&
     study.creator.role === "MSME";
-  const isAuthenticatedEvaluator = isConsumer || isMsmePeerEvaluator;
+  const isAuthenticatedEvaluator = isConsumer || isMSMEPeerEvaluator;
 
   if (session?.role === "MSME" && study.creatorId === session.userId) {
     redirect("/msme/dashboard?error=MSME+users+cannot+evaluate+their+own+studies");
@@ -62,7 +62,7 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
     redirect(`/login?next=${encodeURIComponent(nextPath)}&message=Sign+in+to+join+this+sensory+study.+New+users+can+create+a+consumer+account+below`);
   }
 
-  const evaluatorDashboardPath = isMsmePeerEvaluator ? "/msme/dashboard?view=evaluate" : "/consumer/dashboard?view=available";
+  const evaluatorDashboardPath = isMSMEPeerEvaluator ? "/msme/dashboard?view=evaluate" : "/consumer/dashboard?view=available";
   if (!["RECRUITING", "ACTIVE"].includes(study.status)) {
     redirect(`${evaluatorDashboardPath}&error=This+study+is+not+open+for+responses`);
   }
@@ -198,7 +198,7 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
                 <p className="mt-1 text-sm text-[#64748b]">
                   Complete your TARAsense panelist matching profile before joining this sensory study.
                 </p>
-                <a href={isMsmePeerEvaluator ? "/msme/dashboard?view=profile" : "/consumer/dashboard?view=profile"} className="app-button-primary mt-4 inline-flex rounded-lg px-5 py-2 text-sm">
+                <a href={isMSMEPeerEvaluator ? "/msme/dashboard?view=profile" : "/consumer/dashboard?view=profile"} className="app-button-primary mt-4 inline-flex rounded-lg px-5 py-2 text-sm">
                   Complete Profile
                 </a>
               </>

@@ -12,6 +12,7 @@ import { ClipboardList, Compass, FileText, LayoutDashboard, ShieldCheck, UserRou
 import { formatPanelistNumber, parseOfferedSessions } from "@/lib/participant-assignment";
 import { formatSessionWindow, normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
+import { buildVisibleStudiesWhere, getUserLocation } from "@/lib/locations/study-visibility";
 
 export const dynamic = "force-dynamic";
 
@@ -45,10 +46,14 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
     },
   });
 
+  const userLocation = await getUserLocation(session.userId);
+  const visibilityWhere = buildVisibleStudiesWhere(userLocation);
+
   const [activeStudyRowsForCount, completedStudyCount, pendingApplications, approvedApplications] = await Promise.all([
     prisma.study.findMany({
       where: {
         status: { in: ["RECRUITING", "ACTIVE"] },
+        AND: [visibilityWhere],
       },
       select: {
         targetDemographics: true,
@@ -89,6 +94,7 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       ? prisma.study.findMany({
           where: {
             status: { in: ["RECRUITING", "ACTIVE"] },
+            AND: [visibilityWhere],
           },
           orderBy: { createdAt: "desc" },
           include: {
@@ -223,12 +229,12 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
           active: activeView === "applications",
         },
       ]}
-      stats={[
+      stats={activeView === "dashboard" ? [
         { label: "Study Notifications", value: `${openStudyCount}`, helper: "Active studies you can join", icon: Compass, tone: "sky" },
         { label: "Pending Applications", value: `${pendingApplications}`, helper: "Awaiting admin review", icon: ShieldCheck, tone: "amber" },
         { label: "Approved Upgrades", value: `${approvedApplications}`, helper: "Role requests approved", icon: ClipboardList, tone: "mint" },
         { label: "Completed Surveys", value: `${completedStudyCount}`, helper: "Surveys you already submitted", icon: FileText, tone: "slate" },
-      ]}
+      ] : undefined}
       sidebarFooter={
         <form action={logout}>
           <button type="submit" className="app-button-secondary w-full py-2 text-sm">
