@@ -1,13 +1,12 @@
 "use server";
 
-import { randomUUID } from "crypto";
 import { createStudy } from "@/app/actions/study-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
-import { formatDateKeyInTimeZone } from "@/lib/date-time";
+import { buildSessionSchedule, extractBookingDatesFromSchedule } from "@/lib/study-session-builder";
 import { DEFAULT_TARGET_CONSUMER, normalizeTargetConsumer } from "@/lib/target-consumer";
 import { logUserUsage } from "@/lib/user-usage";
 import { validateLocationConsistency } from "@/lib/locations/psgc-queries";
@@ -387,7 +386,11 @@ async function createSensoryStudy(
     };
   }
 
-  const scheduleResult = buildSessionSchedule(payload);
+  const scheduleResult = buildSessionSchedule({
+    testingStartDate: payload.testingStartDate,
+    testingDurationDays: payload.testingDurationDays,
+    sessionSlots: payload.sessionSlots,
+  });
   if (!scheduleResult.success) {
     return { success: false, error: scheduleResult.error };
   }
@@ -643,40 +646,6 @@ function isSafeProductImageDataUrl(value: string) {
   return byteLength > 0 && byteLength <= PRODUCT_IMAGE_MAX_BYTES;
 }
 
-function extractBookingDatesFromSchedule(slots: Array<{ testingDate: string }>) {
-  return Array.from(
-    new Set(slots.map((slot) => slot.testingDate))
-  ).sort((left, right) => left.localeCompare(right));
-}
-
-function addDaysToDateInput(dateInput: string | undefined, dayOffset: number) {
-  if (!dateInput) {
-    return null;
-  }
-
-  const parts = dateInput.split('-');
-  if (parts.length !== 3) return null;
-
-  const year = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1;
-  const day = parseInt(parts[2], 10);
-
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-    return null;
-  }
-
-  const base = new Date(year, month, day);
-  if (Number.isNaN(base.getTime())) {
-    return null;
-  }
-  base.setDate(base.getDate() + dayOffset);
-
-  const resultYear = base.getFullYear();
-  const resultMonth = String(base.getMonth() + 1).padStart(2, "0");
-  const resultDay = String(base.getDate()).padStart(2, "0");
-  return `${resultYear}-${resultMonth}-${resultDay}`;
-}
-
 async function checkFicBookingDates(ficUserId: string, bookingDates: string[]) {
   if (bookingDates.length === 0) {
     return { ok: false as const, error: "No session dates were detected for FIC booking." };
@@ -713,101 +682,6 @@ async function checkFicBookingDates(ficUserId: string, bookingDates: string[]) {
   }
 
   return { ok: true as const };
-}
-
-function buildSessionSchedule(payload: z.infer<typeof BuilderPayloadSchema>) {
-  if (!payload.testingStartDate) {
-    return { success: false as const, error: "Testing start date is required." };
-  }
-  if (!payload.testingDurationDays) {
-    return { success: false as const, error: "Testing duration is required." };
-  }
-  const durationDays = payload.testingDurationDays;
-  if (payload.sessionSlots.length === 0) {
-    return { success: false as const, error: "Add at least one testing session." };
-  }
-
-  const slots = payload.sessionSlots.reduce<
-    Array<{
-      id: string;
-      dayOffset: number;
-      testingDate: string;
-      label: string;
-      startsAt: string;
-      endsAt: string;
-      capacity: number;
-    }>
-  >((accumulator, slot) => {
-    if (slot.dayOffset >= durationDays) {
-      return accumulator;
-    }
-
-    const testingDate = slot.testingDate ?? addDaysToDateInput(payload.testingStartDate, slot.dayOffset);
-    if (!testingDate) {
-      return accumulator;
-    }
-
-    const startsAt = new Date(slot.startDateTime);
-    const endsAt = new Date(slot.endDateTime);
-    if (Number.isNaN(startsAt.getTime()) || Number.isNaN(endsAt.getTime())) {
-      return accumulator;
-    }
-    if (endsAt.getTime() <= startsAt.getTime()) {
-      return accumulator;
-    }
-    if (
-      formatDateKeyInTimeZone(startsAt, "Asia/Manila") !== testingDate ||
-      formatDateKeyInTimeZone(endsAt, "Asia/Manila") !== testingDate
-    ) {
-      return accumulator;
-    }
-
-    accumulator.push({
-      id: randomUUID(),
-      dayOffset: slot.dayOffset,
-      testingDate,
-      label: slot.label.trim(),
-      startsAt: startsAt.toISOString(),
-      endsAt: endsAt.toISOString(),
-      capacity: slot.capacity,
-    });
-    return accumulator;
-  }, []);
-
-  if (slots.length === 0) {
-    return {
-      success: false as const,
-      error: "All configured sessions are invalid. Check date, time, and day mapping.",
-    };
-  }
-
-  const uniqueStarts = new Set(slots.map((slot) => slot.startsAt));
-  if (uniqueStarts.size !== slots.length) {
-    return {
-      success: false as const,
-      error: "Duplicate session start times are not allowed.",
-    };
-  }
-
-  const scheduledDates = Array.from(new Set(slots.map((slot) => slot.testingDate)));
-  if (scheduledDates.length !== durationDays) {
-    return {
-      success: false as const,
-      error: `Select exactly ${durationDays} testing date(s) for the configured duration.`,
-    };
-  }
-
-  return {
-    success: true as const,
-    value: {
-      timezone: "Asia/Manila",
-      startDate: scheduledDates.sort((left, right) => left.localeCompare(right))[0] ?? payload.testingStartDate,
-      durationDays,
-      slots: slots.sort(
-        (left, right) => new Date(left.startsAt).getTime() - new Date(right.startsAt).getTime()
-      ),
-    },
-  };
 }
 
 function buildSensoryQuestionnaire(

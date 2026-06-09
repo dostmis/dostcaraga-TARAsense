@@ -9,6 +9,8 @@ import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { Activity, Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
 import { FACILITY_REGION_ROWS, REGIONS } from "@/lib/facility-constants";
+import { humanizeFicFacilityType, humanizeSensoryCapability } from "@/lib/fic-facility";
+import { getLocationPath } from "@/lib/locations/psgc-queries";
 import type { Prisma, UserRole } from "@prisma/client";
 
 export const dynamic = "force-dynamic";
@@ -72,7 +74,33 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           orderBy: { createdAt: "desc" },
           include: {
             user: {
-              select: { name: true, email: true, role: true, organization: true },
+              select: {
+                name: true,
+                email: true,
+                role: true,
+                organization: true,
+                ficFacilityProfile: {
+                  select: {
+                    id: true,
+                    facilityName: true,
+                    institutionName: true,
+                    regionId: true,
+                    provinceId: true,
+                    cityId: true,
+                    physicalAddress: true,
+                    website: true,
+                    directorName: true,
+                    position: true,
+                    officialEmail: true,
+                    contactNumber: true,
+                    facilityType: true,
+                    facilityTypeOther: true,
+                    sensoryCapabilities: true,
+                    govIdPath: true,
+                    status: true,
+                  },
+                },
+              },
             },
           },
           take: 50,
@@ -144,6 +172,31 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
         return entry.includes(normalizedQuery);
       })
     : requests;
+
+  // Resolve PSGC names for each FIC facility dossier shown in the review list.
+  const ficLocationLabelEntries = await Promise.all(
+    filteredRequests
+      .map((request) => request.user.ficFacilityProfile)
+      .filter((profile): profile is NonNullable<typeof profile> => Boolean(profile))
+      .map(async (profile) => {
+        const path = await getLocationPath({
+          regionId: profile.regionId,
+          provinceId: profile.provinceId,
+          cityId: profile.cityId,
+        });
+        return [
+          profile.id,
+          {
+            region: path.region?.shortName
+              ? `${path.region.shortName} — ${path.region.name}`
+              : path.region?.name ?? profile.regionId,
+            province: path.province?.name ?? profile.provinceId,
+            city: path.city ? (path.city.isCity ? `${path.city.name} (City)` : path.city.name) : profile.cityId,
+          },
+        ] as const;
+      })
+  );
+  const ficLocationLabels = new Map(ficLocationLabelEntries);
 
   return (
     <DashboardShell
@@ -353,6 +406,67 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                   <div className="rounded-lg border border-[#eadfd6] bg-[#faf6f2] p-3 text-sm text-[#5b4739]">{request.reason}</div>
                 )}
 
+                {request.targetRole === "FIC" && request.user.ficFacilityProfile && (
+                  <div className="space-y-3 rounded-lg border border-[#eadfd6] bg-[#faf6f2] p-4 text-sm text-[#5b4739]">
+                    <p className="text-xs font-semibold uppercase tracking-wide text-[#8c776a]">Facility Application Dossier</p>
+                    <dl className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
+                      <DossierItem label="Facility Name" value={request.user.ficFacilityProfile.facilityName} />
+                      <DossierItem label="Institution / Company" value={request.user.ficFacilityProfile.institutionName} />
+                      <DossierItem label="Region" value={ficLocationLabels.get(request.user.ficFacilityProfile.id)?.region} />
+                      <DossierItem label="Province" value={ficLocationLabels.get(request.user.ficFacilityProfile.id)?.province} />
+                      <DossierItem label="City / Municipality" value={ficLocationLabels.get(request.user.ficFacilityProfile.id)?.city} />
+                      <DossierItem label="Physical Address" value={request.user.ficFacilityProfile.physicalAddress} />
+                      <DossierItem
+                        label="Website"
+                        value={request.user.ficFacilityProfile.website ?? "—"}
+                      />
+                      <DossierItem label="Director / Head" value={request.user.ficFacilityProfile.directorName} />
+                      <DossierItem label="Position" value={request.user.ficFacilityProfile.position} />
+                      <DossierItem label="Official Email" value={request.user.ficFacilityProfile.officialEmail} />
+                      <DossierItem label="Contact Number" value={request.user.ficFacilityProfile.contactNumber} />
+                      <DossierItem
+                        label="Facility Type"
+                        value={
+                          request.user.ficFacilityProfile.facilityType === "OTHER" && request.user.ficFacilityProfile.facilityTypeOther
+                            ? `${humanizeFicFacilityType(request.user.ficFacilityProfile.facilityType)} — ${request.user.ficFacilityProfile.facilityTypeOther}`
+                            : humanizeFicFacilityType(request.user.ficFacilityProfile.facilityType)
+                        }
+                      />
+                    </dl>
+                    <div>
+                      <p className="text-xs font-medium text-[#8c776a]">Sensory Testing Capability</p>
+                      {request.user.ficFacilityProfile.sensoryCapabilities.length > 0 ? (
+                        <ul className="mt-1 flex flex-wrap gap-2">
+                          {request.user.ficFacilityProfile.sensoryCapabilities.map((capability) => (
+                            <li
+                              key={`${request.id}-cap-${capability}`}
+                              className="rounded-full bg-[#f3e7da] px-2.5 py-1 text-xs text-[#5a4536]"
+                            >
+                              {humanizeSensoryCapability(capability)}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="mt-1 text-xs text-[#8c776a]">None specified.</p>
+                      )}
+                    </div>
+                    <div>
+                      {request.user.ficFacilityProfile.govIdPath ? (
+                        <a
+                          href={`/api/uploads/fic-id/${request.user.ficFacilityProfile.id}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex items-center gap-1 text-xs font-medium text-[#c2410c] underline"
+                        >
+                          View uploaded government ID
+                        </a>
+                      ) : (
+                        <p className="text-xs text-[#8c776a]">No government ID on file.</p>
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 {request.status === "PENDING" && (
                   <div className="flex flex-wrap gap-2">
                     <form action={reviewRoleApplication}>
@@ -501,4 +615,13 @@ function parseAdminView(value?: string) {
 
 function formatUsageAction(action: string) {
   return action.replace(/_/g, " ").toLowerCase().replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function DossierItem({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div>
+      <dt className="text-xs font-medium text-[#8c776a]">{label}</dt>
+      <dd className="break-words text-[#2e231c]">{value && value.length > 0 ? value : "—"}</dd>
+    </div>
+  );
 }

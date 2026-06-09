@@ -42,6 +42,7 @@ export async function participateInStudy(formData: FormData) {
       id: true,
       title: true,
       status: true,
+      scheduleEndsAt: true,
       creatorId: true,
       creator: { select: { role: true } },
       targetDemographics: true,
@@ -69,6 +70,9 @@ export async function participateInStudy(formData: FormData) {
   }
   if (!["RECRUITING", "ACTIVE"].includes(study.status)) {
     redirect(withFeedback(defaultDashboardPath, "error", "Study is not open for participation"));
+  }
+  if (study.scheduleEndsAt && study.scheduleEndsAt.getTime() <= Date.now()) {
+    redirect(withFeedback(defaultDashboardPath, "error", "This study's testing schedule has ended"));
   }
   if (study.sensoryAttributes.length === 0) {
     redirect(withFeedback(defaultDashboardPath, "error", "Study has no questionnaire yet"));

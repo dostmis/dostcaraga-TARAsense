@@ -9,6 +9,8 @@ import { verifyPassword } from "@/lib/auth/password";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import { getStudyScheduleEnd } from "@/lib/study-schedule";
+import { buildSessionSchedule, extractBookingDatesFromSchedule } from "@/lib/study-session-builder";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 import { notifyRole } from "@/lib/notifications";
 import { logUserUsage } from "@/lib/user-usage";
@@ -144,7 +146,8 @@ export async function createStudy(
           stratificationVar: validated.stratificationVar === "none" ? null : validated.stratificationVar,
           screeningCriteria: screeningCriteriaJson,
           creatorId: userId,
-          status: "RECRUITING"
+          status: "RECRUITING",
+          scheduleEndsAt: getStudyScheduleEnd(preparedTargetDemographics),
         }
       });
 
@@ -229,6 +232,217 @@ export async function createStudy(
     console.error("Create study error:", error);
     return { success: false, error: "Failed to create study" };
   }
+}
+
+const MAX_STUDY_REPOSTS = 3;
+
+const RepostSessionSlotSchema = z.object({
+  dayOffset: z.number().int().min(0),
+  testingDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  label: z.string().min(1),
+  startDateTime: z.string().datetime(),
+  endDateTime: z.string().datetime(),
+  capacity: z.number().int().min(1),
+});
+
+const RepostStudySchema = z.object({
+  studyId: z.string().min(1),
+  testingStartDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  testingDurationDays: z.number().int().min(1).max(31),
+  sessionSlots: z.array(RepostSessionSlotSchema).min(1),
+  ficUserId: z.string().min(1).optional(),
+});
+
+/**
+ * Re-opens a study that was auto-closed below its target so the creator can
+ * recruit more participants. Existing responses are retained — new responses
+ * accumulate on top, strengthening the analysis. The study returns to
+ * RECRUITING and therefore reappears in every recruiting feed automatically.
+ */
+export async function repostStudy(input: z.infer<typeof RepostStudySchema>) {
+  const session = await getCurrentSession();
+  if (!session || (session.role !== "MSME" && session.role !== "ADMIN")) {
+    return { success: false as const, error: "MSME login required." };
+  }
+
+  const parsed = RepostStudySchema.safeParse(input);
+  if (!parsed.success) {
+    return { success: false as const, error: parsed.error.issues[0]?.message ?? "Invalid repost data." };
+  }
+  const data = parsed.data;
+
+  const study = await prisma.study.findFirst({
+    where: {
+      id: data.studyId,
+      ...(session.role === "ADMIN" ? {} : { creatorId: session.userId }),
+    },
+    select: {
+      id: true,
+      title: true,
+      status: true,
+      sampleSize: true,
+      repostCount: true,
+      scheduleEndsAt: true,
+      targetDemographics: true,
+      _count: { select: { responses: true } },
+    },
+  });
+  if (!study) {
+    return { success: false as const, error: "Study not found or you are not the owner." };
+  }
+
+  // Eligible when the study has been auto-closed below target (ANALYZING), or
+  // is still open but its schedule has already ended (the close job has not run
+  // yet). Active studies that are still within their schedule cannot be reposted.
+  const scheduleEnded =
+    study.scheduleEndsAt != null && study.scheduleEndsAt.getTime() <= Date.now();
+  const isClosedBelowTarget = study.status === "ANALYZING";
+  const isExpiredButOpen =
+    (study.status === "RECRUITING" || study.status === "ACTIVE") && scheduleEnded;
+  if (!isClosedBelowTarget && !isExpiredButOpen) {
+    return {
+      success: false as const,
+      error: "Only closed or ended studies that are below target can be reposted.",
+    };
+  }
+  const responsesCount = study._count.responses;
+  if (responsesCount >= study.sampleSize) {
+    return { success: false as const, error: "This study already reached its target responses." };
+  }
+  if (study.repostCount >= MAX_STUDY_REPOSTS) {
+    return { success: false as const, error: `A study can be reposted at most ${MAX_STUDY_REPOSTS} times.` };
+  }
+
+  // Validate the new schedule with the exact rules used at study creation.
+  const scheduleResult = buildSessionSchedule({
+    testingStartDate: data.testingStartDate,
+    testingDurationDays: data.testingDurationDays,
+    sessionSlots: data.sessionSlots,
+  });
+  if (!scheduleResult.success) {
+    return { success: false as const, error: scheduleResult.error };
+  }
+  const schedule = scheduleResult.value;
+
+  const now = new Date();
+  const scheduleEnd = getStudyScheduleEnd({ sessionSchedule: schedule });
+  if (!scheduleEnd || scheduleEnd.getTime() <= now.getTime()) {
+    return { success: false as const, error: "The new testing schedule must end in the future." };
+  }
+  const earliestStart = Math.min(...schedule.slots.map((slot) => new Date(slot.startsAt).getTime()));
+  if (earliestStart <= now.getTime()) {
+    return { success: false as const, error: "Testing sessions must be scheduled in the future." };
+  }
+
+  const remainingNeeded = study.sampleSize - responsesCount;
+  const totalCapacity = schedule.slots.reduce((sum, slot) => sum + slot.capacity, 0);
+  if (totalCapacity < remainingNeeded) {
+    return {
+      success: false as const,
+      error: `New session capacity (${totalCapacity}) is below the remaining ${remainingNeeded} responses needed.`,
+    };
+  }
+
+  const demographics = isStudyRecord(study.targetDemographics) ? study.targetDemographics : {};
+  const coordinationMode =
+    typeof demographics.coordinationMode === "string" ? demographics.coordinationMode : null;
+  const bookingDates = extractBookingDatesFromSchedule(schedule.slots);
+
+  // FIC-assisted studies need their facility dates re-reserved for the new window.
+  let ficBooking: { ficUserId: string; region: string; facility: string; bookingDates: string[] } | null = null;
+  if (coordinationMode === "FIC_ASSISTED") {
+    const region = typeof demographics.region === "string" ? demographics.region : "";
+    const facility = typeof demographics.facilityType === "string" ? demographics.facilityType : "";
+    const existingAssignee =
+      isStudyRecord(demographics.ficAssignee) && typeof demographics.ficAssignee.id === "string"
+        ? demographics.ficAssignee.id
+        : null;
+    const ficUserId = data.ficUserId ?? existingAssignee;
+    if (!ficUserId || !region || !facility) {
+      return {
+        success: false as const,
+        error: "Unable to resolve the FIC assignment for this study. Coordinate new FIC dates first.",
+      };
+    }
+    ficBooking = { ficUserId, region, facility, bookingDates };
+  }
+
+  const nextTargetDemographics: Record<string, unknown> = {
+    ...demographics,
+    sessionSchedule: schedule,
+    ...(ficBooking ? { ficBookingDates: bookingDates } : {}),
+  };
+  // Reopening clears the closure audit stamp written by the auto-close job.
+  delete nextTargetDemographics.closure;
+
+  const targetDemographicsJson = JSON.parse(
+    JSON.stringify(nextTargetDemographics)
+  ) as Prisma.InputJsonValue;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      if (ficBooking) {
+        // Release this study's previous date locks before reserving the new ones.
+        await tx.ficAvailability.updateMany({
+          where: { lockedById: data.studyId },
+          data: { isLocked: false, lockedById: null, lockedAt: null },
+        });
+        await reserveFicBookingDates(tx, data.studyId, ficBooking);
+      }
+
+      await tx.study.update({
+        where: { id: data.studyId },
+        data: {
+          status: "RECRUITING",
+          scheduleEndsAt: scheduleEnd,
+          closedAt: null,
+          repostCount: { increment: 1 },
+          targetDemographics: targetDemographicsJson,
+        },
+      });
+    });
+  } catch (error) {
+    if (error instanceof StudyCreationConflictError) {
+      return { success: false as const, error: error.message };
+    }
+    console.error("Repost study error:", error);
+    return { success: false as const, error: "Failed to repost study." };
+  }
+
+  void notifyRole("CONSUMER", {
+    title: "Study reopened",
+    message: `"${study.title}" is recruiting participants again. Join to share your feedback.`,
+    category: "STUDY",
+    actionUrl: `/studies/${study.id}/form`,
+    metadata: { studyId: study.id, type: "STUDY_REPOSTED" },
+  }).catch((error) => {
+    console.error("[push] notifyRole CONSUMER (repost) failed:", error);
+  });
+
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "STUDY_REPOSTED",
+    entityType: "Study",
+    entityId: study.id,
+    summary: `Reposted "${study.title}" with a new testing schedule (${responsesCount}/${study.sampleSize} responses so far).`,
+    metadata: {
+      studyId: study.id,
+      repostCount: study.repostCount + 1,
+      responsesAtRepost: responsesCount,
+      sampleSize: study.sampleSize,
+      newScheduleEndsAt: scheduleEnd.toISOString(),
+    },
+  });
+
+  revalidatePath("/msme/dashboard");
+  revalidatePath("/dashboard");
+  revalidatePath("/consumer/dashboard");
+
+  return { success: true as const, studyId: study.id };
+}
+
+function isStudyRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function normalizeFicBooking(booking: z.infer<typeof CreateStudySchema>["ficBooking"]) {

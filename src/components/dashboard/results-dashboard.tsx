@@ -12,6 +12,8 @@ import {
   ResponsiveContainer,
   ErrorBar,
   LabelList,
+  Legend,
+  ReferenceLine,
   PieChart,
   Pie,
   Cell,
@@ -207,6 +209,7 @@ interface ComparativeAnalysis {
   defaultVariableKey?: string | null;
   overallLikingComparison?: OverallLikingComparison | null;
   attributeLikingComparison?: AttributeLikingComparisonEntry[];
+  jarRatingComparison?: AttributeLikingComparisonEntry[];
   jarDistributionComparison?: JarDistributionComparisonEntry[];
 }
 
@@ -364,6 +367,7 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
           !comparative ||
           comparative.overallLikingComparison === undefined ||
           comparative.attributeLikingComparison === undefined ||
+          comparative.jarRatingComparison === undefined ||
           comparative.jarDistributionComparison === undefined;
         if (missingNewFields) {
           const refreshed = await fetch(buildApiUrl(`/studies/${studyId}/analysis?refresh=1`), { cache: "no-store" });
@@ -792,6 +796,10 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
             <AttributeLikingComparisonChart entries={comparativeAnalysis.attributeLikingComparison} />
           )}
 
+          {comparativeAnalysis?.jarRatingComparison && comparativeAnalysis.jarRatingComparison.length > 0 && (
+            <JarRatingComparisonChart entries={comparativeAnalysis.jarRatingComparison} />
+          )}
+
           {comparativeAnalysis?.jarDistributionComparison && comparativeAnalysis.jarDistributionComparison.length > 0 && (
             <JarDistributionComparisonCard entries={comparativeAnalysis.jarDistributionComparison} />
           )}
@@ -1071,6 +1079,89 @@ function AttributeLikingComparisonChart({ entries }: { entries: AttributeLikingC
                   const match = entry.samples.find((sample) => sample.sampleLabel === label);
                   return (
                     <td key={`cell-${entry.attribute}-${label}`} className="px-3 py-2 text-center">
+                      {match ? `${match.mean.toFixed(2)}${match.letter ? ` (${match.letter})` : ""}` : "-"}
+                    </td>
+                  );
+                })}
+                <td className="px-3 py-2 text-center text-[#475569]">{entry.statisticalComparison.testLabel}</td>
+                <td className="px-3 py-2 text-center">
+                  {entry.statisticalComparison.formattedPValue}
+                  {entry.statisticalComparison.significant ? <span className="ml-1 font-semibold text-red-600">*</span> : null}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function JarRatingComparisonChart({ entries }: { entries: AttributeLikingComparisonEntry[] }) {
+  if (entries.length === 0) return null;
+  const sampleLabels = Array.from(new Set(entries.flatMap((entry) => entry.samples.map((sample) => sample.sampleLabel))));
+  const colorPalette = ["#f97316", "#1d4ed8", "#16a34a", "#dc2626", "#9333ea", "#0891b2"];
+  const data = entries.map((entry) => {
+    const row: Record<string, number | string> = { attribute: entry.attribute };
+    entry.samples.forEach((sample) => {
+      row[sample.sampleLabel] = sample.mean;
+      row[`${sample.sampleLabel}__se`] = sample.stdError ?? 0;
+      row[`${sample.sampleLabel}__letter`] = sample.letter ?? "";
+    });
+    return row;
+  });
+
+  return (
+    <Card title="Mean JAR Rating Comparison Across Samples" className="lg:col-span-2">
+      <p className="mb-3 rounded-lg border border-[#dbeafe] bg-[#eff6ff] px-3 py-2 text-xs text-[#1e3a8a]">
+        Mean Just-About-Right rating per attribute on the 5-point JAR scale (1 = Much too low, 3 = Just right, 5 = Much too high).
+        A mean near 3 is ideal; below 3 leans &ldquo;too low&rdquo; and above 3 leans &ldquo;too high&rdquo;.
+      </p>
+      <div className="h-80 min-h-80 min-w-0">
+        <MeasuredResponsiveChart>
+          <BarChart data={data} margin={{ top: 24, right: 16, left: 0, bottom: 8 }}>
+            <CartesianGrid strokeDasharray="3 3" vertical={false} />
+            <XAxis dataKey="attribute" />
+            <YAxis domain={[0, 5]} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Mean JAR rating (1-5)", angle: -90, position: "insideLeft" }} />
+            <Tooltip />
+            <Legend />
+            {sampleLabels.map((label, index) => (
+              <Bar key={label} dataKey={label} fill={colorPalette[index % colorPalette.length]} radius={[4, 4, 0, 0]}>
+                <ErrorBar dataKey={`${label}__se`} width={4} stroke="#1e293b" />
+              </Bar>
+            ))}
+            <ReferenceLine
+              y={3}
+              stroke="#16a34a"
+              strokeDasharray="5 4"
+              label={{ value: "Just right (3)", position: "insideTopRight", fontSize: 10, fill: "#16a34a" }}
+            />
+          </BarChart>
+        </MeasuredResponsiveChart>
+      </div>
+      <p className="mt-2 text-xs text-[#475569]">
+        Values are mean +/- SE. Letters compare samples within each attribute (samples sharing a letter are not significantly different, p &gt;= 0.05).
+      </p>
+      <div className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[640px] text-xs">
+          <thead className="bg-[#f8fafc]">
+            <tr>
+              <th className="px-3 py-2 text-left">Attribute</th>
+              {sampleLabels.map((label) => (
+                <th key={`jar-head-${label}`} className="px-3 py-2 text-center">{label}</th>
+              ))}
+              <th className="px-3 py-2 text-center">Test</th>
+              <th className="px-3 py-2 text-center">p-value</th>
+            </tr>
+          </thead>
+          <tbody>
+            {entries.map((entry) => (
+              <tr key={`jar-cmp-${entry.attribute}`} className="border-b border-[#e2e8f0]">
+                <td className="px-3 py-2 font-medium">{entry.attribute}</td>
+                {sampleLabels.map((label) => {
+                  const match = entry.samples.find((sample) => sample.sampleLabel === label);
+                  return (
+                    <td key={`jar-cell-${entry.attribute}-${label}`} className="px-3 py-2 text-center">
                       {match ? `${match.mean.toFixed(2)}${match.letter ? ` (${match.letter})` : ""}` : "-"}
                     </td>
                   );
@@ -1667,6 +1758,19 @@ function buildAnalysisExportContext(analysis: AnalysisPayload): AnalysisExportCo
       "p-value": entry.statisticalComparison.formattedPValue,
     })),
   ) ?? [];
+  const jarRatingComparisonRows = comparativeAnalysis?.jarRatingComparison?.flatMap((entry) =>
+    entry.samples.map((sample) => ({
+      Attribute: entry.attribute,
+      Sample: sample.sampleLabel,
+      "Sample No.": sample.sampleNumber,
+      "Mean JAR (1-5)": roundMetric(sample.mean),
+      "Std. Error": roundMetric(sample.stdError ?? null),
+      N: sample.n,
+      Letter: sample.letter ?? "-",
+      Test: entry.statisticalComparison.testLabel,
+      "p-value": entry.statisticalComparison.formattedPValue,
+    })),
+  ) ?? [];
   const jarDistributionComparisonRows = comparativeAnalysis?.jarDistributionComparison?.flatMap((entry) =>
     entry.distributions.map((dist) => ({
       Attribute: entry.attribute,
@@ -1694,6 +1798,7 @@ function buildAnalysisExportContext(analysis: AnalysisPayload): AnalysisExportCo
       // Comparative analysis.
       { title: "Overall Liking Comparison", rows: overallLikingComparisonRows },
       { title: "Mean Attribute Liking Comparison", rows: attributeLikingComparisonRows },
+      { title: "Mean JAR Rating Comparison", rows: jarRatingComparisonRows },
       { title: "JAR Distribution Comparison", rows: jarDistributionComparisonRows },
       { title: "Statistical Test (Primary)", rows: statisticalComparisonRows },
       { title: "Comparative Analysis Samples", rows: comparisonRows },

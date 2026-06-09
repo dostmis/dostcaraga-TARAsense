@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { applyForRole, logout } from "@/app/actions/auth-actions";
+import { logout } from "@/app/actions/auth-actions";
 import { chooseSessionOption, participateInStudy } from "@/app/actions/participant-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
@@ -8,16 +8,18 @@ import { TimedToast } from "@/components/ui/timed-toast";
 import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
+import { RoleApplicationView } from "@/components/applications/role-application-view";
 import { ClipboardList, Compass, FileText, LayoutDashboard, ShieldCheck, UserRound } from "lucide-react";
 import { formatPanelistNumber, parseOfferedSessions } from "@/lib/participant-assignment";
 import { formatSessionWindow, normalizeDateValue, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
-import { buildVisibleStudiesWhere, getUserLocation } from "@/lib/locations/study-visibility";
+import { buildScheduleOpenWhere, buildVisibleStudiesWhere, getUserLocation } from "@/lib/locations/study-visibility";
+import { buildFicFacilityFormInitial } from "@/lib/fic-facility-view";
 
 export const dynamic = "force-dynamic";
 
 type PageProps = {
-  searchParams: Promise<{ error?: string; message?: string; view?: string; q?: string }>;
+  searchParams: Promise<{ error?: string; message?: string; view?: string; q?: string; apply?: string }>;
 };
 
 export default async function ConsumerDashboardPage({ searchParams }: PageProps) {
@@ -48,12 +50,13 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
 
   const userLocation = await getUserLocation(session.userId);
   const visibilityWhere = buildVisibleStudiesWhere(userLocation);
+  const scheduleOpenWhere = buildScheduleOpenWhere();
 
   const [activeStudyRowsForCount, completedStudyCount, pendingApplications, approvedApplications] = await Promise.all([
     prisma.study.findMany({
       where: {
         status: { in: ["RECRUITING", "ACTIVE"] },
-        AND: [visibilityWhere],
+        AND: [visibilityWhere, scheduleOpenWhere],
       },
       select: {
         targetDemographics: true,
@@ -94,7 +97,7 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       ? prisma.study.findMany({
           where: {
             status: { in: ["RECRUITING", "ACTIVE"] },
-            AND: [visibilityWhere],
+            AND: [visibilityWhere, scheduleOpenWhere],
           },
           orderBy: { createdAt: "desc" },
           include: {
@@ -196,6 +199,43 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       })
     : applications;
 
+  // Role application state — prefill the FIC form for re-application and detect pending requests.
+  const [ficProfile, pendingRequests] = shouldLoadApplications
+    ? await Promise.all([
+        prisma.ficFacilityProfile.findUnique({
+          where: { userId: session.userId },
+          select: {
+            id: true,
+            facilityName: true,
+            institutionName: true,
+            regionId: true,
+            provinceId: true,
+            cityId: true,
+            physicalAddress: true,
+            website: true,
+            directorName: true,
+            position: true,
+            officialEmail: true,
+            contactNumber: true,
+            facilityType: true,
+            facilityTypeOther: true,
+            sensoryCapabilities: true,
+            govIdPath: true,
+          },
+        }),
+        prisma.roleUpgradeRequest.findMany({
+          where: { userId: session.userId, status: "PENDING" },
+          select: { targetRole: true },
+        }),
+      ])
+    : [null, []];
+
+  const ficFormInitial = ficProfile ? await buildFicFacilityFormInitial(ficProfile) : null;
+  const hasPendingFicRequest = pendingRequests.some((request) => request.targetRole === "FIC");
+  const hasPendingMsmeRequest = pendingRequests.some((request) => request.targetRole === "MSME");
+  const applyMode =
+    activeView === "applications" && (params.apply === "msme" || params.apply === "fic") ? params.apply : null;
+
   return (
     <DashboardShell
       workspaceLabel="Consumer Workspace"
@@ -261,55 +301,13 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
       )}
 
       {activeView === "applications" && (
-        <>
-          <section className="space-y-4 rounded-2xl border border-[#e4d7cc] bg-white p-6">
-            <h2 className="text-xl font-semibold text-[#2e231c]">Apply for Access Upgrade</h2>
-            <p className="text-sm text-[#6f5b4f]">All accounts start as Consumer. Submit an application and wait for admin approval.</p>
-            <div className="grid gap-4 md:grid-cols-2">
-              <form action={applyForRole} className="space-y-3 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
-                <h3 className="font-medium text-[#2e231c]">Apply for MSME User</h3>
-                <input type="hidden" name="targetRole" value="MSME" />
-                <textarea
-                  name="reason"
-                  placeholder="Reason for MSME access (optional)"
-                  className="min-h-20 w-full rounded-lg border border-[#daccc0] bg-white px-3 py-2 text-sm text-[#3f2f25] outline-none placeholder:text-[#9b8471]"
-                />
-                <button type="submit" className="w-full rounded-lg bg-[#ed7f2a] py-2 text-sm font-semibold text-white hover:bg-[#dc6f1d]">
-                  Submit MSME Application
-                </button>
-              </form>
-
-              <form action={applyForRole} className="space-y-3 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
-                <h3 className="font-medium text-[#2e231c]">Apply for FIC User</h3>
-                <input type="hidden" name="targetRole" value="FIC" />
-                <textarea
-                  name="reason"
-                  placeholder="Reason for FIC access (optional)"
-                  className="min-h-20 w-full rounded-lg border border-[#daccc0] bg-white px-3 py-2 text-sm text-[#3f2f25] outline-none placeholder:text-[#9b8471]"
-                />
-                <button type="submit" className="w-full rounded-lg bg-[#ed7f2a] py-2 text-sm font-semibold text-white hover:bg-[#dc6f1d]">
-                  Submit FIC Application
-                </button>
-              </form>
-            </div>
-          </section>
-
-          <section className="space-y-3 rounded-2xl border border-[#e4d7cc] bg-white p-6">
-            <h2 className="text-xl font-semibold text-[#2e231c]">Application History</h2>
-            {filteredApplications.length === 0 && <p className="text-sm text-[#6f5b4f]">No role applications found.</p>}
-            {filteredApplications.map((application) => (
-              <div key={application.id} className="rounded-lg border border-[#eadfd6] bg-[#fffdfb] p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="font-medium text-[#2e231c]">
-                    {application.targetRole} access - <span className="text-[#6f5b4f]">{application.status}</span>
-                  </p>
-                  <p className="text-xs text-[#8c776a]">{new Date(application.createdAt).toLocaleString()}</p>
-                </div>
-                {application.reason && <p className="mt-2 text-[#6f5b4f]">{application.reason}</p>}
-              </div>
-            ))}
-          </section>
-        </>
+        <RoleApplicationView
+          applyMode={applyMode}
+          applications={filteredApplications}
+          ficFormInitial={ficFormInitial}
+          hasPendingMsmeRequest={hasPendingMsmeRequest}
+          hasPendingFicRequest={hasPendingFicRequest}
+        />
       )}
 
       {activeView === "available" && (

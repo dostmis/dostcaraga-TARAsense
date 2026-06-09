@@ -43,3 +43,6 @@ next-env.d.ts
 
 /src/generated/prisma
 *.zip
+
+# local file uploads (e.g. FIC government IDs) — never commit
+/var

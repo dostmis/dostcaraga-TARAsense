@@ -9,7 +9,9 @@ import { CreateStudyBuilder } from "@/components/studies/create-study-builder";
 import { CreateStudyImportPanel } from "@/components/studies/create-study-import-panel";
 import { TimedToast } from "@/components/ui/timed-toast";
 import { StudyDeleteControl } from "@/components/dashboards/study-delete-control";
+import { RepostStudyControl } from "@/components/dashboards/repost-study-control";
 import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
+import { buildScheduleOpenWhere } from "@/lib/locations/study-visibility";
 import { ClipboardList, Compass, FileUp, LayoutDashboard, PlusCircle, UserRound } from "lucide-react";
 
 interface StudyParticipantSummary {
@@ -28,6 +30,7 @@ interface StudySummary {
   stage: string;
   status: string;
   sampleSize: number;
+  scheduleEndsAt: Date | null;
   participants: StudyParticipantSummary[];
   _count: {
     responses: number;
@@ -91,6 +94,7 @@ export async function MSMEDashboard({
           creatorId: { not: userId },
           creator: { role: "MSME" },
           status: { in: ["RECRUITING", "ACTIVE"] },
+          AND: [buildScheduleOpenWhere()],
         },
         select: {
           targetDemographics: true,
@@ -153,6 +157,7 @@ export async function MSMEDashboard({
           creatorId: { not: userId },
           creator: { role: "MSME" },
           status: { in: ["RECRUITING", "ACTIVE"] },
+          AND: [buildScheduleOpenWhere()],
         },
         orderBy: { createdAt: "desc" },
         include: {
@@ -414,6 +419,9 @@ export async function MSMEDashboard({
                 {group.studies.map((study) => {
                   const targetReached = study._count.responses >= study.sampleSize;
                   const hasAnyParticipants = study._count.participants > 0;
+                  const isExpired =
+                    study.scheduleEndsAt != null && new Date(study.scheduleEndsAt).getTime() <= Date.now();
+                  const isClosedBelowTarget = (study.status === "ANALYZING" || isExpired) && !targetReached;
                   return (
                     <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
                       <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
@@ -447,6 +455,10 @@ export async function MSMEDashboard({
                             <span className="inline-flex items-center justify-center rounded-lg bg-[#e8f8ed] px-4 py-2 text-sm font-medium text-[#1d7c4a]">
                               All Participants Completed
                             </span>
+                          ) : isClosedBelowTarget ? (
+                            <span className="inline-flex items-center justify-center rounded-lg bg-[#fde7e7] px-4 py-2 text-sm font-medium text-[#b3261e]">
+                              Closed — Below Target
+                            </span>
                           ) : !hasAnyParticipants ? (
                             <span className="inline-flex items-center justify-center rounded-lg bg-[#fff7e9] px-4 py-2 text-sm font-medium text-[#8a5a00]">
                               No Participants Assigned Yet
@@ -458,6 +470,13 @@ export async function MSMEDashboard({
                           )}
                         </div>
                       </div>
+                      {isClosedBelowTarget && (
+                        <RepostStudyControl
+                          studyId={study.id}
+                          sampleSize={study.sampleSize}
+                          responsesCount={study._count.responses}
+                        />
+                      )}
                       <StudyDeleteControl studyId={study.id} redirectTo="/msme/dashboard?view=history" />
                     </article>
                   );

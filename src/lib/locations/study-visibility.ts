@@ -47,6 +47,24 @@ export function isLocationComplete(profile: {
 }
 
 /**
+ * Build a Prisma `where` clause fragment that excludes studies whose testing
+ * schedule has already ended, so expired studies disappear from every
+ * recruiting/participation feed immediately — independent of the
+ * close-expired-studies job, which only writes the closed status and creator
+ * notifications.
+ *
+ * Studies with no schedule end (scheduleEndsAt null — market/self-managed
+ * without slots) are always considered open.
+ *
+ * Every list/feed query that offers a study for participation must compose this.
+ */
+export function buildScheduleOpenWhere(now: Date = new Date()): Prisma.StudyWhereInput {
+  return {
+    OR: [{ scheduleEndsAt: null }, { scheduleEndsAt: { gt: now } }],
+  };
+}
+
+/**
  * Build a Prisma `where` clause fragment that restricts studies to ones whose
  * locationTarget matches the supplied user location, OR studies that have no
  * locationTarget yet (treated as legacy/all-visible — adjust if you want

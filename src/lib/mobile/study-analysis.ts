@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db";
 import type { MobileUser } from "@/lib/mobile/api";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { canAccessStudyByRole } from "@/lib/study-access";
+import { runInBackground } from "@/lib/async-workflow";
 
 export async function getMobileStudyAnalysis(user: MobileUser, studyId: string, options?: { refresh?: boolean }) {
   const study = await prisma.study.findUnique({
@@ -75,7 +76,12 @@ export async function getMobileStudyAnalysis(user: MobileUser, studyId: string, 
 
   if (!study.analysis || options?.refresh) {
     const engine = new SensoryAnalysisEngine();
-    await engine.analyzeStudy(studyId);
+    // Compute statistics synchronously but push the slow AI step to the background
+    // so the read never blocks on the AI provider (avoids upstream 502s).
+    await engine.analyzeStudy(studyId, { generateAi: false });
+    runInBackground("mobile-study-analysis-ai", async () => {
+      await new SensoryAnalysisEngine().analyzeStudy(studyId);
+    });
   }
 
   const analysis = await prisma.studyAnalysis.findUnique({

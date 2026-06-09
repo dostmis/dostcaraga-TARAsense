@@ -27,7 +27,7 @@ export default async function LoginPage({ searchParams }: PageProps) {
     <div className="relative grid min-h-screen w-full grid-cols-1 overflow-hidden bg-background text-foreground lg:grid-cols-2">
       <AuthBrandPanel
         headline={["Build Your Team", "On Real Data."]} 
-        body="Monitor shifts, detect opportunities, and align teams around real consumer signals - not yesterday's data."
+        body="Turn real consumer signals into smarter decisions, faster opportunities, and better team alignment."
       />
 
       <section className="flex min-h-screen items-stretch justify-center p-0 sm:items-center sm:p-8">

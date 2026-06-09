@@ -14,6 +14,8 @@ model User {
   name                  String
   role                  UserRole               @default(CONSUMER)
   organization          String?
+  image                 String?
+  provider              String?
   createdAt             DateTime               @default(now())
   updatedAt             DateTime               @updatedAt
   assignedRegion        String?
@@ -23,6 +25,7 @@ model User {
   deviceTokens          DeviceToken[]
   ficAssignmentHistory  FicAssignmentHistory[]
   ficAvailability       FicAvailability[]
+  ficFacilityProfile    FicFacilityProfile?
   notifications         Notification[]
   panelistProfile       Panelist?
   reviewedRequests      RoleUpgradeRequest[]   @relation("RequestReviewer")
@@ -55,6 +58,7 @@ model RoleUpgradeRequest {
   targetRole UserRole
   status     RequestStatus @default(PENDING)
   reason     String?
+  applicationData Json?
   adminId    String?
   reviewedAt DateTime?
   createdAt  DateTime      @default(now())
@@ -152,6 +156,9 @@ model Study {
   sampleSize         Int
   location           String
   status             StudyStatus            @default(DRAFT)
+  scheduleEndsAt     DateTime?
+  closedAt           DateTime?
+  repostCount        Int                    @default(0)
   createdAt          DateTime               @default(now())
   updatedAt          DateTime               @updatedAt
   studyDesign        StudyDesign            @default(WITHIN_SUBJECT)
@@ -172,6 +179,7 @@ model Study {
   @@index([creatorId, createdAt])
   @@index([status, createdAt])
   @@index([location, status])
+  @@index([status, scheduleEndsAt])
 }
 
 model ScreeningResponse {
@@ -492,6 +500,41 @@ model FicAssignmentHistory {
   @@index([changedById, createdAt])
 }
 
+model FicFacilityProfile {
+  id String @id @default(cuid())
+
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  facilityName    String
+  institutionName String
+
+  regionId   String
+  provinceId String
+  cityId     String
+
+  physicalAddress String
+  website         String?
+
+  directorName  String
+  position      String
+  officialEmail String
+  contactNumber String
+  govIdPath     String?
+
+  facilityType      FicFacilityType
+  facilityTypeOther String?
+
+  sensoryCapabilities String[]
+
+  status RequestStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+}
+
 enum UserRole {
   ADMIN
   MSME
@@ -505,6 +548,15 @@ enum RequestStatus {
   PENDING
   APPROVED
   REJECTED
+}
+
+enum FicFacilityType {
+  FOOD_INNOVATION_CENTER
+  UNIVERSITY_LAB
+  GOVERNMENT_RESEARCH
+  PRIVATE_RESEARCH
+  FOOD_INDUSTRY
+  OTHER
 }
 
 enum NotificationLevel {

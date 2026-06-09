@@ -145,7 +145,7 @@ interface SampleObservation {
 }
 
 export class SensoryAnalysisEngine {
-  async analyzeStudy(studyId: string) {
+  async analyzeStudy(studyId: string, options?: { generateAi?: boolean }) {
     const [study, responses, attributes] = await Promise.all([
       prisma.study.findUnique({
         where: { id: studyId },
@@ -329,15 +329,21 @@ export class SensoryAnalysisEngine {
     });
 
     await this.writeDerivedMetrics(studyId, overallLikingPayload, attributeResults, penaltyResults);
-    await this.generateAIInterpretation(studyId, {
-      overallStats,
-      penaltyResults,
-      sampleInsights,
-      comparativeAnalysis,
-      dataQuality,
-      automaticInterpretation,
-      studyDesign,
-    });
+
+    // The AI narrative is the only step that makes an external (slow) call. Callers
+    // on the read path skip it so opening results never blocks on the AI provider;
+    // it is generated at submission time and on explicit refresh instead.
+    if (options?.generateAi !== false) {
+      await this.generateAIInterpretation(studyId, {
+        overallStats,
+        penaltyResults,
+        sampleInsights,
+        comparativeAnalysis,
+        dataQuality,
+        automaticInterpretation,
+        studyDesign,
+      });
+    }
 
     return analysis;
   }
@@ -788,6 +794,37 @@ export class SensoryAnalysisEngine {
       return { attribute: attributeName, distributions };
     });
 
+    // Mean JAR rating comparison (per JAR attribute): compares the mean 1-5 rating
+    // across samples, mirroring the attribute-liking comparison but on the JAR scale.
+    const jarRatingComparison = jarAttributeNames
+      .map((attributeName) => {
+        const comparison = this.runComparisonForVariable(
+          sampleObservations,
+          sampleNumbers,
+          { key: attributeName, label: attributeName, type: "JAR_RATING" },
+          studyDesign
+        );
+        if (!comparison) return null;
+        const postHoc = comparison.statisticalComparison.postHocResults ?? [];
+        const sampleLabels = comparison.samples.map((sample) => sample.sampleLabel);
+        const letters = computeCompactLetterDisplay(sampleLabels, postHoc);
+        return {
+          attribute: attributeName,
+          samples: comparison.samples.map((sample) => ({
+            sampleNumber: sample.sampleNumber,
+            sampleLabel: sample.sampleLabel,
+            mean: sample.stats.mean,
+            stdDev: sample.stats.stdDev,
+            n: sample.stats.n,
+            stdError: sample.stats.n > 0 ? round2(sample.stats.stdDev / Math.sqrt(sample.stats.n)) : 0,
+            confidenceInterval: sample.stats.confidenceInterval,
+            letter: letters.get(sample.sampleLabel) ?? null,
+          })),
+          statisticalComparison: comparison.statisticalComparison,
+        };
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
     return {
       sampleOptions,
       variableOptions: variables.map((variable) => ({
@@ -801,6 +838,7 @@ export class SensoryAnalysisEngine {
       comparisons,
       overallLikingComparison,
       attributeLikingComparison,
+      jarRatingComparison,
       jarDistributionComparison,
       guardrails: [
         "Statistical tests are selected by TARAsense, not by the user.",
@@ -813,7 +851,7 @@ export class SensoryAnalysisEngine {
   private runComparisonForVariable(
     sampleObservations: SampleObservation[],
     sampleNumbers: number[],
-    variable: { key: string; label: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP" },
+    variable: { key: string; label: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR_RATING" | "PENALTY" | "MEAN_DROP" },
     studyDesign: StudyDesign
   ) {
     const sampleInputs = sampleNumbers.map((sampleNumber) => {
@@ -852,7 +890,7 @@ export class SensoryAnalysisEngine {
 
   private extractVariableValue(
     observation: SampleObservation,
-    variable: { key: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP" }
+    variable: { key: string; type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR_RATING" | "PENALTY" | "MEAN_DROP" }
   ): number | undefined {
     if (variable.type === "OVERALL_LIKING") {
       return variable.key === "overallLiking"
@@ -863,6 +901,10 @@ export class SensoryAnalysisEngine {
     }
     if (variable.type === "ATTRIBUTE_LIKING") {
       return getNumericAttributeValue(observation.attributes, variable.key);
+    }
+    if (variable.type === "JAR_RATING") {
+      // JAR attributes store a structured value; compare samples on the raw 1-5 rating.
+      return normalizeJarValue(observation.attributes[variable.key])?.rawValue;
     }
     if (variable.type === "PENALTY" || variable.type === "MEAN_DROP") {
       const attributeName = variable.key.split("::")[1] ?? "";
@@ -876,10 +918,11 @@ export class SensoryAnalysisEngine {
     return undefined;
   }
 
-  private recommendGraphType(type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "PENALTY" | "MEAN_DROP", repeated: boolean) {
+  private recommendGraphType(type: "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR_RATING" | "PENALTY" | "MEAN_DROP", repeated: boolean) {
     if (type === "PENALTY") return "PENALTY_PLOT";
     if (type === "MEAN_DROP") return "BAR_WITH_ERROR";
     if (type === "ATTRIBUTE_LIKING") return "RADAR";
+    if (type === "JAR_RATING") return "BAR_WITH_ERROR";
     return repeated ? "BAR_WITH_ERROR" : "BAR_WITH_ERROR";
   }
 

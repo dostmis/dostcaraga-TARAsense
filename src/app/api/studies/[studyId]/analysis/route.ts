@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { getCurrentSession } from "@/lib/auth/session";
 import { canAccessStudyByRole } from "@/lib/study-access";
-import { hasConfiguredAiProvider } from "@/lib/ai/openai-compatible";
+import { runInBackground } from "@/lib/async-workflow";
 
 type RouteContext = {
   params: Promise<{ studyId: string }>;
@@ -92,14 +92,16 @@ export async function GET(request: Request, context: RouteContext) {
       });
     }
 
-    const needsAiBackfill =
-      Boolean(study.analysis) &&
-      hasConfiguredAiProvider() &&
-      (!study.analysis?.aiInterpretation || !study.analysis?.aiRecommendation || !study.analysis?.decisionFlag);
-
-    if (!study.analysis || shouldRefresh || needsAiBackfill) {
+    if (!study.analysis || shouldRefresh) {
       const engine = new SensoryAnalysisEngine();
-      await engine.analyzeStudy(studyId);
+      // Compute statistics synchronously (no external calls) so the response has
+      // data, but never run the slow AI step inline — that is what was exceeding
+      // the upstream proxy timeout and surfacing as a 502. The AI narrative is
+      // regenerated in the background and on the next load.
+      await engine.analyzeStudy(studyId, { generateAi: false });
+      runInBackground("study-analysis-ai", async () => {
+        await new SensoryAnalysisEngine().analyzeStudy(studyId);
+      });
     }
 
     const analysis = await prisma.studyAnalysis.findUnique({

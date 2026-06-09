@@ -507,6 +507,18 @@ html.dark .app-button-primary:hover {
   object-fit: contain;
 }
 
+.partner-logo--wide {
+  width: auto;
+  gap: 0;
+  padding-inline: 1.5rem;
+}
+
+.partner-logo--wide .partner-logo__image {
+  height: 3.25rem;
+  width: auto;
+  max-width: 16rem;
+}
+
 .partner-logo__label {
   color: var(--foreground);
   font-size: 0.875rem;

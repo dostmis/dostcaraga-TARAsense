@@ -51,7 +51,7 @@ export function AuthBrandPanel({ headline, body }: AuthBrandPanelProps) {
                 />
               ))}
             </div>
-            <span className="flex items-center text-sm text-muted-foreground">Trusted by teams worldwide</span>
+            <span className="flex items-center text-sm text-muted-foreground">Trusted</span>
           </div>
         </div>
 

@@ -90,6 +90,31 @@ export function parseStudySessionSchedule(targetDemographics: unknown): StudySes
   };
 }
 
+/**
+ * Returns the instant the study's testing window closes — the latest slot end
+ * across the configured schedule — or null when the study has no parseable
+ * session schedule (e.g. market studies or self-managed studies without slots).
+ *
+ * Used to drive automatic study closure: once this instant passes, the study is
+ * removed from every recruiting feed (see the close-expired-studies job).
+ */
+export function getStudyScheduleEnd(targetDemographics: unknown): Date | null {
+  const schedule = parseStudySessionSchedule(targetDemographics);
+  if (!schedule || schedule.slots.length === 0) {
+    return null;
+  }
+
+  let latest = 0;
+  for (const slot of schedule.slots) {
+    const end = new Date(slot.endsAt).getTime();
+    if (!Number.isNaN(end) && end > latest) {
+      latest = end;
+    }
+  }
+
+  return latest > 0 ? new Date(latest) : null;
+}
+
 export function formatSessionWindow(slot: StudySessionSlot, timezone: string, locale = "en-US") {
   const startsAt = new Date(slot.startsAt);
   const endsAt = new Date(slot.endsAt);

@@ -26,6 +26,11 @@ export async function createOpenAICompatibleClient(purpose: AiPurpose) {
     apiKey: config.apiKey,
     baseURL: config.baseURL,
     defaultHeaders: config.defaultHeaders,
+    // Cap how long an AI call can block. The SDK default is 10 minutes with 2
+    // retries; without a cap a slow provider can hang the analysis pipeline far
+    // past any reverse-proxy timeout and surface as a 502. Overridable via env.
+    timeout: Number(cleanEnv(process.env.TARASENSE_AI_TIMEOUT_MS)) || 25_000,
+    maxRetries: Number(cleanEnv(process.env.TARASENSE_AI_MAX_RETRIES)) || 1,
   });
 
   return {

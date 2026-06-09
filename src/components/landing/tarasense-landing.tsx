@@ -45,6 +45,7 @@ type Benefit = {
 type Logo = {
   label: string;
   src: string;
+  wide?: boolean;
 };
 
 type Testimonial = {
@@ -87,7 +88,7 @@ const navGroups: NavGroup[] = [
 const visibleNavGroups = navGroups.filter((group) => group.label !== "Solutions" && group.label !== "Platform");
 
 const logos: Logo[] = [
-  { label: "Department of Science and Technology - Region XIII", src: "/TARAimage/DOST_Logo.png" },
+  { label: "Department of Science and Technology - Caraga", src: "/TARAimage/DOST_CARAGA_Logo.png", wide: true },
   { label: "FIC CSU Main Campus", src: "/TARAimage/CSU-MAIN.png" },
   { label: "FIC CSU Cabadbaran Campus", src: "/TARAimage/CSU-CBR.png" },
   { label: "FICSNSU del Carmen Campus", src: "/TARAimage/SNSU.png" },
@@ -226,11 +227,11 @@ function DostBrandLogo() {
 function TarasenseWordmark({ variant = "nav" }: { variant?: "nav" | "hero" }) {
   const sizeClass =
     variant === "hero"
-      ? "text-[3.5rem] sm:text-[5rem] lg:text-[6.5rem]"
+      ? "text-[3.5rem] sm:text-[5rem] lg:text-[clamp(5rem,8vw,6.5rem)]"
       : "text-[1.65rem]";
 
   return (
-    <span className={`inline-flex items-baseline font-black leading-none tracking-normal ${sizeClass}`} aria-label="TARAsense">
+    <span className={`inline-flex items-baseline whitespace-nowrap font-black leading-none tracking-normal ${sizeClass}`} aria-label="TARAsense">
       <span className="text-[#10254f]">TARA</span>
       <span className="text-[#ff7058]">sense</span>
     </span>
@@ -516,10 +517,6 @@ export function TarasenseLanding() {
         <section id="hero" className="section-shell overflow-hidden md:pt-10">
           <div className="mx-auto grid w-full max-w-7xl items-start gap-16 px-4 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:px-8">
             <div className="tara-hero-copy relative z-10 max-w-2xl">
-              <div className="tara-reveal section-label">
-                <Sparkles className="h-4 w-4" />
-                Enterprise market intelligence
-              </div>
 
               <h1 className="tara-reveal mt-6 text-foreground">
                 <TarasenseWordmark variant="hero" />
@@ -557,9 +554,18 @@ export function TarasenseLanding() {
                   {[0, 1].map((groupIndex) => (
                     <div key={groupIndex} className="marquee-group" aria-hidden={groupIndex === 1}>
                       {logos.map((logo) => (
-                        <div key={`${logo.label}-${groupIndex}`} className="partner-logo">
-                          <Image src={logo.src} alt={logo.label} width={64} height={64} className="partner-logo__image" />
-                          <span className="partner-logo__label">{logo.label}</span>
+                        <div
+                          key={`${logo.label}-${groupIndex}`}
+                          className={`partner-logo${logo.wide ? " partner-logo--wide" : ""}`}
+                        >
+                          <Image
+                            src={logo.src}
+                            alt={logo.label}
+                            width={logo.wide ? 240 : 64}
+                            height={logo.wide ? 62 : 64}
+                            className="partner-logo__image"
+                          />
+                          {!logo.wide && <span className="partner-logo__label">{logo.label}</span>}
                         </div>
                       ))}
                     </div>
@@ -572,7 +578,7 @@ export function TarasenseLanding() {
 
         <section id="solutions" className="section-shell -mt-8">
           <div className="mx-auto w-full max-w-7xl space-y-24 px-4 sm:px-6 lg:px-8">
-            {stories.map((story, index) => (
+            {stories.filter((story) => story.eyebrow !== "Enterprise memory").map((story, index) => (
               <div key={story.title} className={`grid gap-12 lg:grid-cols-2 lg:gap-16 ${index <= 1 ? "items-start" : "items-center"}`}>
                 <div className={`tara-reveal ${story.align === "left" ? "lg:order-2" : ""}`}>
                   <span className="section-label">{story.eyebrow}</span>
@@ -602,6 +608,8 @@ export function TarasenseLanding() {
           </div>
         </section>
 
+        {false && (
+        <>
         <section className="section-shell">
           <div className="mx-auto grid w-full max-w-7xl items-center gap-14 px-4 sm:px-6 lg:grid-cols-[0.9fr_1.1fr] lg:px-8">
             <div className="tara-reveal">
@@ -753,6 +761,8 @@ export function TarasenseLanding() {
             </div>
           </div>
         </section>
+        </>
+        )}
 
         <section id="final-cta" className="section-shell pb-24">
           <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">

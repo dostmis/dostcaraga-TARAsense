@@ -1,5 +1,6 @@
 import { Gender } from "@prisma/client";
 import { saveProfile } from "@/app/actions/profile-actions";
+import { saveFicFacilityProfile } from "@/app/actions/auth-actions";
 import { getUserLocationLabels } from "@/app/actions/location-actions";
 import { AppBackButton } from "@/components/ui/app-back-button";
 import { TimedToast } from "@/components/ui/timed-toast";
@@ -7,6 +8,8 @@ import { ROLE_DASHBOARD_PATH, type AppRole } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { SurfaceCard } from "@/components/ui/page-shell";
 import { ProfileLocationSection } from "@/components/profile/profile-location-section";
+import { FicFacilityForm } from "@/components/profile/fic-facility-form";
+import { buildFicFacilityFormInitial } from "@/lib/fic-facility-view";
 import {
   TARGET_CONSUMER_DIETARY_OPTIONS,
   TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
@@ -99,6 +102,33 @@ export async function ProfileWorkspace({
 
   const locationProfile = await getUserLocationLabels(user.id);
 
+  const ficFacilityProfile =
+    role === "FIC"
+      ? await prisma.ficFacilityProfile.findUnique({
+          where: { userId: user.id },
+          select: {
+            id: true,
+            facilityName: true,
+            institutionName: true,
+            regionId: true,
+            provinceId: true,
+            cityId: true,
+            physicalAddress: true,
+            website: true,
+            directorName: true,
+            position: true,
+            officialEmail: true,
+            contactNumber: true,
+            facilityType: true,
+            facilityTypeOther: true,
+            sensoryCapabilities: true,
+            govIdPath: true,
+            status: true,
+          },
+        })
+      : null;
+  const ficFacilityInitial = ficFacilityProfile ? await buildFicFacilityFormInitial(ficFacilityProfile) : null;
+
   return (
     <>
       <SurfaceCard className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
@@ -112,12 +142,17 @@ export async function ProfileWorkspace({
         )}
       </SurfaceCard>
 
-      <TimedToast
-        title={error ? "Profile Error" : "Profile Updated"}
-        message={error ? decodeURIComponent(error) : message ? decodeURIComponent(message) : undefined}
-        variant={error ? "error" : "success"}
-        durationMs={3000}
-      />
+      {/* When embedded in a dashboard, the parent already renders a single
+          "System Message" toast for the same error/message query params.
+          Only render our own toast on the standalone /profile page. */}
+      {!embedded && (
+        <TimedToast
+          title={error ? "Profile Error" : "Profile Updated"}
+          message={error ? decodeURIComponent(error) : message ? decodeURIComponent(message) : undefined}
+          variant={error ? "error" : "success"}
+          durationMs={3000}
+        />
+      )}
 
       <SurfaceCard>
         <ProfileLocationSection
@@ -185,33 +220,37 @@ export async function ProfileWorkspace({
             </div>
           </div>
 
-          <CategorySection
-            title="Dietary Information"
-            name="dietaryPrefs"
-            options={TARGET_CONSUMER_DIETARY_OPTIONS}
-            selected={selectedDietary}
-          />
+          {role !== "FIC" && (
+            <>
+              <CategorySection
+                title="Dietary Information"
+                name="dietaryPrefs"
+                options={TARGET_CONSUMER_DIETARY_OPTIONS}
+                selected={selectedDietary}
+              />
 
-          <CategorySection
-            title="Work & Daily Living"
-            name="workDailyLiving"
-            options={TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS}
-            selected={selectedWorkDailyLiving}
-          />
+              <CategorySection
+                title="Work & Daily Living"
+                name="workDailyLiving"
+                options={TARGET_CONSUMER_WORK_DAILY_LIVING_OPTIONS}
+                selected={selectedWorkDailyLiving}
+              />
 
-          <CategorySection
-            title="Health & Fitness"
-            name="healthFitness"
-            options={TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS}
-            selected={selectedHealthFitness}
-          />
+              <CategorySection
+                title="Health & Fitness"
+                name="healthFitness"
+                options={TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS}
+                selected={selectedHealthFitness}
+              />
 
-          <CategorySection
-            title="Food & Consumption Behavior"
-            name="foodConsumption"
-            options={TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS}
-            selected={selectedFoodConsumption}
-          />
+              <CategorySection
+                title="Food & Consumption Behavior"
+                name="foodConsumption"
+                options={TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS}
+                selected={selectedFoodConsumption}
+              />
+            </>
+          )}
 
           <div className="flex justify-end">
             <button type="submit" className="app-button-primary inline-flex items-center justify-center px-5 py-2.5">
@@ -220,6 +259,29 @@ export async function ProfileWorkspace({
           </div>
         </form>
       </SurfaceCard>
+
+      {role === "FIC" && (
+        <SurfaceCard className="space-y-4">
+          <div>
+            <h2 className="text-xl font-semibold text-[#2f241d]">Facility Information</h2>
+            <p className="mt-1 text-sm text-[#6f5b4f]">
+              Keep your facility details current. Your DOST region and facility assignment is managed by an admin and
+              shown read-only above.
+            </p>
+            {ficFacilityProfile?.status ? (
+              <p className="mt-1 text-xs uppercase tracking-wide text-[#8d735f]">
+                Application status: {ficFacilityProfile.status}
+              </p>
+            ) : null}
+          </div>
+          <FicFacilityForm
+            action={saveFicFacilityProfile}
+            redirectTo={redirectTo}
+            submitLabel="Save Facility Profile"
+            initial={ficFacilityInitial}
+          />
+        </SurfaceCard>
+      )}
 
       <SurfaceCard className="space-y-4">
         <h2 className="text-xl font-semibold text-[#2f241d]">Participation History</h2>

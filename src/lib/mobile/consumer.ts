@@ -12,6 +12,7 @@ import { runSerializableTransaction, lockStudyRow } from "@/lib/db-transaction";
 import { notifyUser } from "@/lib/notifications";
 import { logUserUsage } from "@/lib/user-usage";
 import {
+  buildScheduleOpenWhere,
   buildVisibleStudiesWhere,
   getUserLocation,
   isStudyVisibleToUser,
@@ -55,7 +56,7 @@ export async function getConsumerAvailableStudies(userId: string, query?: string
       sensoryAttributes: {
         some: {},
       },
-      AND: [visibilityWhere],
+      AND: [visibilityWhere, buildScheduleOpenWhere()],
     },
     orderBy: { createdAt: "desc" },
     include: {
@@ -240,6 +241,7 @@ export async function joinStudy(
       id: true,
       title: true,
       status: true,
+      scheduleEndsAt: true,
       targetDemographics: true,
       creatorId: true,
       locationTarget: {
@@ -265,6 +267,13 @@ export async function joinStudy(
     return {
       success: false,
       error: "This study is not accepting new participants.",
+    };
+  }
+
+  if (study.scheduleEndsAt && study.scheduleEndsAt.getTime() <= Date.now()) {
+    return {
+      success: false,
+      error: "This study's testing schedule has ended.",
     };
   }
 
@@ -427,6 +436,7 @@ export async function getConsumerStudyForm(
       id: true,
       title: true,
       status: true,
+      scheduleEndsAt: true,
       sensoryAttributes: {
         select: {
           id: true,
@@ -461,6 +471,13 @@ export async function getConsumerStudyForm(
     return {
       success: false,
       error: "This study is not available.",
+    };
+  }
+
+  if (study.scheduleEndsAt && study.scheduleEndsAt.getTime() <= Date.now()) {
+    return {
+      success: false,
+      error: "This study's testing schedule has ended.",
     };
   }
 

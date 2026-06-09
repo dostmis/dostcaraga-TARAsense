@@ -2,23 +2,34 @@
 
 import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
+import { Prisma } from "@prisma/client";
 import type { DietaryPref } from "@prisma/client";
 import { prisma } from "@/lib/db";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { clearGuestSessionCookies, getCurrentSession, SESSION_KEYS } from "@/lib/auth/session";
-import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/session-token";
+import { isSessionSecretConfigured } from "@/lib/auth/session-token";
+import {
+  clearLegacySessionCookies,
+  resolvePostLoginRedirect,
+  safeInternalRedirect,
+  setSessionCookie,
+} from "@/lib/auth/login-session";
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { normalizeRegionFacility } from "@/lib/facility-constants";
 import { logUserUsage } from "@/lib/user-usage";
+import { validateLocationConsistency } from "@/lib/locations/psgc-queries";
+import { deleteFicIdFile, saveFicIdFile } from "@/lib/uploads";
+import { validateFicApplicationInput } from "@/lib/fic-facility";
 
-const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+const FIC_APPLICATIONS_REDIRECT = "/consumer/dashboard?view=applications";
+
 const ALLOWED_LIFESTYLES = new Set(["student", "athlete", "office_worker"]);
 const ALLOWED_DIETARY_PREFS = new Set<DietaryPref>(["VEGETARIAN", "VEGAN", "GLUTEN_FREE"]);
 
 export async function login(formData: FormData) {
-  const redirectTo = safeConsumerRedirect(formData.get("redirectTo"));
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"));
   if (!isSessionSecretConfigured()) {
     redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
@@ -81,7 +92,7 @@ export async function login(formData: FormData) {
 }
 
 export async function register(formData: FormData) {
-  const redirectTo = safeConsumerRedirect(formData.get("redirectTo"));
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"));
   if (!isSessionSecretConfigured()) {
     redirect(authRouteWithFeedback("/register", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
@@ -223,7 +234,9 @@ export async function applyForRole(formData: FormData) {
   const reason = String(formData.get("reason") ?? "").trim();
   const targetRole = parseRole(targetRoleInput);
 
-  if (!targetRole || (targetRole !== "MSME" && targetRole !== "FIC")) {
+  // FIC upgrades go through applyForFicRole (facility application). This path
+  // only handles MSME requests.
+  if (!targetRole || targetRole !== "MSME") {
     redirect("/consumer/dashboard?error=Invalid+role+application");
   }
 
@@ -285,6 +298,304 @@ export async function applyForRole(formData: FormData) {
   });
 
   redirect("/consumer/dashboard?message=Application+submitted+for+admin+review");
+}
+
+export async function applyForFicRole(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) {
+    redirect("/login?error=Please+login+to+apply");
+  }
+
+  const redirectTo = FIC_APPLICATIONS_REDIRECT;
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { id: true, role: true },
+  });
+  if (!user) {
+    redirect("/login?error=Session+expired");
+  }
+  // Guard: already an FIC account.
+  if (user.role === "FIC" || user.role === "FIC_MANAGER") {
+    redirect(withFeedback(redirectTo, "error", "You already have FIC access."));
+  }
+
+  // Guard: a pending FIC application already exists.
+  const pending = await prisma.roleUpgradeRequest.findFirst({
+    where: { userId: session.userId, targetRole: "FIC", status: "PENDING" },
+    select: { id: true },
+  });
+  if (pending) {
+    redirect(withFeedback(redirectTo, "error", "You already have a pending FIC application awaiting review."));
+  }
+
+  const validation = validateFicApplicationInput({
+    facilityName: String(formData.get("facilityName") ?? ""),
+    institutionName: String(formData.get("institutionName") ?? ""),
+    regionId: String(formData.get("regionId") ?? ""),
+    provinceId: String(formData.get("provinceId") ?? ""),
+    cityId: String(formData.get("cityId") ?? ""),
+    physicalAddress: String(formData.get("physicalAddress") ?? ""),
+    website: String(formData.get("website") ?? ""),
+    directorName: String(formData.get("directorName") ?? ""),
+    position: String(formData.get("position") ?? ""),
+    officialEmail: String(formData.get("officialEmail") ?? ""),
+    contactNumber: String(formData.get("contactNumber") ?? ""),
+    facilityType: String(formData.get("facilityType") ?? ""),
+    facilityTypeOther: String(formData.get("facilityTypeOther") ?? ""),
+    sensoryCapabilities: formData.getAll("sensoryCapabilities").map((value) => String(value)),
+  });
+  if (!validation.ok) {
+    redirect(withFeedback(redirectTo, "error", validation.error));
+  }
+  const data = validation.data;
+
+  // Confirm the PSGC IDs are real and consistent (province in region, city in province).
+  const consistency = await validateLocationConsistency({
+    regionId: data.regionId,
+    provinceId: data.provinceId,
+    cityId: data.cityId,
+  });
+  if (!consistency.ok) {
+    redirect(withFeedback(redirectTo, "error", consistency.error));
+  }
+
+  const existingProfile = await prisma.ficFacilityProfile.findUnique({
+    where: { userId: session.userId },
+    select: { id: true, govIdPath: true },
+  });
+
+  // Government ID: a new upload replaces any prior one; a rejected re-applicant
+  // may keep their previously uploaded ID if they don't attach a new file.
+  const fileEntry = formData.get("govId");
+  const hasNewFile = fileEntry instanceof File && fileEntry.size > 0;
+  let govIdPath = existingProfile?.govIdPath ?? null;
+  let savedNewPath: string | null = null;
+
+  if (hasNewFile) {
+    const saved = await saveFicIdFile(fileEntry);
+    if (!saved.ok) {
+      redirect(withFeedback(redirectTo, "error", saved.error));
+    }
+    savedNewPath = saved.storedPath;
+    govIdPath = saved.storedPath;
+  } else if (!govIdPath) {
+    redirect(withFeedback(redirectTo, "error", "Government-issued ID upload is required."));
+  }
+
+  const snapshot = {
+    ...data,
+    govIdProvided: Boolean(govIdPath),
+    submittedAt: new Date().toISOString(),
+  };
+
+  const profileData = {
+    facilityName: data.facilityName,
+    institutionName: data.institutionName,
+    regionId: data.regionId,
+    provinceId: data.provinceId,
+    cityId: data.cityId,
+    physicalAddress: data.physicalAddress,
+    website: data.website,
+    directorName: data.directorName,
+    position: data.position,
+    officialEmail: data.officialEmail,
+    contactNumber: data.contactNumber,
+    facilityType: data.facilityType,
+    facilityTypeOther: data.facilityTypeOther,
+    sensoryCapabilities: data.sensoryCapabilities,
+    govIdPath,
+    status: "PENDING" as const,
+  };
+
+  let roleRequestId: string;
+  try {
+    roleRequestId = await prisma.$transaction(async (tx) => {
+      await tx.ficFacilityProfile.upsert({
+        where: { userId: session.userId },
+        create: { userId: session.userId, ...profileData },
+        update: profileData,
+      });
+
+      const roleRequest = await tx.roleUpgradeRequest.create({
+        data: {
+          userId: session.userId,
+          targetRole: "FIC",
+          status: "PENDING",
+          reason: null,
+          applicationData: snapshot as Prisma.InputJsonValue,
+        },
+        select: { id: true },
+      });
+      return roleRequest.id;
+    });
+  } catch {
+    // Roll back the freshly stored file so we don't orphan it.
+    if (savedNewPath) {
+      await deleteFicIdFile(savedNewPath);
+    }
+    redirect(withFeedback(redirectTo, "error", "Could not submit your FIC application. Please try again."));
+  }
+
+  // Replaced an older ID file — remove it after a successful commit.
+  if (hasNewFile && existingProfile?.govIdPath && existingProfile.govIdPath !== govIdPath) {
+    await deleteFicIdFile(existingProfile.govIdPath);
+  }
+
+  await notifyUser(session.userId, {
+    title: "FIC application submitted",
+    message: "Your FIC facility application is now pending admin approval.",
+    level: "INFO",
+    category: "ROLE",
+    actionUrl: redirectTo,
+    metadata: { requestId: roleRequestId, targetRole: "FIC" },
+  });
+  await notifyRole("ADMIN", {
+    title: "FIC application needs review",
+    message: `${data.facilityName} submitted an FIC facility application awaiting review.`,
+    level: "WARNING",
+    category: "ROLE",
+    actionUrl: "/admin/dashboard?view=role-requests",
+    metadata: { requestId: roleRequestId, targetRole: "FIC" },
+  });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "ROLE_REQUEST_SUBMITTED",
+    entityType: "RoleUpgradeRequest",
+    entityId: roleRequestId,
+    summary: "User submitted an FIC facility application.",
+    metadata: {
+      targetRole: "FIC",
+      facilityName: data.facilityName,
+      facilityType: data.facilityType,
+    },
+  });
+
+  redirect(withFeedback(redirectTo, "message", "FIC application submitted for admin review"));
+}
+
+export async function saveFicFacilityProfile(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) {
+    redirect("/login?error=Please+login+to+update+your+facility");
+  }
+
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"), "/fic/dashboard?view=profile");
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { id: true, role: true },
+  });
+  if (!user) {
+    redirect("/login?error=Session+expired");
+  }
+  // Only approved FIC accounts manage a facility profile here; applicants use applyForFicRole.
+  if (user.role !== "FIC" && user.role !== "FIC_MANAGER") {
+    redirect(withFeedback(redirectTo, "error", "Only FIC accounts can edit a facility profile."));
+  }
+
+  const validation = validateFicApplicationInput({
+    facilityName: String(formData.get("facilityName") ?? ""),
+    institutionName: String(formData.get("institutionName") ?? ""),
+    regionId: String(formData.get("regionId") ?? ""),
+    provinceId: String(formData.get("provinceId") ?? ""),
+    cityId: String(formData.get("cityId") ?? ""),
+    physicalAddress: String(formData.get("physicalAddress") ?? ""),
+    website: String(formData.get("website") ?? ""),
+    directorName: String(formData.get("directorName") ?? ""),
+    position: String(formData.get("position") ?? ""),
+    officialEmail: String(formData.get("officialEmail") ?? ""),
+    contactNumber: String(formData.get("contactNumber") ?? ""),
+    facilityType: String(formData.get("facilityType") ?? ""),
+    facilityTypeOther: String(formData.get("facilityTypeOther") ?? ""),
+    sensoryCapabilities: formData.getAll("sensoryCapabilities").map((value) => String(value)),
+  });
+  if (!validation.ok) {
+    redirect(withFeedback(redirectTo, "error", validation.error));
+  }
+  const data = validation.data;
+
+  const consistency = await validateLocationConsistency({
+    regionId: data.regionId,
+    provinceId: data.provinceId,
+    cityId: data.cityId,
+  });
+  if (!consistency.ok) {
+    redirect(withFeedback(redirectTo, "error", consistency.error));
+  }
+
+  const existingProfile = await prisma.ficFacilityProfile.findUnique({
+    where: { userId: session.userId },
+    select: { govIdPath: true },
+  });
+
+  const fileEntry = formData.get("govId");
+  const hasNewFile = fileEntry instanceof File && fileEntry.size > 0;
+  let govIdPath = existingProfile?.govIdPath ?? null;
+  let savedNewPath: string | null = null;
+
+  if (hasNewFile) {
+    const saved = await saveFicIdFile(fileEntry);
+    if (!saved.ok) {
+      redirect(withFeedback(redirectTo, "error", saved.error));
+    }
+    savedNewPath = saved.storedPath;
+    govIdPath = saved.storedPath;
+  }
+
+  const profileData = {
+    facilityName: data.facilityName,
+    institutionName: data.institutionName,
+    regionId: data.regionId,
+    provinceId: data.provinceId,
+    cityId: data.cityId,
+    physicalAddress: data.physicalAddress,
+    website: data.website,
+    directorName: data.directorName,
+    position: data.position,
+    officialEmail: data.officialEmail,
+    contactNumber: data.contactNumber,
+    facilityType: data.facilityType,
+    facilityTypeOther: data.facilityTypeOther,
+    sensoryCapabilities: data.sensoryCapabilities,
+    govIdPath,
+  };
+
+  try {
+    // Do not change `status` here — an approved FIC stays approved while editing.
+    await prisma.ficFacilityProfile.upsert({
+      where: { userId: session.userId },
+      create: { userId: session.userId, ...profileData, status: "APPROVED" },
+      update: profileData,
+    });
+  } catch {
+    if (savedNewPath) {
+      await deleteFicIdFile(savedNewPath);
+    }
+    redirect(withFeedback(redirectTo, "error", "Could not save your facility profile. Please try again."));
+  }
+
+  if (hasNewFile && existingProfile?.govIdPath && existingProfile.govIdPath !== govIdPath) {
+    await deleteFicIdFile(existingProfile.govIdPath);
+  }
+
+  await notifyUser(session.userId, {
+    title: "Facility profile updated",
+    message: "Your FIC facility profile details were saved.",
+    level: "SUCCESS",
+    category: "SYSTEM",
+    actionUrl: redirectTo,
+  });
+  await logUserUsage({
+    actorUserId: session.userId,
+    action: "FIC_FACILITY_PROFILE_UPDATED",
+    entityType: "FicFacilityProfile",
+    entityId: session.userId,
+    summary: "FIC updated their facility profile.",
+    metadata: { facilityName: data.facilityName, facilityType: data.facilityType },
+  });
+
+  redirect(withFeedback(redirectTo, "message", "Facility profile updated"));
 }
 
 export async function reviewRoleApplication(formData: FormData) {
@@ -374,6 +685,14 @@ export async function reviewRoleApplication(formData: FormData) {
           },
         });
       }
+
+      // Mark the self-reported facility profile approved (FIC requests only).
+      if (request.targetRole === "FIC") {
+        await tx.ficFacilityProfile.updateMany({
+          where: { userId: request.userId },
+          data: { status: "APPROVED" },
+        });
+      }
     });
 
     await notifyUser(request.userId, {
@@ -418,6 +737,15 @@ export async function reviewRoleApplication(formData: FormData) {
       reviewedAt: new Date(),
     },
   });
+
+  // Mark the self-reported facility profile rejected (FIC requests only); the
+  // applicant may edit it and re-apply.
+  if (request.targetRole === "FIC") {
+    await prisma.ficFacilityProfile.updateMany({
+      where: { userId: request.userId },
+      data: { status: "REJECTED" },
+    });
+  }
 
   await notifyUser(request.userId, {
     title: "Role application rejected",
@@ -576,50 +904,12 @@ export async function logout() {
   redirect("/login?message=You+have+been+logged+out");
 }
 
-function setSessionCookie(store: Awaited<ReturnType<typeof cookies>>, userId: string) {
-  const token = createSessionToken(userId);
-  store.set(SESSION_KEYS.token, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_SECONDS,
-  });
-}
-
-function clearLegacySessionCookies(store: Awaited<ReturnType<typeof cookies>>) {
-  store.delete(SESSION_KEYS.userId);
-  store.delete(SESSION_KEYS.role);
-}
-
 function resolveAdminRedirectTarget(value: FormDataEntryValue | null) {
   const raw = String(value ?? "").trim();
   if (raw.startsWith("/admin/dashboard")) {
     return raw;
   }
   return "/admin/dashboard?view=role-requests";
-}
-
-function safeConsumerRedirect(value: FormDataEntryValue | null) {
-  const raw = String(value ?? "").trim();
-  if (raw.startsWith("/") && !raw.startsWith("//")) {
-    return raw;
-  }
-  return ROLE_DASHBOARD_PATH.CONSUMER;
-}
-
-function resolvePostLoginRedirect(role: NonNullable<ReturnType<typeof parseRole>>, redirectTo: string) {
-  if (role === "CONSUMER") {
-    return redirectTo;
-  }
-  if (role === "MSME" && isStudyStartPath(redirectTo)) {
-    return redirectTo;
-  }
-  return ROLE_DASHBOARD_PATH[role];
-}
-
-function isStudyStartPath(path: string) {
-  return /^\/studies\/[^/]+\/start(?:\?|$)/.test(path);
 }
 
 function authRouteWithFeedback(path: "/login" | "/register", redirectTo: string, key: "error" | "message", value: string) {

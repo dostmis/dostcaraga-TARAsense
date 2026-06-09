@@ -4,6 +4,7 @@ import Link from "next/link";
 import { ArrowRight, Building2, Loader2, Lock, Mail, User } from "lucide-react";
 import { useState } from "react";
 import { useFormStatus } from "react-dom";
+import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 
 type RegisterFormProps = {
   action: (formData: FormData) => void | Promise<void>;
@@ -23,6 +24,14 @@ export function RegisterForm({ action, redirectTo = "" }: RegisterFormProps) {
   return (
     <form action={action} className="mt-6 space-y-5">
       <input type="hidden" name="redirectTo" value={redirectTo} />
+      <GoogleSignInButton redirectTo={redirectTo} label="Sign up with Google" />
+
+      <div className="flex items-center gap-4">
+        <div className="h-px flex-1 bg-divider" />
+        <span className="text-xs text-muted-foreground">or sign up with email</span>
+        <div className="h-px flex-1 bg-divider" />
+      </div>
+
       <div className="space-y-2">
         <label htmlFor="name" className="text-sm font-medium text-foreground">
           Full Name
