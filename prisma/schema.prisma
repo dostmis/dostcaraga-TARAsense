@@ -22,10 +22,15 @@ model User {
   assignedFacility      String?
   assignmentUpdatedAt   DateTime?
   assignmentUpdatedById String?
+  // Monotonic counter embedded in every issued session token. Bumping it
+  // invalidates all outstanding sessions for this user (password change,
+  // "log out everywhere", forced logout). See src/lib/auth/session-token.ts.
+  tokenVersion          Int                    @default(0)
   deviceTokens          DeviceToken[]
   ficAssignmentHistory  FicAssignmentHistory[]
   ficAvailability       FicAvailability[]
   ficFacilityProfile    FicFacilityProfile?
+  mfaChallenges         AdminMfaChallenge[]
   notifications         Notification[]
   panelistProfile       Panelist?
   reviewedRequests      RoleUpgradeRequest[]   @relation("RequestReviewer")
@@ -37,6 +42,25 @@ model User {
   @@index([role])
   @@index([role, organization])
   @@index([role, assignedRegion, assignedFacility])
+}
+
+/// Second-factor email OTP challenge issued during privileged (ADMIN) sign-in.
+/// The plaintext code is never stored — only a salted scrypt hash. A row is
+/// short-lived (see MFA_CHALLENGE_TTL_MS) and single-use (consumedAt).
+model AdminMfaChallenge {
+  id          String    @id @default(cuid())
+  userId      String
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int       @default(0)
+  consumedAt  DateTime?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
 }
 
 model DeviceToken {

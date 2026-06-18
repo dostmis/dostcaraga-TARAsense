@@ -87,6 +87,79 @@ export function googleSignupConfirmationEmail({ name, confirmUrl, expiresMinutes
   return { subject, html, text };
 }
 
+type AdminOtpEmailInput = {
+  name: string;
+  code: string;
+  /** Code lifetime in minutes, used in the copy. */
+  expiresMinutes: number;
+};
+
+export function adminOtpEmail({ name, code, expiresMinutes }: AdminOtpEmailInput) {
+  const subject = "Your TARAsense admin verification code";
+  const greeting = name && name.trim().length >= 2 ? `Hi ${escapeHtml(name)},` : "Hi there,";
+  const safeCode = escapeHtml(code);
+
+  const text = [
+    `${greeting.replace(/<[^>]*>/g, "")}`,
+    "",
+    "Use this code to finish signing in to your TARAsense admin account:",
+    "",
+    `    ${code}`,
+    "",
+    `This code expires in ${expiresMinutes} minutes and can only be used once.`,
+    "If you didn't try to sign in, change your password and contact DOST Caraga immediately.",
+    "",
+    "— TARAsense",
+  ].join("\n");
+
+  const html = `<!DOCTYPE html>
+<html lang="en">
+  <body style="margin:0;padding:0;background-color:${BACKGROUND};">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:${BACKGROUND};padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;background-color:${SURFACE};border:1px solid ${BORDER};border-radius:16px;overflow:hidden;">
+            <tr>
+              <td style="padding:28px 32px 8px 32px;">
+                <div style="font-size:20px;font-weight:700;color:${FOREGROUND};">TARAsense</div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 32px 0 32px;">
+                <p style="margin:0 0 12px 0;font-size:15px;color:${FOREGROUND};">${greeting}</p>
+                <p style="margin:0 0 8px 0;font-size:15px;line-height:1.6;color:${FOREGROUND};">
+                  Use this verification code to finish signing in to your admin account.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td align="center" style="padding:20px 32px 8px 32px;">
+                <div style="display:inline-block;background-color:${BACKGROUND};border:1px solid ${BORDER};border-radius:12px;padding:16px 28px;font-size:30px;font-weight:700;letter-spacing:8px;color:${FOREGROUND};">
+                  ${safeCode}
+                </div>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:8px 32px 0 32px;">
+                <p style="margin:0;font-size:12px;line-height:1.6;color:${MUTED};">
+                  This code expires in ${expiresMinutes} minutes and can only be used once. If you didn't try to sign in to TARAsense, change your password and contact DOST Caraga immediately.
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:16px 32px 24px 32px;"></td>
+            </tr>
+          </table>
+          <p style="margin:16px 0 0 0;font-size:11px;color:${MUTED};">© TARAsense · DOST Caraga</p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  return { subject, html, text };
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

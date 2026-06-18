@@ -11,18 +11,27 @@ import {
 } from "@/lib/auth/google-oauth";
 import { findLinkableGoogleUser } from "@/lib/auth/google-account";
 import {
+  buildSessionCookie,
   resolvePostLoginRedirect,
   safeInternalRedirect,
-  SESSION_MAX_AGE_SECONDS,
 } from "@/lib/auth/login-session";
+import type { ResolvedGoogleUser } from "@/lib/auth/google-account";
 import { SESSION_KEYS } from "@/lib/auth/session";
-import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/session-token";
+import { isSessionSecretConfigured } from "@/lib/auth/session-token";
 import { CONFIRMATION_TTL_MINUTES, createConfirmationToken } from "@/lib/auth/confirmation-token";
+import {
+  createMfaChallenge,
+  createMfaPendingToken,
+  MFA_CHALLENGE_TTL_MS,
+  MFA_PENDING_COOKIE_KEY,
+} from "@/lib/auth/mfa";
 import { isEmailConfigured, sendMail } from "@/lib/email/mailer";
-import { googleSignupConfirmationEmail } from "@/lib/email/templates";
+import { adminOtpEmail, googleSignupConfirmationEmail } from "@/lib/email/templates";
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 import { notifyUser } from "@/lib/notifications";
 import { logUserUsage } from "@/lib/user-usage";
+
+const MFA_PENDING_COOKIE_MAX_AGE = 10 * 60; // 10 minutes
 
 export const dynamic = "force-dynamic";
 
@@ -102,18 +111,24 @@ export async function GET(request: NextRequest) {
     return startEmailConfirmation(request, baseUrl, profile.email, profile.name, profile.picture);
   }
 
-  // ── Existing account: sign in immediately ──────────────────────────────────
+  // ── Existing account ───────────────────────────────────────────────────────
   const resolved = lookup.user;
+
+  // Privileged accounts must clear the email-OTP second factor before a session
+  // is created, even when arriving via Google.
+  if (resolved.role === "ADMIN") {
+    return startAdminMfaForGoogle(request, baseUrl, resolved, nextPath);
+  }
+
   const destination = resolvePostLoginRedirect(resolved.role, nextPath);
   const response = NextResponse.redirect(`${baseUrl}${destination}`);
 
-  response.cookies.set(SESSION_KEYS.token, createSessionToken(resolved.userId), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_SECONDS,
+  const sessionCookie = buildSessionCookie({
+    userId: resolved.userId,
+    tokenVersion: resolved.tokenVersion,
+    role: resolved.role,
   });
+  response.cookies.set(sessionCookie.name, sessionCookie.value, sessionCookie.options);
   // Clear legacy, guest, and one-time OAuth cookies.
   response.cookies.delete(SESSION_KEYS.userId);
   response.cookies.delete(SESSION_KEYS.role);
@@ -189,5 +204,72 @@ async function startEmailConfirmation(
 
   const response = NextResponse.redirect(`${baseUrl}/auth/check-email?email=${encodeURIComponent(normalizedEmail)}`);
   clearOAuthCookies(response);
+  return response;
+}
+
+/**
+ * An existing ADMIN signing in via Google: issue an email OTP challenge and send
+ * them to the verify page instead of opening a session. Mirrors the credential
+ * login MFA gate in auth-actions.ts. Email must be configured or sign-in fails.
+ */
+async function startAdminMfaForGoogle(
+  request: NextRequest,
+  baseUrl: string,
+  user: ResolvedGoogleUser,
+  nextPath: string
+) {
+  if (!isEmailConfigured()) {
+    return redirectToLogin(
+      baseUrl,
+      "Admin verification is unavailable because email is not configured. Contact an administrator."
+    );
+  }
+
+  const ip = request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const userAgent = request.headers.get("user-agent") ?? null;
+
+  let challenge;
+  try {
+    challenge = await createMfaChallenge({ userId: user.userId, ipAddress: ip, userAgent });
+    const { subject, html, text } = adminOtpEmail({
+      name: user.name,
+      code: challenge.code,
+      expiresMinutes: Math.round(MFA_CHALLENGE_TTL_MS / 60000),
+    });
+    const sent = await sendMail({ to: user.email, subject, html, text });
+    if (!sent) {
+      return redirectToLogin(baseUrl, "Could not send your verification code. Please try again.");
+    }
+  } catch {
+    return redirectToLogin(baseUrl, "Could not start admin verification. Please try again.");
+  }
+
+  const verifyUrl = new URL(`${baseUrl}/login/verify`);
+  verifyUrl.searchParams.set("next", nextPath);
+  verifyUrl.searchParams.set("message", "We emailed you a 6-digit verification code.");
+
+  const response = NextResponse.redirect(verifyUrl.toString());
+  response.cookies.set(
+    MFA_PENDING_COOKIE_KEY,
+    createMfaPendingToken({ challengeId: challenge.challengeId, userId: user.userId }),
+    {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      path: "/",
+      maxAge: MFA_PENDING_COOKIE_MAX_AGE,
+    }
+  );
+  clearOAuthCookies(response);
+
+  await logUserUsage({
+    actorUserId: user.userId,
+    action: "MFA_CHALLENGE_ISSUED",
+    entityType: "User",
+    entityId: user.userId,
+    summary: "Admin sign-in second-factor code issued (Google).",
+    metadata: { channel: "email", provider: "google" },
+  }).catch(() => {});
+
   return response;
 }

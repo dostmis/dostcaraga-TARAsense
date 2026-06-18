@@ -2,9 +2,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { resolveBaseUrl } from "@/lib/auth/google-oauth";
 import { createGoogleUser, findLinkableGoogleUser } from "@/lib/auth/google-account";
 import { verifyConfirmationToken } from "@/lib/auth/confirmation-token";
-import { resolvePostLoginRedirect, SESSION_MAX_AGE_SECONDS } from "@/lib/auth/login-session";
+import { buildSessionCookie, resolvePostLoginRedirect } from "@/lib/auth/login-session";
 import { SESSION_KEYS } from "@/lib/auth/session";
-import { createSessionToken, isSessionSecretConfigured } from "@/lib/auth/session-token";
+import { isSessionSecretConfigured } from "@/lib/auth/session-token";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { logUserUsage } from "@/lib/user-usage";
 
@@ -53,13 +53,12 @@ export async function GET(request: NextRequest) {
   const destination = resolvePostLoginRedirect(resolved.role, "/consumer/dashboard");
   const response = NextResponse.redirect(`${baseUrl}${destination}`);
 
-  response.cookies.set(SESSION_KEYS.token, createSessionToken(resolved.userId), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_SECONDS,
+  const sessionCookie = buildSessionCookie({
+    userId: resolved.userId,
+    tokenVersion: resolved.tokenVersion,
+    role: resolved.role,
   });
+  response.cookies.set(sessionCookie.name, sessionCookie.value, sessionCookie.options);
   response.cookies.delete(SESSION_KEYS.userId);
   response.cookies.delete(SESSION_KEYS.role);
   response.cookies.delete(SESSION_KEYS.guestParticipantId);

@@ -1356,7 +1356,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         )}
 
         <form onSubmit={onSubmit} className="space-y-8">
-          <section className="space-y-4">
+          <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
             <h2 className="text-lg font-semibold text-gray-900">Create Study</h2>
             <div className="grid md:grid-cols-2 gap-4">
               <div className="space-y-1">
@@ -1484,7 +1484,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           </section>
 
           {studyMode === "MARKET" && (
-            <section className="space-y-4">
+            <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
               <h2 className="text-lg font-semibold text-gray-900">Market Study Setup</h2>
               <div className="grid md:grid-cols-2 gap-4">
                 <FieldLabel text="Market Study" />
@@ -1519,6 +1519,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
           {studyMode === "SENSORY" && (
             <section className="space-y-6">
+              <div className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
               <h2 className="text-lg font-semibold text-gray-900">Type of Sensory Test</h2>
 
               <div className="grid md:grid-cols-2 gap-4">
@@ -1612,8 +1613,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   ))}
                 </select>
               </div>
+              </div>
 
-              <section className="space-y-4">
+              <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
                 <h2 className="text-lg font-semibold text-gray-900">Target Consumer</h2>
 
                 <div className="grid gap-4 md:grid-cols-2">
@@ -1668,7 +1670,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     + Add Consumer Profile Preference
                   </button>
                 ) : (
-                  <div className="space-y-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4">
+                  <div className="space-y-4 rounded-lg border border-[#e2e8f0] bg-white p-4">
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-xs italic text-[#64748b]">Check all that applies</p>
                       <button
@@ -1716,7 +1718,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   </div>
                 )}
 
-                <label className="inline-flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 text-sm font-medium text-[#334155] cursor-pointer hover:bg-[#f1f5f9]">
+                <label className="inline-flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3 text-sm font-medium text-[#334155] cursor-pointer hover:bg-[#f1f5f9]">
                   <input
                     type="checkbox"
                     checked={randomizePanelSelection}
@@ -1727,9 +1729,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </label>
               </section>
 
-              <section className="space-y-2">
+              <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
                 <h2 className="text-lg font-semibold text-gray-900">Choose what to test</h2>
-                <div className="rounded-lg border border-[#dbe3ec] bg-[#f8fafc] p-3">
+                <div className="rounded-lg border border-[#dbe3ec] bg-white p-3">
                   <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
                   <p className="mt-1 text-xs text-[#64748b]">
                     {consumerObjective === "MARKET_READINESS"
@@ -1865,7 +1867,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
               <section className="flex flex-col gap-4">
                 <h2 className="text-lg font-semibold text-gray-900">{requiresFicBooking ? "Book FIC" : "Testing Schedule"}</h2>
               {requiresFicBooking && (
-                <div className="order-1 grid gap-4 md:grid-cols-2">
+                <div className="order-1 grid gap-4 md:grid-cols-2 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
                   <div className="space-y-1">
                     <FieldLabel text="Region" />
                     <select
@@ -2026,7 +2028,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               )}
 
-              <div className="order-2 grid md:grid-cols-2 gap-4">
+              <div className="order-2 grid md:grid-cols-2 gap-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
                 <div className="space-y-2">
                   <FieldLabel text="Number of Target Responses" />
                   <input
@@ -2307,10 +2309,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             </section>
           )}
 
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Details</h2>
-            <div className={`grid gap-4 ${studyMode === "MARKET" ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
-              {studyMode === "MARKET" && (
+          {studyMode === "MARKET" && (
+            <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
+              <h2 className="text-lg font-semibold text-gray-900">Details</h2>
+              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <FieldLabel text="Number of Target Responses" />
                   <input
@@ -2326,11 +2328,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     required
                   />
                 </div>
-              )}
-            </div>
-          </section>
+              </div>
+            </section>
+          )}
 
-          <section className="space-y-4">
+          <section className="space-y-4 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
             <h2 className="text-lg font-semibold text-gray-900">Sample Setups</h2>
             <div className="grid md:grid-cols-2 gap-4 items-end">
               <div className="space-y-2">

@@ -24,6 +24,13 @@
 .DS_Store
 *.pem
 
+# private keys / credentials — never commit
+*.key
+id_rsa*
+id_ed25519*
+/ed25519
+/ed25519.pub
+
 # debug
 npm-debug.log*
 yarn-debug.log*
