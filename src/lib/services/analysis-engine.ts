@@ -12,6 +12,9 @@ import {
 } from "@/lib/services/statistics";
 import { evaluateDataQuality, type DataQualityReport } from "@/lib/services/data-quality";
 import { runAdvancedAnalytics, type AdvancedAnalyticsResult } from "@/lib/services/advanced-analytics";
+import { parseCustomQuestions, type CustomAnswers, type CustomQuestion } from "@/lib/custom-questions";
+
+const MAX_CUSTOM_TEXT_ANSWERS = 200;
 
 type JarBucket = "too_low" | "just_right" | "too_high";
 type DriverLevel = "STRONG" | "MODERATE" | "NOT_ACTIONABLE";
@@ -43,6 +46,7 @@ interface StudyResponse {
   respondentId: string;
   overallLiking?: number;
   attributes: Record<string, unknown>;
+  customAnswers?: CustomAnswers;
   sampleResponses?: SampleResponseEntry[];
   startedAt?: string;
   submittedAt?: string;
@@ -155,6 +159,7 @@ export class SensoryAnalysisEngine {
           productName: true,
           sampleSize: true,
           targetDemographics: true,
+          customQuestions: true,
           status: true,
           studyDesign: true,
           createdAt: true,
@@ -243,6 +248,10 @@ export class SensoryAnalysisEngine {
       }))
     );
     const advancedAnalytics = this.buildAdvancedAnalytics(sampleObservations, attributes);
+    const customQuestionSummaries = this.buildCustomQuestionSummaries(
+      parseCustomQuestions(study?.customQuestions),
+      parsedResponses
+    );
     const automaticInterpretation = this.buildAutomaticInterpretation(
       overallStats,
       sampleInsights,
@@ -296,6 +305,7 @@ export class SensoryAnalysisEngine {
       automaticInterpretation,
       dataQuality,
       advancedAnalytics,
+      customQuestionSummaries,
       jarFramework: {
         tooLow: "1-2",
         justRight: "3",
@@ -346,6 +356,61 @@ export class SensoryAnalysisEngine {
     }
 
     return analysis;
+  }
+
+  private buildCustomQuestionSummaries(customQuestions: CustomQuestion[], responses: StudyResponse[]) {
+    return customQuestions.map((question) => {
+      const answers = responses
+        .map((response) => response.customAnswers?.[question.id])
+        .filter((value): value is string | string[] => value !== undefined && value !== null);
+
+      if (question.type === "PARAGRAPH") {
+        const textAnswers = answers
+          .filter((value): value is string => typeof value === "string")
+          .map((value) => value.trim())
+          .filter(Boolean);
+        return {
+          id: question.id,
+          text: question.text,
+          type: question.type,
+          responseCount: textAnswers.length,
+          textAnswers: textAnswers.slice(0, MAX_CUSTOM_TEXT_ANSWERS),
+        };
+      }
+
+      const counts = new Map<string, number>();
+      question.options.forEach((option) => counts.set(option, 0));
+      let responseCount = 0;
+      for (const value of answers) {
+        const selections = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+        if (selections.length === 0) {
+          continue;
+        }
+        responseCount += 1;
+        for (const selection of selections) {
+          if (counts.has(selection)) {
+            counts.set(selection, (counts.get(selection) ?? 0) + 1);
+          }
+        }
+      }
+
+      const optionCounts = question.options.map((option) => {
+        const count = counts.get(option) ?? 0;
+        return {
+          option,
+          count,
+          percent: responseCount > 0 ? round2((count / responseCount) * 100) : 0,
+        };
+      });
+
+      return {
+        id: question.id,
+        text: question.text,
+        type: question.type,
+        responseCount,
+        optionCounts,
+      };
+    });
   }
 
   private computeDescriptiveStats(values: number[]): DescriptiveStats {

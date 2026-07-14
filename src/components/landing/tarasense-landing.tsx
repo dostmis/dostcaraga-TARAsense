@@ -7,7 +7,10 @@ import {
   ArrowRight,
   BrainCircuit,
   ChevronDown,
+  Facebook,
   LineChart,
+  Linkedin,
+  Mail,
   Menu,
   MessageSquareText,
   ShieldCheck,
@@ -15,6 +18,7 @@ import {
   Star,
   Workflow,
   X,
+  Youtube,
   type LucideIcon,
 } from "lucide-react";
 
@@ -111,11 +115,11 @@ const stories: Story[] = [
   },
   {
     eyebrow: "Creative intelligence",
-    title: "Image 1",
-    body: "Blend qualitative reactions, emotion signals, and performance forecasting into premium creative scorecards your brand team can use immediately.",
-    cta: "Review creative analytics",
+    title: "Build for food researchers and innovators",
+    body: "From product testing and panel recruitment to analytics and reporting, TARAsense streamlines the entire sensory evaluation process.",
+    cta: "",
     align: "left",
-    points: ["Moment-by-moment feedback", "Conversion drivers", "Market-by-market comparisons"],
+    points: ["Consumer testing", "Focus group discussions", "Product optimization"],
     metric: "+29% lift forecast",
     icon: LineChart,
     chartA: [28, 34, 52, 63, 58, 76, 82],
@@ -175,41 +179,44 @@ const testimonials: Testimonial[] = [
   },
 ];
 
-const footerGroups = [
-  { title: "Solutions", links: ["Audience intelligence", "Creative analytics", "Brand tracking", "Concept validation"] },
-  { title: "Platform", links: ["Insight Copilot", "Connected workflows", "Governance", "API & integrations"] },
-  { title: "Resources", links: ["Customer stories", "Playbooks", "Events", "Blog"] },
-  { title: "Company", links: ["About", "Careers", "Contact", "Trust center"] },
+const footerSocials: { label: string; href: string; icon: LucideIcon }[] = [
+  { label: "Facebook", href: "https://www.facebook.com/profile.php?id=61590438216515", icon: Facebook },
+  { label: "LinkedIn", href: "#", icon: Linkedin },
+  { label: "YouTube", href: "#", icon: Youtube },
+  { label: "Email", href: "mailto:info@tarasense.ph", icon: Mail },
 ];
 
-const footerLinkHref: Record<string, string> = {
-  "Audience intelligence": "#solutions",
-  "Creative analytics": "#solutions",
-  "Brand tracking": "#solutions",
-  "Concept validation": "#solutions",
-  "Insight Copilot": "#solutions",
-  "Connected workflows": "#solutions",
-  Governance: "#solutions",
-  "API & integrations": "#final-cta",
-  "Customer stories": "#proof",
-  Playbooks: "#solutions",
-  Events: "#final-cta",
-  Blog: "#proof",
-  About: "#hero",
-  Careers: "#footer",
-  Contact: "#final-cta",
-  "Trust center": "#proof",
-};
+const footerNav: { title: string; links: { label: string; href: string }[] }[] = [
+  {
+    title: "Platform",
+    links: [
+      { label: "Solutions", href: "#solutions" },
+      { label: "Resources", href: "#solutions" },
+      { label: "Customers", href: "#proof" },
+      { label: "About Us", href: "#hero" },
+    ],
+  },
+  {
+    title: "Support",
+    links: [
+      { label: "Help Center", href: "#footer" },
+      { label: "Guides", href: "#footer" },
+      { label: "Contact Us", href: "#final-cta" },
+      { label: "Privacy Policy", href: "#footer" },
+      { label: "Terms of Service", href: "#footer" },
+    ],
+  },
+];
 
 function DostBrandLogo() {
   return (
-    <span className="inline-flex h-12 w-[177px] items-center">
+    <span className="inline-flex h-14 items-center">
       <Image
         src="/TARAimage/DOST_Logo_with.png"
         alt=""
         width={214}
         height={58}
-        className="tara-logo-light h-12 w-auto object-contain"
+        className="tara-logo-light h-14 w-auto object-contain"
         priority
       />
       <Image
@@ -217,7 +224,7 @@ function DostBrandLogo() {
         alt=""
         width={214}
         height={58}
-        className="tara-logo-dark h-12 w-auto object-contain"
+        className="tara-logo-dark h-14 w-auto object-contain"
         priority
       />
     </span>
@@ -233,7 +240,17 @@ function TarasenseWordmark({ variant = "nav" }: { variant?: "nav" | "hero" }) {
   return (
     <span className={`inline-flex items-baseline whitespace-nowrap font-black leading-none tracking-normal ${sizeClass}`} aria-label="TARAsense">
       <span className="text-[#10254f]">TARA</span>
-      <span className="text-[#ff7058]">sense</span>
+      <span
+        style={{
+          backgroundImage: "var(--gradient-brand)",
+          WebkitBackgroundClip: "text",
+          backgroundClip: "text",
+          WebkitTextFillColor: "transparent",
+          color: "transparent",
+        }}
+      >
+        sense
+      </span>
     </span>
   );
 }
@@ -245,9 +262,59 @@ export function TarasenseLanding() {
   const [headerHidden, setHeaderHidden] = useState(false);
   const [activeTestimonial, setActiveTestimonial] = useState(0);
   const headerRef = useRef<HTMLElement | null>(null);
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const lastScrollYRef = useRef(0);
   const lastTouchYRef = useRef<number | null>(null);
   const scrollRafRef = useRef<number | null>(null);
+
+  // GSAP-style scroll reveal: arm below-the-fold elements and fade/rise them in
+  // as they enter the viewport, with a per-group stagger.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion) return;
+
+    const elements = Array.from(
+      root.querySelectorAll<HTMLElement>(".tara-reveal, .tara-scale-in"),
+    );
+    if (elements.length === 0) return;
+
+    const observer = new IntersectionObserver(
+      (entries, obs) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+            obs.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.12, rootMargin: "0px 0px -8% 0px" },
+    );
+
+    const staggerByParent = new Map<Element, number>();
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+
+    for (const element of elements) {
+      const rect = element.getBoundingClientRect();
+      const alreadyInView = rect.top < viewportHeight * 0.92 && rect.bottom > 0;
+
+      if (alreadyInView) {
+        // Above the fold: keep the existing load animation, don't arm it.
+        continue;
+      }
+
+      const parent = element.parentElement ?? element;
+      const order = staggerByParent.get(parent) ?? 0;
+      staggerByParent.set(parent, order + 1);
+      element.style.setProperty("--reveal-delay", `${Math.min(order * 90, 360)}ms`);
+      element.classList.add("reveal-pending");
+      observer.observe(element);
+    }
+
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     const getScrollY = () => window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
@@ -365,7 +432,7 @@ export function TarasenseLanding() {
   } as const;
 
   return (
-    <div className="relative overflow-x-clip bg-background text-foreground">
+    <div ref={rootRef} className="relative overflow-x-clip bg-background text-foreground">
       <div className="mesh-backdrop pointer-events-none absolute inset-0 -z-10 opacity-90" />
       <div className="bg-mesh pointer-events-none absolute inset-x-0 top-0 -z-10 h-[36rem]" />
 
@@ -378,72 +445,82 @@ export function TarasenseLanding() {
           pointerEvents: headerHidden ? "none" : "auto",
         }}
       >
-        <div className="w-full px-2 sm:px-4 lg:px-6">
+        <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className={`relative flex items-center justify-between gap-4 transition-all duration-500 ${compactHeader ? "py-3" : "py-4"}`}>
-            <div className="-ml-1 flex min-w-0 items-center sm:-ml-2 lg:-ml-3">
+            <div className="flex min-w-0 items-center gap-2">
               <Link href="#hero" className="focus-ring flex items-center rounded-full px-1 py-1" aria-label="TARAsense home">
                 <DostBrandLogo />
               </Link>
+              <Image
+                src="/TARAsense.png"
+                alt="TARAsense"
+                width={537}
+                height={402}
+                className="h-14 w-auto shrink-0 object-contain"
+                priority
+              />
             </div>
 
-            <div className="absolute left-1/2 hidden -translate-x-1/2 items-center lg:flex">
-              <nav
-                className="absolute right-full mr-6 flex items-center gap-2 whitespace-nowrap will-change-transform"
-                style={navigationVisibilityStyle}
-                aria-label="Primary navigation"
-              >
-                {visibleNavGroups.map((group) => (
-                  <div
-                    key={group.label}
-                    className="relative"
-                    onMouseEnter={() => setActiveMenu(group.label)}
-                    onMouseLeave={() => setActiveMenu(null)}
+            <nav
+              className="absolute left-1/2 hidden -translate-x-1/2 items-center gap-2 whitespace-nowrap will-change-transform lg:flex"
+              style={navigationVisibilityStyle}
+              aria-label="Primary navigation"
+            >
+              {visibleNavGroups.map((group) => (
+                <div
+                  key={group.label}
+                  className="relative"
+                  onMouseEnter={() => setActiveMenu(group.label)}
+                  onMouseLeave={() => setActiveMenu(null)}
+                >
+                  <button
+                    type="button"
+                    className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
+                    aria-expanded={activeMenu === group.label}
+                    onFocus={() => setActiveMenu(group.label)}
                   >
-                    <button
-                      type="button"
-                      className="focus-ring inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium text-muted-foreground transition-all duration-300 hover:bg-surface hover:text-foreground"
-                      aria-expanded={activeMenu === group.label}
-                      onFocus={() => setActiveMenu(group.label)}
-                    >
-                      {group.label}
-                      <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
-                    </button>
+                    {group.label}
+                    <ChevronDown className={`h-4 w-4 transition-transform duration-300 ${activeMenu === group.label ? "rotate-180 text-brand" : ""}`} />
+                  </button>
 
-                      {activeMenu === group.label && (
-                        <div className="absolute left-1/2 top-full z-30 mt-4 w-[42rem] -translate-x-1/2 max-w-[calc(100vw-2rem)]">
-                          <div className="glass-panel tara-menu-enter p-4">
-                            <div className="grid min-w-0 gap-3 md:grid-cols-3">
-                              {group.items.map((item) => (
-                                <a
-                                  key={item.title}
-                                  href="#solutions"
-                                  className="min-w-0 rounded-[1.25rem] border border-transparent bg-surface p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-brand/20 hover:shadow-soft"
-                                >
-                                  <p className="break-words font-semibold text-foreground">{item.title}</p>
-                                  <p className="mt-2 whitespace-normal break-words text-sm leading-6 text-muted-foreground">{item.description}</p>
-                                </a>
-                              ))}
-                            </div>
-                          </div>
+                  {activeMenu === group.label && (
+                    <div className="absolute left-1/2 top-full z-30 mt-4 w-[42rem] -translate-x-1/2 max-w-[calc(100vw-2rem)]">
+                      <div className="glass-panel tara-menu-enter p-4">
+                        <div className="grid min-w-0 gap-3 md:grid-cols-3">
+                          {group.items.map((item) => (
+                            <a
+                              key={item.title}
+                              href="#solutions"
+                              className="min-w-0 rounded-[1.25rem] border border-transparent bg-surface p-4 text-left transition-all duration-300 hover:-translate-y-0.5 hover:border-brand/20 hover:shadow-soft"
+                            >
+                              <p className="break-words font-semibold text-foreground">{item.title}</p>
+                              <p className="mt-2 whitespace-normal break-words text-sm leading-6 text-muted-foreground">{item.description}</p>
+                            </a>
+                          ))}
                         </div>
-                      )}
+                      </div>
                     </div>
-                  ))}
-                  <a href="#proof" className="link-accent rounded-full px-4 py-2 text-sm">Customers</a>
-                  <a href="#footer" className="link-accent rounded-full px-4 py-2 text-sm">Company</a>
-                </nav>
+                  )}
+                </div>
+              ))}
+              <a href="#proof" className="link-accent rounded-full px-4 py-2 text-sm">Customers</a>
+              <a href="#footer" className="link-accent rounded-full px-4 py-2 text-sm">Company</a>
+            </nav>
 
-                <Link href="https://tarasense.dostcaraga.ph/" className="focus-ring rounded-full px-2 py-1" aria-label="TARAsense home">
-                  <TarasenseWordmark />
-                </Link>
-              </div>
-
-              <div
-                className="-mr-1 hidden items-center gap-3 will-change-transform sm:-mr-2 lg:-mr-1 lg:flex"
-                style={navigationVisibilityStyle}
+            <div
+              className="hidden items-center gap-3 will-change-transform lg:flex"
+              style={navigationVisibilityStyle}
+            >
+              <Link href="/login" className="btn-nav" style={{ border: "1px solid #f97316" }}>SIGN IN</Link>
+              <Link
+                href="/register"
+                className="btn-hero"
+                style={{ paddingTop: "0.5rem", paddingBottom: "0.5rem" }}
               >
-                <Link href="/login" className="btn-nav">Sign in</Link>
-              </div>
+                GET STARTED
+                <ArrowRight className="h-4 w-4" />
+              </Link>
+            </div>
 
               <button
                 type="button"
@@ -513,39 +590,42 @@ export function TarasenseLanding() {
         </div>
       )}
 
-      <main className="pt-24 md:pt-28">
-        <section id="hero" className="section-shell overflow-hidden md:pt-10">
-          <div className="mx-auto grid w-full max-w-7xl items-start gap-16 px-4 sm:px-6 lg:grid-cols-[1.05fr_0.95fr] lg:px-8">
-            <div className="tara-hero-copy relative z-10 max-w-2xl">
+      <main className="pt-20 md:pt-24">
+        <section id="hero" className="section-shell overflow-hidden">
+          <p className="tara-reveal mx-auto mb-8 w-full max-w-7xl px-4 text-center text-lg font-bold leading-tight text-[#10254f] sm:px-6 sm:text-xl lg:px-8 lg:text-2xl">
+            Philippines&apos; Sensory &amp; Consumer Research Platform
+          </p>
+          <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
+            <div className="tara-reveal relative overflow-hidden rounded-[2.5rem] border border-divider/70 bg-cta px-6 py-10 shadow-panel sm:px-8 sm:py-12 md:px-14 md:py-16">
+              <div className="relative z-10 grid w-full items-center gap-12 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16">
+                <div className="tara-hero-copy flex max-w-2xl flex-col justify-between">
+                  <h1 className="tara-reveal text-foreground">
+                    <TarasenseWordmark variant="hero" />
+                    <span className="tara-tagline-gradient mt-4 block whitespace-nowrap text-[1.05rem] font-bold leading-tight tracking-normal text-transparent sm:text-3xl lg:text-[2.35rem]">
+                      Test. Analyze. Refine. Advance.
+                    </span>
+                  </h1>
 
-              <h1 className="tara-reveal mt-6 text-foreground">
-                <TarasenseWordmark variant="hero" />
-                <span className="mt-4 block whitespace-nowrap text-[1.05rem] font-bold leading-tight tracking-normal sm:text-3xl lg:text-[2.35rem]">
-                  Test. Analyze. Refine. Advance.
-                </span>
-              </h1>
+                  <div className="tara-reveal mt-8 max-w-xl">
+                    <p className="text-body">
+                      A platform that connects Innovator, Food Innovation Centers (FICs), research facilities and participant to enable structured sensory evaluation, packaging and concept testing, data-driven product improvement at scale.
+                    </p>
+                    <p className="mt-12 text-lg font-semibold text-[#10254f]">
+                      Developed by DOST CARAGA
+                    </p>
+                  </div>
+                </div>
 
-              <p className="tara-reveal mt-8 max-w-xl text-body">
-                TARAsense is a food innovation platform that connects Innovator, Food Innovation Centers (FICs), and participants to enable structured sensory evaluation, packaging and concept testing, and data-driven product improvement at scale.
-              </p>
-
-              <div className="tara-reveal mt-10 flex flex-col gap-4 sm:flex-row">
-                <Link href="/register" className="btn-hero btn-xl">
-                  Get Started
-                  <ArrowRight className="h-4 w-4 transition-transform duration-300 group-hover:translate-x-1" />
-                </Link>
-              </div>
-            </div>
-
-            <div className="tara-scale-in relative flex items-center justify-center">
-              <div className="glass-panel hero-grid panel-sheen relative w-full max-w-xl overflow-hidden p-6 md:p-4">
-                <div className="relative z-10 aspect-[2048/1365] w-full overflow-hidden rounded-[1.5rem] shadow-soft">
-                  <Image src="/TARAimage/Selected/DSC_0222.JPG" alt="TARAsense launch interface" fill sizes="(min-width: 1024px) 42vw, 92vw" className="object-cover" priority />
+                <div className="tara-scale-in relative flex items-center justify-center">
+                  <div className="relative aspect-[3/2] w-full max-w-xl overflow-hidden rounded-[1.85rem] border border-divider/70 shadow-panel">
+                    <Image src="/TARAimage/Selected/DSC_0222.JPG" alt="TARAsense launch interface" fill sizes="(min-width: 1024px) 42vw, 92vw" className="object-cover" priority />
+                  </div>
                 </div>
               </div>
             </div>
           </div>
 
+          {false && (
           <div className="tara-reveal mx-auto mt-10 w-full max-w-7xl px-4 sm:px-6 md:mt-14 lg:px-8">
             <div className="rounded-[2rem] border border-divider/70 bg-surface/80 px-6 py-5 shadow-soft backdrop-blur-xl md:px-8">
               <p className="text-sm font-medium uppercase tracking-[0.24em] text-muted-foreground">Food Innovation Centers</p>
@@ -574,11 +654,12 @@ export function TarasenseLanding() {
               </div>
             </div>
           </div>
+          )}
         </section>
 
-        <section id="solutions" className="section-shell -mt-8">
+        <section id="solutions" className="section-shell mt-6">
           <div className="mx-auto w-full max-w-7xl space-y-24 px-4 sm:px-6 lg:px-8">
-            {stories.filter((story) => story.eyebrow !== "Enterprise memory").map((story, index) => (
+            {stories.filter((story) => story.eyebrow !== "Enterprise memory" && story.eyebrow !== "Signal clarity").map((story, index) => (
               <div key={story.title} className={`grid gap-12 lg:grid-cols-2 lg:gap-16 ${index <= 1 ? "items-start" : "items-center"}`}>
                 <div className={`tara-reveal ${story.align === "left" ? "lg:order-2" : ""}`}>
                   <span className="section-label">{story.eyebrow}</span>
@@ -594,10 +675,12 @@ export function TarasenseLanding() {
                       </li>
                     ))}
                   </ul>
-                  <Link href="/register" className="btn-secondary mt-8">
-                    {story.cta}
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
+                  {story.cta && (
+                    <Link href="/register" className="btn-secondary mt-8">
+                      {story.cta}
+                      <ArrowRight className="h-4 w-4" />
+                    </Link>
+                  )}
                 </div>
 
                 <div className={`${story.align === "left" ? "lg:order-1" : ""}`}>
@@ -768,66 +851,105 @@ export function TarasenseLanding() {
           <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8">
             <div className="tara-reveal relative overflow-hidden rounded-[2.5rem] border border-divider/70 bg-cta px-8 py-12 shadow-panel md:px-14 md:py-16">
               <div className="relative z-10 max-w-3xl">
-                <span className="section-label">Ready when your team is</span>
-                <h2 className="text-display text-4xl text-foreground md:text-6xl">Build a sharper growth engine around what customers actually signal.</h2>
+                <h2 className="text-display text-4xl text-foreground md:text-6xl">Build better food products around what consumers actually experience.</h2>
                 <p className="mt-6 max-w-2xl text-body">
-                  Replace fragmented reporting with a premium system for testing, learning, and action. Your next board-ready insight can start with one conversation.
+                  Transform sensory feedback into actionable insights for product development, optimization, and commercialization. From concept testing to market launch, make every formulation decision with confidence.
                 </p>
-                <div className="mt-10 flex flex-col gap-4 sm:flex-row">
-                  <Link href="/register" className="btn-hero btn-xl">
-                    Book your strategy demo
-                    <ArrowRight className="h-4 w-4" />
-                  </Link>
-                  <a href="#solutions" className="btn-secondary btn-xl">See the platform tour</a>
-                </div>
               </div>
             </div>
           </div>
         </section>
       </main>
 
-      <footer id="footer" className="border-t border-divider/70 bg-surface/80 pb-12 pt-16 backdrop-blur-xl">
-        <div className="mx-auto grid w-full max-w-7xl gap-12 px-4 sm:px-6 lg:grid-cols-[0.95fr_1.05fr] lg:px-8">
-          <div className="tara-reveal">
+      <footer id="footer" className="relative overflow-hidden bg-[#0b1a40] text-white">
+        <div className="pointer-events-none absolute -left-24 top-0 h-72 w-72 rounded-full bg-[#1746ff]/20 blur-3xl" />
+        <div className="pointer-events-none absolute -right-16 bottom-0 h-64 w-64 rounded-full bg-[#ff6a1a]/15 blur-3xl" />
+
+        <div className="relative mx-auto grid w-full max-w-7xl gap-9 px-6 py-11 sm:px-8 lg:grid-cols-[1.6fr_1fr_1fr_1.3fr] lg:gap-8 lg:px-10">
+          <div className="tara-reveal max-w-sm">
             <div className="flex items-center gap-3">
-              <span className="flex h-12 w-12 items-center justify-center rounded-full bg-brand text-brand-foreground shadow-glow">A</span>
-              <span className="text-xl font-semibold text-foreground">{brand}</span>
+              <Image
+                src="/TARAsense_logo.png"
+                alt=""
+                width={64}
+                height={64}
+                className="h-10 w-10 shrink-0 object-contain"
+              />
+              <div className="leading-none">
+                <span className="inline-flex items-baseline whitespace-nowrap text-xl font-black tracking-tight">
+                  <span className="text-white">TARA</span>
+                  <span
+                    style={{
+                      backgroundImage: "var(--gradient-brand)",
+                      WebkitBackgroundClip: "text",
+                      backgroundClip: "text",
+                      WebkitTextFillColor: "transparent",
+                      color: "transparent",
+                    }}
+                  >
+                    sense
+                  </span>
+                </span>
+                <p className="mt-1 text-[0.65rem] font-medium tracking-wide text-white/60">Test. Analyze. Refine. Advance.</p>
+              </div>
             </div>
-            <p className="mt-5 max-w-md text-base leading-8 text-muted-foreground">
-              Premium market intelligence for enterprise teams that want faster alignment, clearer decisions, and stronger launches.
+            <p className="mt-5 text-[0.8rem] leading-6 text-white/65">
+              TARAsense is an AI-powered sensory and consumer research platform that empowers innovators, MSMEs, and Food Innovation Centers to develop better food products through data-driven insights.
             </p>
-            <div className="mt-8 flex items-center gap-3 text-sm font-medium text-muted-foreground">
-              <span className="rounded-full border border-divider/70 px-4 py-2">LinkedIn</span>
-              <span className="rounded-full border border-divider/70 px-4 py-2">X</span>
-              <span className="rounded-full border border-divider/70 px-4 py-2">YouTube</span>
+            <div className="mt-6 flex items-center gap-2.5">
+              {footerSocials.map((social) => {
+                const Icon = social.icon;
+                return (
+                  <a
+                    key={social.label}
+                    href={social.href}
+                    aria-label={social.label}
+                    className="flex h-9 w-9 items-center justify-center rounded-full border border-white/20 bg-white/5 text-white/80 transition-colors duration-200 hover:border-white hover:bg-white hover:text-[#0b1a40]"
+                  >
+                    <Icon className="h-4 w-4" />
+                  </a>
+                );
+              })}
             </div>
           </div>
 
-          <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
-            {footerGroups.map((group) => (
-              <div key={group.title} className="tara-reveal">
-                <h3 className="text-sm font-semibold uppercase tracking-[0.2em] text-muted-foreground">{group.title}</h3>
-                <ul className="mt-4 space-y-3">
-                  {group.links.map((link) => (
-                    <li key={link}>
-                      <a href={footerLinkHref[link] ?? "#hero"} className="link-accent text-sm text-foreground">
-                        {link}
-                      </a>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+          {footerNav.map((group) => (
+            <div key={group.title} className="tara-reveal">
+              <h3 className="text-sm font-semibold text-white">{group.title}</h3>
+              <ul className="mt-4 space-y-3">
+                {group.links.map((link) => (
+                  <li key={link.label}>
+                    <a href={link.href} className="text-[0.8rem] text-white/65 transition-colors duration-200 hover:text-white">
+                      {link.label}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+
+          <div className="tara-reveal flex flex-col items-center text-center">
+            <h3 className="text-sm font-semibold text-white">A DOST Initiative</h3>
+            <Image
+              src="/TARAimage/DOST_Logo_Inverse.png"
+              alt="Department of Science and Technology"
+              width={140}
+              height={140}
+              className="mt-4 h-20 w-auto object-contain"
+            />
+            <p className="mt-3 max-w-[15rem] text-[0.8rem] leading-6 text-white/65">
+              Developed by DOST Caraga
+            </p>
           </div>
         </div>
 
-        <div className="mx-auto mt-14 flex w-full max-w-7xl flex-col gap-4 border-t border-divider/70 px-4 pt-6 text-sm text-muted-foreground sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
-          <div className="flex flex-wrap gap-5">
-            <a href="#footer" className="link-accent text-sm">Privacy</a>
-            <a href="#footer" className="link-accent text-sm">Terms</a>
-            <a href="#footer" className="link-accent text-sm">Security</a>
-          </div>
+        <div className="relative mx-auto flex w-full max-w-7xl flex-col gap-4 border-t border-white/10 px-6 py-5 text-[0.8rem] text-white/55 sm:px-8 md:flex-row md:items-center md:justify-between lg:px-10">
           <p>© 2026 {brand}. All rights reserved.</p>
+          <div className="flex flex-wrap gap-6">
+            <a href="#footer" className="transition-colors duration-200 hover:text-white">Privacy</a>
+            <a href="#footer" className="transition-colors duration-200 hover:text-white">Terms</a>
+            <a href="#footer" className="transition-colors duration-200 hover:text-white">Security</a>
+          </div>
         </div>
       </footer>
     </div>
@@ -879,8 +1001,8 @@ function SolutionVisual({ story }: { story: Story }) {
   if (story.eyebrow === "Creative intelligence") {
     return (
       <div className="tara-reveal relative flex items-center justify-center">
-        <div className="glass-panel hero-grid panel-sheen relative w-full max-w-xl overflow-hidden p-6 md:p-4">
-          <div className="relative z-10 aspect-[2048/1365] w-full overflow-hidden rounded-[1.5rem] shadow-soft">
+        <div className="relative w-full max-w-xl overflow-hidden rounded-[2.5rem] border border-divider/70 bg-cta p-3 shadow-panel md:p-4">
+          <div className="relative z-10 aspect-[2048/1365] w-full overflow-hidden rounded-[1.85rem]">
             <Image src="/TARAimage/Selected/DSC_0098.JPG" alt="Creative intelligence field activity" fill sizes="(min-width: 1024px) 42vw, 92vw" className="object-cover" />
           </div>
         </div>

@@ -26,7 +26,7 @@ export default async function RegisterPage({ searchParams }: PageProps) {
   return (
     <div className="relative grid min-h-screen w-full grid-cols-1 overflow-hidden bg-background text-foreground lg:grid-cols-2">
       <AuthBrandPanel
-        headline={["Build Your Team", "On Real Data."]}
+        headline={["Build Your Product", "From Real Data."]}
         body="Join TARAsense to access market signals that help your team stay ahead of consumer trends in real time."
       />
 

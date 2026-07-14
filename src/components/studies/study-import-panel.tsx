@@ -46,6 +46,7 @@ export function StudyImportPanel({ studyId }: StudyImportPanelProps) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [file, setFile] = useState<File | null>(null);
+  const [scoreType, setScoreType] = useState<"ATTRIBUTE_LIKING" | "JAR">("ATTRIBUTE_LIKING");
   const [preview, setPreview] = useState<ImportResult | null>(null);
   const [commit, setCommit] = useState<ImportResult | null>(null);
   const [cloneResult, setCloneResult] = useState<ImportResult | null>(null);
@@ -99,6 +100,7 @@ export function StudyImportPanel({ studyId }: StudyImportPanelProps) {
     startTransition(async () => {
       const formData = new FormData();
       formData.set("file", file);
+      formData.set("scoreType", scoreType);
       const result = await createImportReadyCloneFromFile(studyId, formData);
       setCloneResult(result);
       if (result.success && result.newStudyId && result.redirectPath) {
@@ -111,8 +113,8 @@ export function StudyImportPanel({ studyId }: StudyImportPanelProps) {
     preview?.errors?.some((issue) => {
       const text = issue.message.toLowerCase();
       return (
-        text.includes("at least one jar attribute") ||
-        text.includes("missing configured jar attribute") ||
+        text.includes("at least one jar or attribute liking attribute") ||
+        text.includes("missing configured attribute") ||
         text.includes("import contains unknown attribute")
       );
     })
@@ -198,6 +200,31 @@ export function StudyImportPanel({ studyId }: StudyImportPanelProps) {
           <p className="text-[11px] text-[#3730a3]">
             This study is not fully aligned with the file attributes. Safest path: create a non-destructive import-ready clone study from this same file.
           </p>
+          <fieldset className="space-y-1">
+            <legend className="text-[11px] font-semibold text-[#3730a3]">Clone attribute scores as:</legend>
+            <div className="flex flex-wrap gap-3 text-[11px] text-[#3730a3]">
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  name="cloneScoreType"
+                  value="ATTRIBUTE_LIKING"
+                  checked={scoreType === "ATTRIBUTE_LIKING"}
+                  onChange={() => setScoreType("ATTRIBUTE_LIKING")}
+                />
+                Attribute Liking
+              </label>
+              <label className="flex items-center gap-1.5">
+                <input
+                  type="radio"
+                  name="cloneScoreType"
+                  value="JAR"
+                  checked={scoreType === "JAR"}
+                  onChange={() => setScoreType("JAR")}
+                />
+                JAR intensity (1–5)
+              </label>
+            </div>
+          </fieldset>
           <button
             type="button"
             onClick={onCreateImportReadyClone}

@@ -5,11 +5,31 @@ import { prisma } from "@/lib/db";
 import { notifyUser } from "@/lib/notifications";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { logUserUsage } from "@/lib/user-usage";
+import {
+  MAX_CUSTOM_OPTION_TEXT,
+  MAX_CUSTOM_PARAGRAPH_ANSWER,
+  MAX_CUSTOM_QUESTIONS,
+  MAX_CUSTOM_QUESTION_OPTIONS,
+  normalizeCustomAnswers,
+  parseCustomQuestions,
+} from "@/lib/custom-questions";
 
 const MAX_ATTRIBUTE_KEYS = 40;
 const MAX_SAMPLE_RESPONSES = 20;
 const MAX_OPEN_ENDED_LENGTH = 2000;
 const JAR_BUCKET_VALUES = new Set(["too_low", "just_right", "too_high"]);
+
+const CustomAnswersSchema = z
+  .record(
+    z.string().min(1).max(64),
+    z.union([
+      z.string().max(MAX_CUSTOM_PARAGRAPH_ANSWER),
+      z.array(z.string().max(MAX_CUSTOM_OPTION_TEXT)).max(MAX_CUSTOM_QUESTION_OPTIONS),
+    ])
+  )
+  .refine((row) => Object.keys(row).length <= MAX_CUSTOM_QUESTIONS, {
+    message: `Too many custom answers. Maximum is ${MAX_CUSTOM_QUESTIONS}.`,
+  });
 
 const SubmitResponseSchema = z.object({
   overallLiking: z.number().min(1).max(9),
@@ -47,6 +67,7 @@ const SubmitResponseSchema = z.object({
       improvements: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
     })
     .optional(),
+  customAnswers: CustomAnswersSchema.optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -113,6 +134,7 @@ export async function submitMobileConsumerResponse(input: {
             title: true,
             creatorId: true,
             targetDemographics: true,
+            customQuestions: true,
             sensoryAttributes: {
               select: {
                 name: true,
@@ -175,6 +197,12 @@ export async function submitMobileConsumerResponse(input: {
       return { success: false as const, error: normalized.error };
     }
 
+    const customQuestions = parseCustomQuestions(participant.study.customQuestions);
+    const customAnswersResult = normalizeCustomAnswers(customQuestions, validated.customAnswers ?? {});
+    if (!customAnswersResult.success) {
+      return { success: false as const, error: customAnswersResult.error };
+    }
+
     const responseData = JSON.parse(
       JSON.stringify({
         overallLiking: normalized.overallLiking,
@@ -182,6 +210,7 @@ export async function submitMobileConsumerResponse(input: {
         sampleResponses: normalized.sampleResponses,
         sampleRanking: normalized.sampleRanking,
         comments: normalized.comments,
+        customAnswers: customAnswersResult.value,
       })
     ) as Prisma.InputJsonValue;
 

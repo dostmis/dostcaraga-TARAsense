@@ -8,11 +8,12 @@ import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { CreateStudyBuilder } from "@/components/studies/create-study-builder";
 import { CreateStudyImportPanel } from "@/components/studies/create-study-import-panel";
 import { TimedToast } from "@/components/ui/timed-toast";
-import { StudyDeleteControl } from "@/components/dashboards/study-delete-control";
-import { RepostStudyControl } from "@/components/dashboards/repost-study-control";
+import { StudyPipelineList } from "@/components/studies/study-pipeline-list";
+import { ProjectsListView } from "@/components/projects/projects-list-view";
+import { ProjectDetailWorkspace } from "@/components/projects/project-detail-workspace";
 import { doesPanelistMatchTargetConsumer } from "@/lib/target-consumer";
 import { buildScheduleOpenWhere } from "@/lib/locations/study-visibility";
-import { ClipboardList, Compass, FileUp, LayoutDashboard, PlusCircle, UserRound } from "lucide-react";
+import { ClipboardList, Compass, FileUp, FolderKanban, LayoutDashboard, PlusCircle, UserRound } from "lucide-react";
 
 interface StudyParticipantSummary {
   id: string;
@@ -54,16 +55,26 @@ interface PeerStudySummary extends StudySummary {
 
 export async function MSMEDashboard({
   userId,
+  isAdmin = false,
   view,
   error,
   message,
   q,
+  projectId,
+  tab,
+  category,
+  status,
 }: {
   userId: string;
+  isAdmin?: boolean;
   view?: string;
   error?: string;
   message?: string;
   q?: string;
+  projectId?: string;
+  tab?: string;
+  category?: string;
+  status?: string;
 }) {
   const activeView = parseMSMEView(view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
@@ -246,7 +257,6 @@ export async function MSMEDashboard({
         return searchable.includes(normalizedQuery);
       })
     : peerStudies;
-  const studyPipelineGroups = groupStudyPipeline(filteredStudies);
 
   return (
     <DashboardShell
@@ -259,6 +269,12 @@ export async function MSMEDashboard({
       navItems={[
         { label: "Dashboard", href: "/msme/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
         { label: "Profile", href: "/msme/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
+        {
+          label: "Projects",
+          href: "/msme/dashboard?view=projects",
+          icon: FolderKanban,
+          active: activeView === "projects",
+        },
         { label: "Create Study", href: "/msme/dashboard?view=create-study", icon: PlusCircle, active: activeView === "create-study" },
         {
           label: "Import Existing Sensory Dataset",
@@ -284,7 +300,7 @@ export async function MSMEDashboard({
       stats={activeView === "dashboard" ? [
         { label: "FIC collaborations", value: `${ficBookings}`, helper: "Studies using FIC facilities", icon: ClipboardList, tone: "amber" },
         { label: "Studies completed", value: `${totalStudies}`, helper: "Total studies created", icon: LayoutDashboard, tone: "sky" },
-        { label: "Responsies collected", value: `${totalResponses}`, helper: "Responses collected", icon: ClipboardList, tone: "mint" },
+        { label: "Responses collected", value: `${totalResponses}`, helper: "Responses collected", icon: ClipboardList, tone: "mint" },
         { label: "Active Studies", value: `${activeStudies}`, helper: "Recruiting or ongoing studies", icon: PlusCircle, tone: "slate" },
       ] : undefined}
       sidebarFooter={
@@ -313,12 +329,19 @@ export async function MSMEDashboard({
       )}
 
       {activeView === "create-study" && (
-        <CreateStudyBuilder embedded />
+        <CreateStudyBuilder embedded projectId={projectId} />
       )}
 
       {activeView === "import-dataset" && (
         <CreateStudyImportPanel />
       )}
+
+      {activeView === "projects" &&
+        (projectId ? (
+          <ProjectDetailWorkspace projectId={projectId} userId={userId} isAdmin={isAdmin} tab={tab} />
+        ) : (
+          <ProjectsListView userId={userId} q={q} category={category} status={status} />
+        ))}
 
       {activeView === "evaluate" && !dbError && filteredPeerStudies.length === 0 && (
         <section className="rounded-2xl border border-[#e4d7cc] bg-white p-8 text-center">
@@ -397,137 +420,11 @@ export async function MSMEDashboard({
 
       {activeView === "history" && !dbError && filteredStudies.length > 0 && (
         <CollapsibleSection id="study-pipeline" title="Study Pipeline" countLabel={`${filteredStudies.length}`} defaultOpen={true}>
-          <div className="space-y-6">
-            {studyPipelineGroups.map((group) => (
-              <section key={group.key} className="space-y-3">
-                <div className="flex flex-wrap items-end justify-between gap-2 border-b border-[#eadfd6] pb-2">
-                  <div>
-                    <h2 className="text-lg font-semibold text-[#2e231c]">{group.title}</h2>
-                    <p className="text-sm text-[#6f5b4f]">{group.description}</p>
-                  </div>
-                  <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-xs font-medium text-[#695446]">
-                    {group.studies.length} {group.studies.length === 1 ? "study" : "studies"}
-                  </span>
-                </div>
-
-                {group.studies.length === 0 && (
-                  <article className="rounded-2xl border border-dashed border-[#e4d7cc] bg-white p-5 text-sm text-[#6f5b4f]">
-                    No {group.title.toLowerCase()} studies.
-                  </article>
-                )}
-
-                {group.studies.map((study) => {
-                  const targetReached = study._count.responses >= study.sampleSize;
-                  const hasAnyParticipants = study._count.participants > 0;
-                  const isExpired =
-                    study.scheduleEndsAt != null && new Date(study.scheduleEndsAt).getTime() <= Date.now();
-                  const isClosedBelowTarget = (study.status === "ANALYZING" || isExpired) && !targetReached;
-                  return (
-                    <article key={study.id} className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
-                      <div className="flex flex-col gap-5 lg:flex-row lg:items-start lg:justify-between">
-                        <div className="space-y-2">
-                          <h2 className="text-xl font-semibold text-[#2e231c]">{study.title}</h2>
-                          <p className="text-[#6f5b4f]">{study.productName}</p>
-                          <div className="flex flex-wrap gap-2 text-xs">
-                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.category}</span>
-                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.stage}</span>
-                            <span className="rounded-full bg-[#f6ede5] px-2.5 py-1 text-[#695446]">{study.status}</span>
-                            <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
-                              Responses {study._count.responses}/{study.sampleSize}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="flex flex-col gap-2 sm:flex-row">
-                          <Link
-                            href={`/studies/${study.id}/form`}
-                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
-                          >
-                            Form + QR
-                          </Link>
-                          <Link
-                            href={`/dashboard/${study.id}`}
-                            className="inline-flex items-center justify-center rounded-lg border border-[#d8c7b8] px-4 py-2 text-sm font-medium text-[#5a4536] hover:bg-[#fff6ed]"
-                          >
-                            Result
-                          </Link>
-                          {targetReached ? (
-                            <span className="inline-flex items-center justify-center rounded-lg bg-[#e8f8ed] px-4 py-2 text-sm font-medium text-[#1d7c4a]">
-                              All Participants Completed
-                            </span>
-                          ) : isClosedBelowTarget ? (
-                            <span className="inline-flex items-center justify-center rounded-lg bg-[#fde7e7] px-4 py-2 text-sm font-medium text-[#b3261e]">
-                              Closed — Below Target
-                            </span>
-                          ) : !hasAnyParticipants ? (
-                            <span className="inline-flex items-center justify-center rounded-lg bg-[#fff7e9] px-4 py-2 text-sm font-medium text-[#8a5a00]">
-                              No Participants Assigned Yet
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center justify-center rounded-lg bg-[#edf5ff] px-4 py-2 text-sm font-medium text-[#1e4f8f]">
-                              Awaiting Consumer Responses
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      {isClosedBelowTarget && (
-                        <RepostStudyControl
-                          studyId={study.id}
-                          sampleSize={study.sampleSize}
-                          responsesCount={study._count.responses}
-                        />
-                      )}
-                      <StudyDeleteControl studyId={study.id} redirectTo="/msme/dashboard?view=history" />
-                    </article>
-                  );
-                })}
-              </section>
-            ))}
-          </div>
+          <StudyPipelineList studies={filteredStudies} redirectTo="/msme/dashboard?view=history" />
         </CollapsibleSection>
       )}
     </DashboardShell>
   );
-}
-
-function groupStudyPipeline(studies: StudySummary[]) {
-  const groups = [
-    {
-      key: "scheduled",
-      title: "Scheduled",
-      description: "Set up or recruiting studies with no collected responses yet.",
-      studies: [] as StudySummary[],
-    },
-    {
-      key: "in-progress",
-      title: "In Progress",
-      description: "Studies with active collection, analysis, or partial response progress.",
-      studies: [] as StudySummary[],
-    },
-    {
-      key: "completed",
-      title: "Completed",
-      description: "Studies that reached their target responses or are marked completed/archived.",
-      studies: [] as StudySummary[],
-    },
-  ];
-  const groupByKey = new Map(groups.map((group) => [group.key, group]));
-
-  studies.forEach((study) => {
-    groupByKey.get(getStudyPipelineKey(study))?.studies.push(study);
-  });
-
-  return groups;
-}
-
-function getStudyPipelineKey(study: StudySummary) {
-  if (study.status === "COMPLETED" || study.status === "ARCHIVED" || study._count.responses >= study.sampleSize) {
-    return "completed";
-  }
-  if (study.status === "DRAFT" || (study.status === "RECRUITING" && study._count.responses === 0)) {
-    return "scheduled";
-  }
-  return "in-progress";
 }
 
 function parseMSMEView(value?: string) {
@@ -536,7 +433,8 @@ function parseMSMEView(value?: string) {
     value === "create-study" ||
     value === "import-dataset" ||
     value === "history" ||
-    value === "evaluate"
+    value === "evaluate" ||
+    value === "projects"
   ) {
     return value;
   }

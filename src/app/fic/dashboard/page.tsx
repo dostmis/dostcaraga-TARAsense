@@ -8,8 +8,11 @@ import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar";
+import { CreateStudyBuilder } from "@/components/studies/create-study-builder";
+import { StudyPipelineList, type StudyPipelineItem } from "@/components/studies/study-pipeline-list";
+import { parseOnBehalfOfMsme } from "@/lib/study-on-behalf";
 import { formatPanelistNumber } from "@/lib/participant-assignment";
-import { BarChart3, CalendarDays, ClipboardCheck, Clock3, FileText, LayoutDashboard, MapPin, TestTube2, UserRound } from "lucide-react";
+import { BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Clock3, FileText, LayoutDashboard, MapPin, PlusCircle, TestTube2, UserRound } from "lucide-react";
 import { isMissingColumnError, logSchemaDriftWarning } from "@/lib/db-schema-drift";
 import { Prisma } from "@prisma/client";
 
@@ -205,6 +208,53 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     throw error;
   }
 
+  // Studies this FIC created on behalf of MSMEs (FIC owns them via creatorId).
+  const [myStudyCount, myStudyRows] = await Promise.all([
+    prisma.study.count({ where: { creatorId: session.userId } }),
+    activeView === "my-studies"
+      ? prisma.study.findMany({
+          where: { creatorId: session.userId },
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            title: true,
+            productName: true,
+            category: true,
+            stage: true,
+            status: true,
+            sampleSize: true,
+            scheduleEndsAt: true,
+            targetDemographics: true,
+            _count: { select: { responses: true, participants: true } },
+          },
+          take: 50,
+        })
+      : Promise.resolve([]),
+  ]);
+  const myStudies: StudyPipelineItem[] = myStudyRows.map((row) => {
+    const onBehalf = parseOnBehalfOfMsme(row.targetDemographics);
+    return {
+      id: row.id,
+      title: row.title,
+      productName: row.productName,
+      category: row.category,
+      stage: row.stage,
+      status: row.status,
+      sampleSize: row.sampleSize,
+      scheduleEndsAt: row.scheduleEndsAt,
+      attribution: onBehalf ? `On behalf of ${onBehalf.businessName}` : null,
+      _count: row._count,
+    };
+  });
+  const filteredMyStudies = normalizedQuery
+    ? myStudies.filter((study) =>
+        [study.title, study.productName, study.category, study.stage, study.status, study.attribution ?? ""]
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedQuery)
+      )
+    : myStudies;
+
   const filteredStudies = normalizedQuery
     ? studiesForQueue.filter((study) => {
         const entry = [
@@ -280,6 +330,19 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         { label: "Dashboard", href: "/fic/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
         { label: "Profile", href: "/fic/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
         {
+          label: "Create Study",
+          href: "/fic/dashboard?view=create-study",
+          icon: PlusCircle,
+          active: activeView === "create-study",
+        },
+        {
+          label: "My Studies",
+          href: "/fic/dashboard?view=my-studies",
+          icon: ClipboardList,
+          badge: `${myStudyCount}`,
+          active: activeView === "my-studies",
+        },
+        {
           label: "Facility Queue",
           href: "/fic/dashboard?view=queue",
           icon: ClipboardCheck,
@@ -338,6 +401,37 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
 
       {activeView === "profile" && (
         <ProfileWorkspace userId={session.userId} role={session.role} error={error} message={message} embedded />
+      )}
+
+      {activeView === "create-study" && (
+        <CreateStudyBuilder embedded mode="fic" backHref="/fic/dashboard?view=dashboard" />
+      )}
+
+      {activeView === "my-studies" && (
+        <section className="space-y-4">
+          <header className="rounded-2xl border border-[#e4d7cc] bg-white p-6">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-[#c2410c]">FIC-Created Studies</p>
+            <h2 className="mt-1 text-xl font-semibold text-[#2e231c]">My Studies</h2>
+            <p className="mt-1 text-sm text-[#6f5b4f]">
+              Studies you created on behalf of MSMEs. Manage forms, results, reposting, and deletion here.
+            </p>
+          </header>
+
+          {filteredMyStudies.length === 0 ? (
+            <article className="rounded-2xl border border-[#e4d7cc] bg-white p-8 text-center">
+              <h2 className="text-lg font-semibold text-[#2e231c]">
+                {myStudies.length === 0 ? "No studies yet" : "No matching studies"}
+              </h2>
+              <p className="mt-2 text-sm text-[#6f5b4f]">
+                {myStudies.length === 0
+                  ? "Use Create Study to build a study on behalf of an MSME."
+                  : "Try another search term to find your study."}
+              </p>
+            </article>
+          ) : (
+            <StudyPipelineList studies={filteredMyStudies} redirectTo="/fic/dashboard?view=my-studies" />
+          )}
+        </section>
       )}
 
       {activeView === "queue" && (
@@ -586,7 +680,15 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
 }
 
 function parseFicView(value?: string) {
-  if (value === "profile" || value === "queue" || value === "forms" || value === "dashboards" || value === "calendar") {
+  if (
+    value === "profile" ||
+    value === "queue" ||
+    value === "forms" ||
+    value === "dashboards" ||
+    value === "calendar" ||
+    value === "create-study" ||
+    value === "my-studies"
+  ) {
     return value;
   }
   return "dashboard";

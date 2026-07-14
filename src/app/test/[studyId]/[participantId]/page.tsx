@@ -6,6 +6,7 @@ import { getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { parseSampleCodes } from "@/lib/participant-assignment";
 import { assignSampleCodesFromCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import { parseCustomQuestions } from "@/lib/custom-questions";
 
 type PageProps = {
   params: Promise<{ studyId: string; participantId: string }>;
@@ -47,6 +48,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
           creator: { select: { role: true } },
           productName: true,
           targetDemographics: true,
+          customQuestions: true,
           sensoryAttributes: {
             orderBy: { order: "asc" },
             select: {
@@ -76,6 +78,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
           creator: { role: string };
           productName: string;
           targetDemographics: unknown;
+          customQuestions: unknown;
           sensoryAttributes: Array<{
             id: string;
             name: string;
@@ -166,6 +169,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
           })
         : null,
   }));
+  const customQuestions = parseCustomQuestions(participant.study.customQuestions);
   const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
   const samplePlan = buildSamplePlan(
     participant.sampleCodes,
@@ -180,6 +184,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
       studyId={studyId}
       participantId={participantId}
       attributes={attributes}
+      customQuestions={customQuestions}
       productName={participant.study.productName}
       sampleCount={sampleCount}
       samplePlan={samplePlan}

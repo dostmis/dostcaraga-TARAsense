@@ -10,11 +10,31 @@ import { notifyUser } from "@/lib/notifications";
 import { clearGuestSessionCookies, getCurrentGuestSession, getCurrentSession } from "@/lib/auth/session";
 import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { logUserUsage } from "@/lib/user-usage";
+import {
+  MAX_CUSTOM_OPTION_TEXT,
+  MAX_CUSTOM_PARAGRAPH_ANSWER,
+  MAX_CUSTOM_QUESTIONS,
+  MAX_CUSTOM_QUESTION_OPTIONS,
+  normalizeCustomAnswers,
+  parseCustomQuestions,
+} from "@/lib/custom-questions";
 
 const MAX_ATTRIBUTE_KEYS = 40;
 const MAX_SAMPLE_RESPONSES = 20;
 const MAX_OPEN_ENDED_LENGTH = 2000;
 const MAX_DRAFT_JSON_BYTES = 80_000;
+
+const CustomAnswersSchema = z
+  .record(
+    z.string().min(1).max(64),
+    z.union([
+      z.string().max(MAX_CUSTOM_PARAGRAPH_ANSWER),
+      z.array(z.string().max(MAX_CUSTOM_OPTION_TEXT)).max(MAX_CUSTOM_QUESTION_OPTIONS),
+    ])
+  )
+  .refine((row) => Object.keys(row).length <= MAX_CUSTOM_QUESTIONS, {
+    message: `Too many custom answers. Maximum is ${MAX_CUSTOM_QUESTIONS}.`,
+  });
 const DRAFT_RETENTION_DAYS = 14;
 const JAR_BUCKET_VALUES = new Set(["too_low", "just_right", "too_high"]);
 
@@ -60,6 +80,7 @@ const ResponseDraftSchema = z
         improvements: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
       })
       .default({}),
+    customAnswers: CustomAnswersSchema.default({}),
     samplePlanSignature: z.string().min(1).max(12_000),
     updatedAt: z.string().datetime(),
   })
@@ -103,6 +124,7 @@ const SubmitResponseSchema = z.object({
       improvements: z.string().max(MAX_OPEN_ENDED_LENGTH).optional(),
     })
     .optional(),
+  customAnswers: CustomAnswersSchema.optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -169,6 +191,7 @@ const responseParticipantSelect = {
       creatorId: true,
       creator: { select: { role: true } },
       targetDemographics: true,
+      customQuestions: true,
       sensoryAttributes: {
         select: {
           name: true,
@@ -349,6 +372,12 @@ export async function submitResponse(studyId: string, participantId: string, pay
       return { success: false, error: normalized.error };
     }
 
+    const customQuestions = parseCustomQuestions(participant.study.customQuestions);
+    const customAnswersResult = normalizeCustomAnswers(customQuestions, validated.customAnswers ?? {});
+    if (!customAnswersResult.success) {
+      return { success: false, error: customAnswersResult.error };
+    }
+
     const responseData = JSON.parse(
       JSON.stringify({
         overallLiking: normalized.overallLiking,
@@ -356,6 +385,7 @@ export async function submitResponse(studyId: string, participantId: string, pay
         sampleResponses: normalized.sampleResponses,
         sampleRanking: normalized.sampleRanking,
         comments: normalized.comments,
+        customAnswers: customAnswersResult.value,
       })
     ) as Prisma.InputJsonValue;
 

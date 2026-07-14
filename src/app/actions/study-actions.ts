@@ -14,6 +14,7 @@ import { buildSessionSchedule, extractBookingDatesFromSchedule } from "@/lib/stu
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 import { notifyRole } from "@/lib/notifications";
 import { logUserUsage } from "@/lib/user-usage";
+import { CUSTOM_QUESTION_TYPES, MAX_CUSTOM_QUESTIONS } from "@/lib/custom-questions";
 
 const MAX_STUDY_ATTRIBUTES_STRICT = 5;
 const MAX_STUDY_QUESTION_ROWS_STRICT = 13;
@@ -41,8 +42,8 @@ const CreateStudySchema = z.object({
   title: z.string().min(3),
   productName: z.string().min(1),
   category: z.enum(["BEVERAGE", "SNACK", "DESSERT", "FUNCTIONAL_FOOD", "DAIRY", "BAKERY"]),
-  stage: z.enum(["PROTOTYPE_CHECK", "REFINEMENT", "MARKET_READINESS"]),
-  sampleSize: z.number().min(10).max(200),
+  stage: z.enum(["EXPLORATORY", "PROTOTYPE_CHECK", "REFINEMENT", "MARKET_READINESS"]),
+  sampleSize: z.number().min(4).max(200),
   location: z.string(),
   targetDemographics: z.object({
     ageRange: z.tuple([z.number(), z.number()]),
@@ -82,7 +83,20 @@ const CreateStudySchema = z.object({
     required: z.union([z.boolean(), z.string()]).optional(),
     min: z.number().optional(),
     max: z.number().optional(),
-  }))
+  })),
+  customQuestions: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        text: z.string().min(1),
+        type: z.enum(CUSTOM_QUESTION_TYPES),
+        options: z.array(z.string()).default([]),
+        required: z.boolean().default(false),
+        order: z.number().int(),
+      })
+    )
+    .max(MAX_CUSTOM_QUESTIONS)
+    .optional(),
 });
 
 export async function createStudy(
@@ -132,6 +146,10 @@ export async function createStudy(
     const screeningCriteriaJson = JSON.parse(
       JSON.stringify(validated.screeningQuestions)
     ) as Prisma.InputJsonValue;
+    const customQuestionsJson =
+      validated.customQuestions && validated.customQuestions.length > 0
+        ? (JSON.parse(JSON.stringify(validated.customQuestions)) as Prisma.InputJsonValue)
+        : undefined;
 
     const study = await prisma.$transaction(async (tx) => {
       const createdStudy = await tx.study.create({
@@ -145,6 +163,7 @@ export async function createStudy(
           targetDemographics: targetDemographicsJson,
           stratificationVar: validated.stratificationVar === "none" ? null : validated.stratificationVar,
           screeningCriteria: screeningCriteriaJson,
+          customQuestions: customQuestionsJson,
           creatorId: userId,
           status: "RECRUITING",
           scheduleEndsAt: getStudyScheduleEnd(preparedTargetDemographics),
@@ -261,8 +280,8 @@ const RepostStudySchema = z.object({
  */
 export async function repostStudy(input: z.infer<typeof RepostStudySchema>) {
   const session = await getCurrentSession();
-  if (!session || (session.role !== "MSME" && session.role !== "ADMIN")) {
-    return { success: false as const, error: "MSME login required." };
+  if (!session || (session.role !== "MSME" && session.role !== "ADMIN" && session.role !== "FIC")) {
+    return { success: false as const, error: "Login required." };
   }
 
   const parsed = RepostStudySchema.safeParse(input);
@@ -812,8 +831,8 @@ function prepareTargetDemographicsForStudy(
 
 export async function deleteStudyWithPassword(formData: FormData) {
   const session = await getCurrentSession();
-  if (!session || (session.role !== "MSME" && session.role !== "ADMIN")) {
-    redirect("/login?error=MSME+login+required");
+  if (!session || (session.role !== "MSME" && session.role !== "ADMIN" && session.role !== "FIC")) {
+    redirect("/login?error=Login+required");
   }
 
   const studyId = String(formData.get("studyId") ?? "").trim();

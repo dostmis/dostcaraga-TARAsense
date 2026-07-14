@@ -42,12 +42,13 @@ interface ParsedLongRow {
   overallLiking: number;
   attribute: string;
   attributeKey: string;
-  jarScore: 1 | 2 | 3 | 4 | 5;
+  score: number;
 }
 
-interface ConfiguredJarAttribute {
+interface ConfiguredScoredAttribute {
   name: string;
   importKey: string;
+  type: "JAR" | "ATTRIBUTE_LIKING";
 }
 
 export interface ImportIssue {
@@ -259,7 +260,7 @@ export function parseAndValidateSensoryImport(
 
   const attributeValidation = validateAttributeSet(
     profile.attributeNames,
-    studyValidation.jarAttributes,
+    studyValidation.scoredAttributes,
     maxIssues
   );
   attributeValidation.errors.forEach((issue) => addIssue(errors, issue, maxIssues));
@@ -270,7 +271,7 @@ export function parseAndValidateSensoryImport(
   const matrixValidation = validateLongMatrix(
     parsedRows,
     profile.sampleLabels,
-    studyValidation.jarAttributes,
+    studyValidation.scoredAttributes,
     maxIssues
   );
   matrixValidation.errors.forEach((issue) => addIssue(errors, issue, maxIssues));
@@ -281,7 +282,7 @@ export function parseAndValidateSensoryImport(
   const prepared = buildPreparedPayload(
     parsedRows,
     profile.sampleLabels,
-    studyValidation.jarAttributes,
+    studyValidation.scoredAttributes,
     studyValidation.openEndedAttributeNames,
     studyValidation.overallAttributeName
   );
@@ -455,7 +456,7 @@ function parseTemplateRows(
     const sampleLabel = normalizeText(cells[requiredColumnIndex.Sample]);
     const attribute = normalizeText(cells[requiredColumnIndex.Attribute]);
     const overallLiking = normalizeNumeric(cells[requiredColumnIndex.Overall_Liking]);
-    const jarScore = normalizeNumeric(cells[requiredColumnIndex.JAR_Score]);
+    const score = normalizeNumeric(cells[requiredColumnIndex.JAR_Score]);
 
     if (!respondentId) {
       addIssue(errors, { rowNumber, field: "Respondent_ID", message: "Respondent_ID is required." }, maxIssues);
@@ -481,13 +482,13 @@ function parseTemplateRows(
       );
       return;
     }
-    if (!Number.isInteger(jarScore) || jarScore < 1 || jarScore > 5) {
+    if (!Number.isInteger(score) || score < 1 || score > 9) {
       addIssue(
         errors,
         {
           rowNumber,
           field: "JAR_Score",
-          message: "JAR_Score must be an integer from 1 to 5.",
+          message: "JAR_Score must be an integer from 1 to 9 (1 to 5 for JAR attributes).",
         },
         maxIssues
       );
@@ -501,7 +502,7 @@ function parseTemplateRows(
       overallLiking: roundToTwo(overallLiking),
       attribute,
       attributeKey: canonicalizeAttributeKey(attribute),
-      jarScore: jarScore as 1 | 2 | 3 | 4 | 5,
+      score,
     });
   });
 
@@ -523,16 +524,18 @@ function validateStudyForPhaseOne(study: ImportStudyConfig, maxIssues: number) {
       maxIssues
     );
   }
-  if (jarAttributes.length === 0) {
-    addIssue(errors, { message: "Study must contain at least one JAR attribute for import." }, maxIssues);
-  }
-  if (attributeLikingAttributes.length > 0) {
+
+  // A "scored" attribute is one imported with a numeric per-sample score: JAR intensity
+  // (1-5, stored as a structured value) or Attribute Liking (hedonic, stored as a plain number).
+  const scoredAttributeDefs = [
+    ...jarAttributes.map((attribute) => ({ attribute, type: "JAR" as const })),
+    ...attributeLikingAttributes.map((attribute) => ({ attribute, type: "ATTRIBUTE_LIKING" as const })),
+  ];
+
+  if (scoredAttributeDefs.length === 0) {
     addIssue(
       errors,
-      {
-        message:
-          "Phase 1 import only supports OVERALL_LIKING + JAR (+ optional OPEN_ENDED). ATTRIBUTE_LIKING questions are not supported yet.",
-      },
+      { message: "Study must contain at least one JAR or Attribute Liking attribute for import." },
       maxIssues
     );
   }
@@ -546,18 +549,19 @@ function validateStudyForPhaseOne(study: ImportStudyConfig, maxIssues: number) {
     );
   }
 
-  const configuredJarAttributes = jarAttributes.map<ConfiguredJarAttribute>((attribute) => ({
+  const configuredScoredAttributes = scoredAttributeDefs.map<ConfiguredScoredAttribute>(({ attribute, type }) => ({
     name: attribute.name,
     importKey: canonicalizeAttributeKey(attribute.sourceAttributeName || attribute.name),
+    type,
   }));
   const seenConfiguredKeys = new Map<string, string>();
-  configuredJarAttributes.forEach((attribute) => {
+  configuredScoredAttributes.forEach((attribute) => {
     const existing = seenConfiguredKeys.get(attribute.importKey);
     if (existing && existing !== attribute.name) {
       addIssue(
         errors,
         {
-          message: `Configured JAR attributes "${existing}" and "${attribute.name}" map to the same canonical import key.`,
+          message: `Configured attributes "${existing}" and "${attribute.name}" map to the same canonical import key.`,
         },
         maxIssues
       );
@@ -570,7 +574,7 @@ function validateStudyForPhaseOne(study: ImportStudyConfig, maxIssues: number) {
     valid: errors.length === 0,
     errors,
     warnings,
-    jarAttributes: configuredJarAttributes,
+    scoredAttributes: configuredScoredAttributes,
     openEndedAttributeNames: openEndedAttributes.map((attribute) => attribute.name),
     overallAttributeName: overallAttributes[0]?.name ?? null,
   };
@@ -578,7 +582,7 @@ function validateStudyForPhaseOne(study: ImportStudyConfig, maxIssues: number) {
 
 function validateAttributeSet(
   importedAttributes: string[],
-  configuredJarAttributes: ConfiguredJarAttribute[],
+  configuredScoredAttributes: ConfiguredScoredAttribute[],
   maxIssues: number
 ) {
   const errors: ImportIssue[] = [];
@@ -590,9 +594,9 @@ function validateAttributeSet(
     importedByKey.set(key, existing);
   });
 
-  const configuredByKey = new Map(configuredJarAttributes.map((attribute) => [attribute.importKey, attribute.name]));
+  const configuredByKey = new Map(configuredScoredAttributes.map((attribute) => [attribute.importKey, attribute.name]));
 
-  const missingInImport = configuredJarAttributes
+  const missingInImport = configuredScoredAttributes
     .filter((attribute) => !importedByKey.has(attribute.importKey))
     .map((attribute) => attribute.name);
   const unknownInImport = Array.from(importedByKey.entries())
@@ -603,7 +607,7 @@ function validateAttributeSet(
     addIssue(
       errors,
       {
-        message: `Missing configured JAR attribute(s): ${missingInImport.join(", ")}.`,
+        message: `Missing configured attribute(s): ${missingInImport.join(", ")}.`,
       },
       maxIssues
     );
@@ -624,13 +628,17 @@ function validateAttributeSet(
 function validateLongMatrix(
   rows: ParsedLongRow[],
   sampleLabels: string[],
-  jarAttributes: ConfiguredJarAttribute[],
+  scoredAttributes: ConfiguredScoredAttribute[],
   maxIssues: number
 ) {
   const errors: ImportIssue[] = [];
   const seenTriplets = new Map<string, number>();
   const groupMap = new Map<string, { rows: ParsedLongRow[]; overallValues: Set<number>; attributes: Set<string> }>();
   const respondentSamples = new Map<string, Set<string>>();
+  // JAR scores are constrained to the 1-5 diagnostic scale; liking scores may span 1-9.
+  const jarKeySet = new Set(
+    scoredAttributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.importKey)
+  );
 
   rows.forEach((row) => {
     const uniqueKey = `${row.respondentId}::${row.sampleLabel}::${row.attributeKey}`;
@@ -648,6 +656,19 @@ function validateLongMatrix(
     }
     seenTriplets.set(uniqueKey, row.rowNumber);
 
+    if (jarKeySet.has(row.attributeKey) && (row.score < 1 || row.score > 5)) {
+      addIssue(
+        errors,
+        {
+          rowNumber: row.rowNumber,
+          field: "JAR_Score",
+          message: `JAR attribute "${row.attribute}" score must be an integer from 1 to 5.`,
+        },
+        maxIssues
+      );
+      return;
+    }
+
     const groupKey = `${row.respondentId}::${row.sampleLabel}`;
     const group = groupMap.get(groupKey) ?? { rows: [], overallValues: new Set<number>(), attributes: new Set<string>() };
     group.rows.push(row);
@@ -660,7 +681,7 @@ function validateLongMatrix(
     respondentSamples.set(row.respondentId, sampleSet);
   });
 
-  const expectedAttributeSet = new Set(jarAttributes.map((attribute) => attribute.importKey));
+  const expectedAttributeSet = new Set(scoredAttributes.map((attribute) => attribute.importKey));
   groupMap.forEach((group, groupKey) => {
     const [respondentId, sampleLabel] = groupKey.split("::");
     if (group.overallValues.size > 1) {
@@ -713,7 +734,7 @@ function validateLongMatrix(
 function buildPreparedPayload(
   rows: ParsedLongRow[],
   sampleLabels: string[],
-  jarAttributes: ConfiguredJarAttribute[],
+  scoredAttributes: ConfiguredScoredAttribute[],
   openEndedAttributeNames: string[],
   overallAttributeName: string
 ): PreparedImportPayload {
@@ -749,16 +770,21 @@ function buildPreparedPayload(
         [overallAttributeName]: rowsForSample[0]?.overallLiking ?? 0,
       };
 
-      jarAttributes.forEach((attribute) => {
+      scoredAttributes.forEach((attribute) => {
         const sourceRow = rowByAttribute.get(attribute.importKey);
         if (!sourceRow) {
           return;
         }
-        sampleAttributes[attribute.name] = {
-          type: "JAR_5PT",
-          rawValue: sourceRow.jarScore,
-          bucket: collapseJarBucket(sourceRow.jarScore),
-        };
+        if (attribute.type === "JAR") {
+          sampleAttributes[attribute.name] = {
+            type: "JAR_5PT",
+            rawValue: sourceRow.score,
+            bucket: collapseJarBucket(sourceRow.score),
+          };
+        } else {
+          // Attribute Liking: stored as a plain number (read by getNumericAttributeValue).
+          sampleAttributes[attribute.name] = sourceRow.score;
+        }
       });
 
       openEndedAttributeNames.forEach((attributeName) => {
@@ -781,32 +807,48 @@ function buildPreparedPayload(
       [overallAttributeName]: overallAverage,
     };
 
-    jarAttributes.forEach((attribute) => {
-      const bucket: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    scoredAttributes.forEach((attribute) => {
+      if (attribute.type === "JAR") {
+        const bucket: Record<number, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+        sampleResponses.forEach((sample) => {
+          const value = sample.attributes[attribute.name];
+          if (!value || typeof value !== "object") {
+            return;
+          }
+          const row = value as { rawValue?: unknown };
+          if (typeof row.rawValue === "number" && Number.isInteger(row.rawValue) && row.rawValue >= 1 && row.rawValue <= 5) {
+            bucket[row.rawValue] += 1;
+          }
+        });
+
+        const representative = chooseRepresentativeJarValue(bucket);
+        aggregatedAttributes[attribute.name] =
+          representative === null
+            ? {
+                type: "JAR_5PT",
+                rawValue: 3,
+                bucket: "just_right",
+              }
+            : {
+                type: "JAR_5PT",
+                rawValue: representative,
+                bucket: collapseJarBucket(representative),
+              };
+        return;
+      }
+
+      // Attribute Liking: aggregate to the mean of the per-sample numeric scores.
+      const likingValues: number[] = [];
       sampleResponses.forEach((sample) => {
         const value = sample.attributes[attribute.name];
-        if (!value || typeof value !== "object") {
-          return;
-        }
-        const row = value as { rawValue?: unknown };
-        if (typeof row.rawValue === "number" && Number.isInteger(row.rawValue) && row.rawValue >= 1 && row.rawValue <= 5) {
-          bucket[row.rawValue] += 1;
+        if (typeof value === "number" && Number.isFinite(value)) {
+          likingValues.push(value);
         }
       });
-
-      const representative = chooseRepresentativeJarValue(bucket);
       aggregatedAttributes[attribute.name] =
-        representative === null
-          ? {
-              type: "JAR_5PT",
-              rawValue: 3,
-              bucket: "just_right",
-            }
-          : {
-              type: "JAR_5PT",
-              rawValue: representative,
-              bucket: collapseJarBucket(representative),
-            };
+        likingValues.length > 0
+          ? roundToTwo(likingValues.reduce((sum, value) => sum + value, 0) / likingValues.length)
+          : 0;
     });
 
     openEndedAttributeNames.forEach((attributeName) => {
@@ -829,7 +871,7 @@ function buildPreparedPayload(
   return {
     respondents,
     sampleLabelByNumber,
-    jarAttributeNames: jarAttributes.map((attribute) => attribute.name),
+    jarAttributeNames: scoredAttributes.filter((attribute) => attribute.type === "JAR").map((attribute) => attribute.name),
     openEndedAttributeNames: [...openEndedAttributeNames],
     overallAttributeName,
   };

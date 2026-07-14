@@ -20,6 +20,7 @@
     "db:build:psgc": "tsx prisma/seed-data/build-psgc-json.ts",
     "db:rebuild:psgc": "tsx prisma/rebuild-psgc.ts",
     "db:backfill:schedule-ends": "tsx prisma/backfill-schedule-ends.ts",
+    "db:backfill:imported-liking": "tsx prisma/backfill-imported-liking.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {
