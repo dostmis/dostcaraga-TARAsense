@@ -18,6 +18,11 @@ export function canAccessStudyByRole(input: {
     return input.userId === input.studyCreatorId;
   }
   if (input.role === "FIC") {
+    // FIC users can access studies they created themselves (on behalf of an MSME),
+    // including self-managed public studies that are not tagged to their facility.
+    if (input.userId === input.studyCreatorId) {
+      return true;
+    }
     if (!input.ficAssignedFacility) {
       return false;
     }
@@ -41,7 +46,10 @@ export function canViewRandomizedBlindCodePlan(input: {
   }
 
   if (meta.coordinationMode === "SELF_MANAGED_PUBLIC") {
-    return (input.role === "MSME" || input.role === "ADMIN") && input.userId === input.studyCreatorId;
+    return (
+      (input.role === "MSME" || input.role === "ADMIN" || input.role === "FIC") &&
+      input.userId === input.studyCreatorId
+    );
   }
 
   return false;
