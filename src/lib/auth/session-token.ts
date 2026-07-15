@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from "crypto";
 import {
   ADMIN_SESSION_TTL_SECONDS,
   MIN_SECRET_LENGTH,
+  REMEMBER_SESSION_TTL_SECONDS,
   SESSION_IDLE_TTL_SECONDS,
   SESSION_TOKEN_COOKIE_KEY,
   SESSION_TTL_SECONDS,
@@ -10,6 +11,7 @@ import {
 // Re-export so existing `from "@/lib/auth/session-token"` imports keep working.
 export {
   ADMIN_SESSION_TTL_SECONDS,
+  REMEMBER_SESSION_TTL_SECONDS,
   SESSION_IDLE_TTL_SECONDS,
   SESSION_TOKEN_COOKIE_KEY,
   SESSION_TTL_SECONDS,

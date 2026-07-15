@@ -113,6 +113,19 @@ const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
   { value: "CONSUMER_USAGE_HABIT", label: "Consumer Usage & Habit Study" },
 ];
 
+/** What a consumer test measures per sample (Overall Liking is always collected). */
+type TestMode = "OVERALL_ONLY" | "ATTRIBUTE" | "CATA";
+
+const TEST_MODE_OPTIONS: Array<{ value: TestMode; label: string; description: string }> = [
+  { value: "OVERALL_ONLY", label: "Sample Overall Liking only", description: "Just the 9-point hedonic overall liking." },
+  { value: "ATTRIBUTE", label: "Attribute ratings", description: "JAR and/or Attribute Liking per attribute." },
+  { value: "CATA", label: "Check-All-That-Apply", description: "Panelists tick every term that applies." },
+];
+
+const CATA_MIN_TERMS = 5;
+const CATA_TARGET_TERMS = 15;
+const CATA_MAX_TERMS = 20;
+
 const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];
 const DESCRIPTIVE_METHODS = ["QDA", "Spectrum Method", "Similarity Measures"];
 
@@ -359,6 +372,9 @@ export function CreateStudyBuilder({
 
   const [studyMode, setStudyMode] = useState<StudyMode>("SENSORY");
   const [coordinationMode, setCoordinationMode] = useState<CoordinationMode>("FIC_ASSISTED");
+  const [visibility, setVisibility] = useState<"PUBLIC" | "PRIVATE">("PUBLIC");
+  const [testMode, setTestMode] = useState<TestMode>("ATTRIBUTE");
+  const [cataTerms, setCataTerms] = useState<string[]>([]);
   const [marketStudyType, setMarketStudyType] = useState<MarketStudyType>("PACKAGING_EVALUATION");
 
   const [sensoryStudyType, setSensoryStudyType] = useState<SensoryStudyType>("CONSUMER_TEST");
@@ -1278,10 +1294,17 @@ export function CreateStudyBuilder({
       return;
     }
 
-    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
+    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && testMode === "ATTRIBUTE") {
       const planValidation = validateObjectiveSelection(attributes);
       if (!planValidation.valid) {
         setError(planValidation.error);
+        return;
+      }
+    }
+    if (studyMode === "SENSORY" && testMode === "CATA") {
+      const cleanedTerms = cataTerms.map((term) => term.trim()).filter(Boolean);
+      if (cleanedTerms.length < CATA_MIN_TERMS) {
+        setError(`Add at least ${CATA_MIN_TERMS} CATA terms (aim for ${CATA_TARGET_TERMS}).`);
         return;
       }
     }
@@ -1429,6 +1452,7 @@ export function CreateStudyBuilder({
       const payload = {
         studyMode,
         coordinationMode,
+        visibility,
         marketStudyType: studyMode === "MARKET" ? marketStudyType : undefined,
         sensoryStudyType: studyMode === "SENSORY" ? sensoryStudyType : undefined,
         sensoryMethod: studyMode === "SENSORY" ? sensoryMethod : undefined,
@@ -1456,7 +1480,7 @@ export function CreateStudyBuilder({
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
         categoryLabel: studyMode === "SENSORY" ? selectedProfile.label : undefined,
         attributes:
-          studyMode === "SENSORY"
+          studyMode === "SENSORY" && testMode === "ATTRIBUTE"
             ? attributes.map((attribute) => ({
                 name: attribute.name.trim(),
                 dimension: attribute.dimension,
@@ -1465,6 +1489,11 @@ export function CreateStudyBuilder({
                 isCustom: attribute.isCustom,
                 actionable: attribute.isCustom ? attribute.actionable : true,
               })).filter((attribute) => attribute.name.length > 0)
+            : [],
+        testMode: studyMode === "SENSORY" ? testMode : "ATTRIBUTE",
+        cataTerms:
+          studyMode === "SENSORY" && testMode === "CATA"
+            ? cataTerms.map((term) => term.trim()).filter(Boolean)
             : [],
         testingStartDate: studyMode === "SENSORY" ? normalizedSelectedTestingDates[0] ?? testingStartDate : undefined,
         testingDurationDays: studyMode === "SENSORY" ? normalizedTestingDuration : undefined,
@@ -1634,7 +1663,7 @@ export function CreateStudyBuilder({
                 </select>
               </div>
               <div className="space-y-1">
-                <FieldLabel text="Project Execution" />
+                <FieldLabel text="Study execution" />
                 <select
                   value={coordinationMode}
                   onChange={(event) => setCoordinationMode(event.target.value as CoordinationMode)}
@@ -1643,6 +1672,18 @@ export function CreateStudyBuilder({
                 >
                   <option value="FIC_ASSISTED">Coordinate with FIC</option>
                   <option value="SELF_MANAGED_PUBLIC">Self-managed Sensory Test</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <FieldLabel text="Study Visibility" />
+                <select
+                  value={visibility}
+                  onChange={(event) => setVisibility(event.target.value as "PUBLIC" | "PRIVATE")}
+                  className="app-select"
+                  required
+                >
+                  <option value="PRIVATE">Private — only your targeted participants</option>
+                  <option value="PUBLIC">Public — discoverable in peer evaluation</option>
                 </select>
               </div>
             </div>
@@ -2021,6 +2062,43 @@ export function CreateStudyBuilder({
 
               <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
                 <h2 className="text-lg font-semibold text-[#000080]">Choose what to test</h2>
+                <p className="text-xs text-[#64748b]">
+                  Overall Liking (9-point hedonic scale) is always collected. Choose what else to measure per sample.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {TEST_MODE_OPTIONS.map((option) => {
+                    const active = testMode === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setTestMode(option.value)}
+                        className={`rounded-lg border p-3 text-left transition ${
+                          active ? "border-[#f97316] bg-[#fff7ed]" : "border-[#e2e8f0] bg-white hover:border-[#fdba74]"
+                        }`}
+                      >
+                        <span className={`block text-sm font-semibold ${active ? "text-[#c2410c]" : "text-[#0f172a]"}`}>
+                          {option.label}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-[#64748b]">{option.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {testMode === "OVERALL_ONLY" && (
+                  <div className="rounded-lg border border-[#dbe3ec] bg-white p-4 text-sm text-[#475569]">
+                    Only the <span className="font-semibold text-[#0f172a]">Overall Liking (9-point hedonic scale)</span> question
+                    will be collected for each sample. No attribute ratings or CATA terms are added.
+                  </div>
+                )}
+
+                {testMode === "CATA" && (
+                  <CataTermEditor terms={cataTerms} onChange={setCataTerms} categoryLabel={selectedProfile.label} />
+                )}
+
+                {testMode === "ATTRIBUTE" && (
+                  <>
                 <div className="rounded-lg border border-[#dbe3ec] bg-white p-3">
                   <div className="flex items-start justify-between gap-3">
                     <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
@@ -2218,6 +2296,8 @@ export function CreateStudyBuilder({
                     </button>
                   </div>
                 </div>
+                  </>
+                )}
               </section>
 
               <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
@@ -3047,6 +3127,91 @@ function validateObjectiveSelection(attributes: AttributeRow[]) {
 
 function FieldLabel({ text }: { text: string }) {
   return <label className="text-sm font-medium text-[#334155]">{text}</label>;
+}
+
+function CataTermEditor({
+  terms,
+  onChange,
+  categoryLabel,
+}: {
+  terms: string[];
+  onChange: (next: string[]) => void;
+  categoryLabel: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addTerm = (raw: string) => {
+    const value = raw.trim();
+    if (!value || terms.length >= CATA_MAX_TERMS) return;
+    if (terms.some((term) => term.toLowerCase() === value.toLowerCase())) {
+      setDraft("");
+      return;
+    }
+    onChange([...terms, value]);
+    setDraft("");
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-[#dbe3ec] bg-white p-3">
+        <p className="text-sm font-semibold text-[#0f172a]">Check-All-That-Apply (CATA) terms</p>
+        <p className="mt-1 text-xs text-[#64748b]">
+          Panelists tick every term that applies to each sample. Aim for {CATA_TARGET_TERMS} terms ({CATA_MAX_TERMS} max,
+          at least {CATA_MIN_TERMS}).{categoryLabel ? ` Suggested for: ${categoryLabel}.` : ""}
+        </p>
+        <div className="mt-3 flex gap-2">
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addTerm(draft);
+              }
+            }}
+            placeholder="e.g., Sweet, Crunchy, Artificial aftertaste"
+            className="app-input"
+          />
+          <button
+            type="button"
+            onClick={() => addTerm(draft)}
+            disabled={terms.length >= CATA_MAX_TERMS}
+            className="shrink-0 rounded-md border border-[#ed7f2a] px-3 py-1 text-xs font-semibold text-[#c2410c] hover:bg-[#fff6ed] disabled:opacity-50"
+          >
+            Add term
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] text-[#64748b]">
+          {terms.length}/{CATA_MAX_TERMS} terms
+        </p>
+      </div>
+
+      {terms.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {terms.map((term, index) => (
+            <span
+              key={`${term}-${index}`}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[#fed7aa] bg-[#fff7ed] px-3 py-1 text-xs font-semibold text-[#c2410c]"
+            >
+              {term}
+              <button
+                type="button"
+                onClick={() => onChange(terms.filter((_, itemIndex) => itemIndex !== index))}
+                aria-label={`Remove ${term}`}
+                className="text-sm leading-none text-[#c2410c] hover:text-[#9a3412]"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[11px] text-[#64748b]">
+        CATA results are analyzed with Frequency Analysis and Cochran&apos;s Q Test.
+      </p>
+    </div>
+  );
 }
 
 function ConsumerCategory<T extends string>({

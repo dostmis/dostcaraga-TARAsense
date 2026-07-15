@@ -168,7 +168,7 @@ export function AddProjectNote({ projectId }: { projectId: string }) {
   };
 
   return (
-    <div className="rounded-xl border border-[#e2e8f0] bg-white p-4">
+    <div className="rounded-xl border border-[#f97316] bg-white p-4">
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
@@ -227,7 +227,7 @@ export function ProjectNoteItem({
   };
 
   return (
-    <article className="rounded-xl border border-[#e2e8f0] bg-white p-4">
+    <article className="rounded-xl border border-[#f97316] bg-white p-4">
       {editing ? (
         <>
           <textarea

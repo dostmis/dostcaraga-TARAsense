@@ -10,9 +10,11 @@ import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { FicAvailabilityCalendar } from "@/components/fic-availability-calendar";
 import { CreateStudyBuilder } from "@/components/studies/create-study-builder";
 import { StudyPipelineList, type StudyPipelineItem } from "@/components/studies/study-pipeline-list";
+import { ProjectsListView } from "@/components/projects/projects-list-view";
+import { ProjectDetailWorkspace } from "@/components/projects/project-detail-workspace";
 import { parseOnBehalfOfMsme } from "@/lib/study-on-behalf";
 import { formatPanelistNumber } from "@/lib/participant-assignment";
-import { BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Clock3, FileText, LayoutDashboard, MapPin, PlusCircle, TestTube2, UserRound } from "lucide-react";
+import { BarChart3, CalendarDays, ClipboardCheck, ClipboardList, Clock3, FileText, FolderKanban, LayoutDashboard, MapPin, PlusCircle, TestTube2, UserRound } from "lucide-react";
 import { isMissingColumnError, logSchemaDriftWarning } from "@/lib/db-schema-drift";
 import { Prisma } from "@prisma/client";
 
@@ -20,7 +22,16 @@ export const dynamic = "force-dynamic";
 const FIC_TIMEZONE = "Asia/Manila";
 
 type PageProps = {
-  searchParams: Promise<{ view?: string; error?: string; message?: string; q?: string }>;
+  searchParams: Promise<{
+    view?: string;
+    error?: string;
+    message?: string;
+    q?: string;
+    projectId?: string;
+    tab?: string;
+    category?: string;
+    status?: string;
+  }>;
 };
 
 type CalendarEvent = {
@@ -44,7 +55,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
     return null;
   }
   const params = await searchParams;
-  const { error, message, q } = params;
+  const { error, message, q, projectId, tab, category, status } = params;
   const activeView = parseFicView(params.view);
   const normalizedQuery = (q ?? "").trim().toLowerCase();
   const shouldLoadStudyCards = activeView === "queue" || activeView === "forms" || activeView === "dashboards";
@@ -330,6 +341,12 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         { label: "Dashboard", href: "/fic/dashboard?view=dashboard", icon: LayoutDashboard, active: activeView === "dashboard" },
         { label: "Profile", href: "/fic/dashboard?view=profile", icon: UserRound, active: activeView === "profile" },
         {
+          label: "Projects",
+          href: "/fic/dashboard?view=projects",
+          icon: FolderKanban,
+          active: activeView === "projects",
+        },
+        {
           label: "Create Study",
           href: "/fic/dashboard?view=create-study",
           icon: PlusCircle,
@@ -406,6 +423,25 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
       {activeView === "create-study" && (
         <CreateStudyBuilder embedded mode="fic" backHref="/fic/dashboard?view=dashboard" />
       )}
+
+      {activeView === "projects" &&
+        (projectId ? (
+          <ProjectDetailWorkspace
+            projectId={projectId}
+            userId={session.userId}
+            isAdmin={session.role === "ADMIN"}
+            tab={tab}
+            basePath="/fic/dashboard"
+          />
+        ) : (
+          <ProjectsListView
+            userId={session.userId}
+            q={q}
+            category={category}
+            status={status}
+            basePath="/fic/dashboard"
+          />
+        ))}
 
       {activeView === "my-studies" && (
         <section className="space-y-4">
@@ -687,7 +723,8 @@ function parseFicView(value?: string) {
     value === "dashboards" ||
     value === "calendar" ||
     value === "create-study" ||
-    value === "my-studies"
+    value === "my-studies" ||
+    value === "projects"
   ) {
     return value;
   }

@@ -74,7 +74,7 @@ export function StudyTargetingSection({ coordinationMode, value, onChange, inher
         </div>
         <div>
           <h2 className="text-lg font-semibold text-[#000080]">
-            Target Participants
+            Geographical Scope
           </h2>
           <p className="text-sm" style={{ color: "var(--muted-foreground)" }}>
             Choose who can see and receive notifications for this study. Filtering is enforced server-side.

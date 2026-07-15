@@ -30,18 +30,23 @@ function optionalText(max: number) {
     .transform((value) => (value && value.length > 0 ? value : undefined));
 }
 
+// Innovators asked for effectively no word limit on the free-text detail fields.
+// We keep a generous safety ceiling (well beyond any realistic write-up) so the
+// DB/UI can't be abused with multi-megabyte payloads, but users never hit it.
+const DETAIL_MAX = 50_000;
+
 const ProjectInputSchema = z.object({
-  name: z.string().trim().min(1, "Project name is required.").max(160),
+  name: z.string().trim().min(1, "Project name is required.").max(300),
   category: z.enum(CATEGORY_VALUES),
-  targetConsumer: z.string().trim().min(1, "Target consumer is required.").max(160),
-  targetPrice: z.string().trim().min(1, "Target price is required.").max(80),
-  description: z.string().trim().min(1, "Description is required.").max(4000),
-  productType: optionalText(160),
-  innovationStage: optionalText(160),
-  objectives: optionalText(2000),
-  keyIngredients: optionalText(2000),
-  intendedMarket: optionalText(160),
-  notes: optionalText(4000),
+  targetConsumer: z.string().trim().min(1, "Target consumer is required.").max(DETAIL_MAX),
+  targetPrice: z.string().trim().min(1, "Target price is required.").max(200),
+  description: z.string().trim().min(1, "Description is required.").max(DETAIL_MAX),
+  productType: optionalText(DETAIL_MAX),
+  innovationStage: optionalText(DETAIL_MAX),
+  objectives: optionalText(DETAIL_MAX),
+  keyIngredients: optionalText(DETAIL_MAX),
+  intendedMarket: optionalText(DETAIL_MAX),
+  notes: optionalText(DETAIL_MAX),
 });
 
 type ProjectActionResult =
@@ -55,7 +60,7 @@ async function requireInnovator() {
   if (!session) {
     return { session: null, error: "You must be signed in." };
   }
-  if (session.role !== "MSME" && session.role !== "ADMIN") {
+  if (session.role !== "MSME" && session.role !== "FIC" && session.role !== "ADMIN") {
     return { session: null, error: "Only innovators can manage projects." };
   }
   return { session, error: null };

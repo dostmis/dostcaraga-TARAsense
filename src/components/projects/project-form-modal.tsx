@@ -42,6 +42,8 @@ type Props = {
   initial?: Partial<ProjectFormValues>;
   triggerClassName?: string;
   triggerLabel?: string;
+  /** Dashboard base path the workspace lives under (MSME or FIC). */
+  basePath?: string;
 };
 
 export function ProjectFormModal({
@@ -50,6 +52,7 @@ export function ProjectFormModal({
   initial,
   triggerClassName,
   triggerLabel,
+  basePath = "/msme/dashboard",
 }: Props) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -97,7 +100,7 @@ export function ProjectFormModal({
       }
       setOpen(false);
       if (mode === "create" && "projectId" in result) {
-        router.push(`/msme/dashboard?view=projects&projectId=${result.projectId}`);
+        router.push(`${basePath}?view=projects&projectId=${result.projectId}`);
       } else {
         router.refresh();
       }

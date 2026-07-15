@@ -82,9 +82,12 @@ export async function login(formData: FormData) {
     return;
   }
 
+  // "Remember this device": longer-lived session with no idle timeout. Admins
+  // never reach here — they always go through the short-lived MFA flow above.
+  const remember = formData.get("remember") === "on";
   const store = await cookies();
   try {
-    setSessionCookie(store, { userId: user.id, tokenVersion: user.tokenVersion, role });
+    setSessionCookie(store, { userId: user.id, tokenVersion: user.tokenVersion, role }, { remember });
   } catch {
     redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }

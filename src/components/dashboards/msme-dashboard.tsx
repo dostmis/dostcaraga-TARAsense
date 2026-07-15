@@ -105,7 +105,11 @@ export async function MSMEDashboard({
           creatorId: { not: userId },
           creator: { role: "MSME" },
           status: { in: ["RECRUITING", "ACTIVE"] },
-          AND: [buildScheduleOpenWhere()],
+          AND: [
+            buildScheduleOpenWhere(),
+            // Exclude studies explicitly marked PRIVATE; PUBLIC/legacy still show.
+            { NOT: { targetDemographics: { path: ["visibility"], equals: "PRIVATE" } } },
+          ],
         },
         select: {
           targetDemographics: true,
@@ -168,7 +172,11 @@ export async function MSMEDashboard({
           creatorId: { not: userId },
           creator: { role: "MSME" },
           status: { in: ["RECRUITING", "ACTIVE"] },
-          AND: [buildScheduleOpenWhere()],
+          AND: [
+            buildScheduleOpenWhere(),
+            // Exclude studies explicitly marked PRIVATE; PUBLIC/legacy still show.
+            { NOT: { targetDemographics: { path: ["visibility"], equals: "PRIVATE" } } },
+          ],
         },
         orderBy: { createdAt: "desc" },
         include: {
@@ -305,7 +313,10 @@ export async function MSMEDashboard({
       ] : undefined}
       sidebarFooter={
         <form action={logout}>
-          <button type="submit" className="app-button-secondary w-full py-2 text-sm">
+          <button
+            type="submit"
+            className="w-full rounded-xl border border-[#ea580c] bg-[#f97316] py-2 text-sm font-semibold text-white transition-colors hover:bg-[#ea580c]"
+          >
             Logout
           </button>
         </form>

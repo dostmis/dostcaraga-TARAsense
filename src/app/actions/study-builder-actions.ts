@@ -65,6 +65,12 @@ const BuilderSessionSlotSchema = z.object({
 const BuilderPayloadSchema = z.object({
   studyMode: z.enum(["MARKET", "SENSORY"]),
   coordinationMode: z.enum(["FIC_ASSISTED", "SELF_MANAGED_PUBLIC"]).default("FIC_ASSISTED"),
+  // PUBLIC studies are discoverable in peer evaluation; PRIVATE studies are only
+  // reachable by their targeted participants / direct QR link.
+  visibility: z.enum(["PUBLIC", "PRIVATE"]).default("PUBLIC"),
+  // What a consumer test measures per sample (Overall Liking is always collected).
+  testMode: z.enum(["OVERALL_ONLY", "ATTRIBUTE", "CATA"]).default("ATTRIBUTE"),
+  cataTerms: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   marketStudyType: z
     .enum([
       "PACKAGING_EVALUATION",
@@ -420,6 +426,7 @@ async function createMarketStudy(
         targetConsumer,
         studyMode: "MARKET",
         coordinationMode: locationContext.coordinationMode,
+        visibility: payload.visibility,
         marketStudyType: payload.marketStudyType,
         numberOfSamples: payload.numberOfSamples,
         ...(onBehalfOfMsme
@@ -572,6 +579,9 @@ async function createSensoryStudy(
   await ensurePanelists(Math.max(payload.targetResponses * 2, 40));
 
   const stage = mapStage(payload.sensoryStudyType, objective);
+  if (payload.testMode === "CATA" && payload.cataTerms.length < 5) {
+    return { success: false, error: "Add at least 5 CATA terms." };
+  }
   const planResult = validateSensoryAttributePlan(payload.attributes, objective);
   if (!planResult.success) {
     return { success: false, error: planResult.error };
@@ -613,6 +623,9 @@ async function createSensoryStudy(
         experience: "regular-consumer",
         studyMode: "SENSORY",
         coordinationMode: locationContext.coordinationMode,
+        visibility: payload.visibility,
+        testMode: payload.testMode,
+        cataTerms: payload.cataTerms,
         ...(onBehalfOfMsme ? { onBehalfOfMsme } : {}),
         sensoryStudyType: payload.sensoryStudyType,
         sensoryMethod: payload.sensoryMethod,

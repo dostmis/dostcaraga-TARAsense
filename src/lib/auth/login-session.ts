@@ -4,6 +4,7 @@ import { clearGuestSessionCookies, SESSION_KEYS } from "@/lib/auth/session";
 import {
   ADMIN_SESSION_TTL_SECONDS,
   createSessionToken,
+  REMEMBER_SESSION_TTL_SECONDS,
   SESSION_TTL_SECONDS,
 } from "@/lib/auth/session-token";
 
@@ -33,11 +34,32 @@ export function sessionAbsoluteTtlSeconds(role?: AppRole | string | null): numbe
     : SESSION_TTL_SECONDS;
 }
 
+/** Options for how long a freshly-issued session should live. */
+export interface SessionCookieOptions {
+  /**
+   * "Remember this device": extend the absolute lifetime and drop the idle
+   * timeout so the session survives long gaps of inactivity. Ignored for
+   * privileged (ADMIN) sessions, which always keep their short lifetime.
+   */
+  remember?: boolean;
+}
+
 /** Build the signed session token + matching cookie options for a principal. */
-export function buildSessionCookie(principal: SessionPrincipal) {
-  const maxAge = sessionAbsoluteTtlSeconds(principal.role);
+export function buildSessionCookie(
+  principal: SessionPrincipal,
+  { remember = false }: SessionCookieOptions = {}
+) {
+  const isAdmin = parseRole(String(principal.role ?? "")) === "ADMIN";
+  const rememberDevice = remember && !isAdmin;
+  const maxAge = rememberDevice
+    ? REMEMBER_SESSION_TTL_SECONDS
+    : sessionAbsoluteTtlSeconds(principal.role);
   const value = createSessionToken(principal.userId, principal.tokenVersion, {
     absoluteTtlSeconds: maxAge,
+    // Widening the idle window to the absolute window disables the idle timeout
+    // for remembered sessions — the middleware's slide only ever shrinks exp, so
+    // its re-issue guard leaves the far-future exp untouched.
+    ...(rememberDevice ? { idleTtlSeconds: maxAge } : {}),
   });
   return {
     name: SESSION_KEYS.token,
@@ -52,9 +74,13 @@ export function buildSessionCookie(principal: SessionPrincipal) {
   };
 }
 
-export function setSessionCookie(store: CookieStore, principal: SessionPrincipal) {
-  const { name, value, options } = buildSessionCookie(principal);
-  store.set(name, value, options);
+export function setSessionCookie(
+  store: CookieStore,
+  principal: SessionPrincipal,
+  options: SessionCookieOptions = {}
+) {
+  const { name, value, options: cookieOptions } = buildSessionCookie(principal, options);
+  store.set(name, value, cookieOptions);
 }
 
 export function clearLegacySessionCookies(store: CookieStore) {

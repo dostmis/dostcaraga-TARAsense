@@ -17,5 +17,12 @@ export const ADMIN_SESSION_TTL_SECONDS = 60 * 60 * 8; // 8 hours
  */
 export const SESSION_IDLE_TTL_SECONDS = 60 * 30; // 30 minutes
 
+/**
+ * Extended absolute lifetime when the user opts into "Remember this device".
+ * Remembered sessions also run with the idle window widened to this value, so
+ * they survive long gaps of inactivity and only end at this hard deadline.
+ */
+export const REMEMBER_SESSION_TTL_SECONDS = 60 * 60 * 24 * 30; // 30 days
+
 /** Minimum length enforced for SESSION_SECRET / other signing secrets. */
 export const MIN_SECRET_LENGTH = 32;

@@ -16,6 +16,8 @@ import { prisma } from "@/lib/db";
 import {
   formatCategory,
   formatProjectStatus,
+  formatStudyStage,
+  formatStudyType,
   PROJECT_STATUS_BADGE,
 } from "@/lib/projects/labels";
 import { ProjectFormModal, type ProjectFormValues } from "@/components/projects/project-form-modal";
@@ -50,11 +52,13 @@ export async function ProjectDetailWorkspace({
   userId,
   isAdmin,
   tab,
+  basePath = "/msme/dashboard",
 }: {
   projectId: string;
   userId: string;
   isAdmin: boolean;
   tab?: string;
+  basePath?: string;
 }) {
   const activeTab = parseTab(tab);
 
@@ -73,10 +77,10 @@ export async function ProjectDetailWorkspace({
 
   if (!project || (project.creatorId !== userId && !isAdmin)) {
     return (
-      <section className="rounded-2xl border border-[#e2e8f0] bg-white p-10 text-center">
+      <section className="rounded-2xl border border-[#f97316] bg-white p-10 text-center">
         <h2 className="text-lg font-semibold text-[#0f172a]">Project not found</h2>
         <p className="mt-1 text-sm text-[#64748b]">This project may have been removed or you do not have access.</p>
-        <Link href="/msme/dashboard?view=projects" className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#c2410c] hover:underline">
+        <Link href={`${basePath}?view=projects`} className="mt-4 inline-flex items-center gap-2 text-sm font-semibold text-[#c2410c] hover:underline">
           <ArrowLeft size={15} /> Back to Projects
         </Link>
       </section>
@@ -100,11 +104,25 @@ export async function ProjectDetailWorkspace({
     take: 50,
   });
 
+  // Stable per-innovator project number (oldest project = 1).
+  const orderedProjects = await prisma.project.findMany({
+    where: { creatorId: project.creatorId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  const projectNumber = orderedProjects.findIndex((entry) => entry.id === project.id) + 1;
+  // Study numbers within this project, by creation order (oldest = 1).
+  const studyNumberById = new Map(
+    [...project.studies]
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .map((study, index) => [study.id, index + 1] as const)
+  );
+
   const totalResponses = project.studies.reduce((sum, s) => sum + s._count.responses, 0);
   const totalEvaluations = project.studies.reduce((sum, s) => sum + s._count.participants, 0);
   const aiSources = project.studies.length + project.files.length + (project.noteEntries.length > 0 ? 1 : 0);
 
-  const base = `/msme/dashboard?view=projects&projectId=${project.id}`;
+  const base = `${basePath}?view=projects&projectId=${project.id}`;
   const dateFmt = new Intl.DateTimeFormat("en-US", { month: "long", day: "numeric", year: "numeric" });
   const dateTimeFmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
 
@@ -124,16 +142,21 @@ export async function ProjectDetailWorkspace({
 
   return (
     <div className="space-y-5">
-      <Link href="/msme/dashboard?view=projects" className="inline-flex items-center gap-2 text-sm font-semibold text-[#64748b] hover:text-[#334155]">
+      <Link href={`${basePath}?view=projects`} className="inline-flex items-center gap-2 text-sm font-semibold text-[#64748b] hover:text-[#334155]">
         <ArrowLeft size={15} /> Back to Projects
       </Link>
 
       {/* Header */}
-      <header className="rounded-2xl border border-[#e2e8f0] bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
+      <header className="rounded-2xl border border-[#f97316] bg-white p-5 shadow-[0_1px_3px_rgba(15,23,42,0.06)] sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-semibold text-[#0f172a]">{project.name}</h1>
+              {projectNumber > 0 && (
+                <span className="inline-flex items-center rounded-full border border-[#fed7aa] bg-[#fff7ed] px-2.5 py-1 text-[11px] font-bold uppercase tracking-wide text-[#c2410c]">
+                  Project {projectNumber}
+                </span>
+              )}
+              <h1 className="text-2xl font-semibold text-[#14264A]">{project.name}</h1>
               <span className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold ${PROJECT_STATUS_BADGE[project.status]}`}>
                 {formatProjectStatus(project.status)}
               </span>
@@ -146,11 +169,12 @@ export async function ProjectDetailWorkspace({
               mode="edit"
               projectId={project.id}
               initial={editInitial}
-              triggerClassName="inline-flex items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white px-3.5 py-2 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"
+              basePath={basePath}
+              triggerClassName="inline-flex items-center gap-2 rounded-lg border border-[#f97316] bg-white px-3.5 py-2 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"
             />
             <ArchiveProjectButton projectId={project.id} />
             <Link
-              href={`/msme/dashboard?view=create-study&projectId=${project.id}`}
+              href={`${basePath}?view=create-study&projectId=${project.id}`}
               className="inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-4 py-2 text-sm font-semibold text-white shadow-[0_4px_16px_rgba(249,115,22,0.24)] hover:bg-[#ea580c]"
             >
               <PlusCircle size={16} /> Create Study
@@ -160,7 +184,7 @@ export async function ProjectDetailWorkspace({
       </header>
 
       {/* Tabs */}
-      <nav className="flex flex-wrap gap-1.5 rounded-xl border border-[#e2e8f0] bg-white p-1.5">
+      <nav className="flex flex-wrap gap-1.5 rounded-xl border border-[#f97316] bg-white p-1.5">
         {TABS.map((t) => {
           const active = t.key === activeTab;
           const Icon = t.icon;
@@ -191,7 +215,7 @@ export async function ProjectDetailWorkspace({
             <SummaryCard label="AI Sources Available" value={aiSources} tone="violet" />
           </section>
 
-          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
+          <section className="rounded-2xl border border-[#f97316] bg-white p-6">
             <h2 className="text-lg font-semibold text-[#0f172a]">Product Concept</h2>
             <dl className="mt-4 grid gap-4 sm:grid-cols-2">
               <Detail label="Project Name" value={project.name} />
@@ -221,7 +245,7 @@ export async function ProjectDetailWorkspace({
             <div className="flex flex-wrap gap-2">
               <LinkExistingStudy projectId={project.id} studies={linkableStudies} />
               <Link
-                href={`/msme/dashboard?view=create-study&projectId=${project.id}`}
+                href={`${basePath}?view=create-study&projectId=${project.id}`}
                 className="inline-flex items-center gap-2 rounded-lg bg-[#f97316] px-4 py-2 text-sm font-semibold text-white shadow-[0_4px_16px_rgba(249,115,22,0.24)] hover:bg-[#ea580c]"
               >
                 <PlusCircle size={16} /> Create Study
@@ -234,14 +258,20 @@ export async function ProjectDetailWorkspace({
           ) : (
             <div className="space-y-3">
               {project.studies.map((study) => (
-                <article key={study.id} className="rounded-2xl border border-[#e2e8f0] bg-white p-5">
+                <article key={study.id} className="rounded-2xl border border-[#f97316] bg-white p-5">
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="min-w-0 space-y-2">
-                      <h3 className="text-base font-semibold text-[#0f172a]">{study.title}</h3>
-                      <p className="text-sm text-[#64748b]">{study.productName}</p>
+                      <span className="inline-flex items-center rounded-full border border-[#fed7aa] bg-[#fff7ed] px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wide text-[#c2410c]">
+                        Study {studyNumberById.get(study.id)}
+                      </span>
+                      <h3 className="text-base font-semibold text-[#14264A]">{study.title}</h3>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-[#475569]">
+                        <span><span className="font-semibold text-[#14264A]">Study Type:</span> {formatStudyType()}</span>
+                        <span><span className="font-semibold text-[#14264A]">Study Stage:</span> {formatStudyStage(study.stage)}</span>
+                        <span><span className="font-semibold text-[#14264A]">Product:</span> {study.productName}</span>
+                      </div>
                       <div className="flex flex-wrap gap-2 text-xs">
                         <Badge>{formatCategory(study.category)}</Badge>
-                        <Badge>{study.stage.replace(/_/g, " ")}</Badge>
                         <Badge>{study.status}</Badge>
                         <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-[#1e4f8f]">
                           Responses {study._count.responses}/{study.sampleSize}
@@ -252,7 +282,7 @@ export async function ProjectDetailWorkspace({
                     <div className="flex shrink-0 flex-wrap gap-2">
                       <Link
                         href={`/dashboard/${study.id}`}
-                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#e2e8f0] bg-white px-4 py-2 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"
+                        className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-[#f97316] bg-white px-4 py-2 text-sm font-semibold text-[#334155] hover:bg-[#f8fafc]"
                       >
                         Open Study <ExternalLink size={14} />
                       </Link>
@@ -285,7 +315,7 @@ export async function ProjectDetailWorkspace({
           {project.files.length === 0 ? (
             <EmptyState icon={FileText} title="No files uploaded" description="Upload PDF, DOCX, XLSX, CSV, JPG, or PNG documents to support product development." />
           ) : (
-            <div className="overflow-hidden rounded-2xl border border-[#e2e8f0] bg-white">
+            <div className="overflow-hidden rounded-2xl border border-[#f97316] bg-white">
               <table className="w-full text-sm">
                 <thead className="bg-[#f8fafc] text-left text-xs uppercase tracking-wide text-[#94a3b8]">
                   <tr>
@@ -307,7 +337,7 @@ export async function ProjectDetailWorkspace({
                         <div className="flex justify-end gap-2">
                           <a
                             href={`/api/uploads/project-file/${file.id}`}
-                            className="inline-flex items-center gap-1 rounded-lg border border-[#e2e8f0] px-2.5 py-1.5 text-xs font-semibold text-[#334155] hover:bg-[#f8fafc]"
+                            className="inline-flex items-center gap-1 rounded-lg border border-[#f97316] px-2.5 py-1.5 text-xs font-semibold text-[#334155] hover:bg-[#f8fafc]"
                           >
                             <Download size={13} /> Download
                           </a>
@@ -364,7 +394,7 @@ export async function ProjectDetailWorkspace({
               </div>
             </div>
 
-            <p className="mt-5 rounded-xl border border-[#e2e8f0] bg-white p-4 text-sm text-[#475569]">
+            <p className="mt-5 rounded-xl border border-[#f97316] bg-white p-4 text-sm text-[#475569]">
               TARAsense AI will use your project details, uploaded sources, and sensory study data to help generate
               grounded product development insights. It only works from this project’s grounded data.
             </p>
@@ -377,7 +407,7 @@ export async function ProjectDetailWorkspace({
             </div>
           </div>
 
-          <div className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
+          <div className="rounded-2xl border border-[#f97316] bg-white p-6">
             <h3 className="text-sm font-semibold text-[#0f172a]">Suggested actions</h3>
             <p className="text-xs text-[#94a3b8]">Coming soon — grounded on this project’s data.</p>
             <div className="mt-4 flex flex-wrap gap-2">
@@ -438,7 +468,7 @@ const toneStyles: Record<string, string> = {
 
 function SummaryCard({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
-    <article className="rounded-xl border border-[#e2e8f0] bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+    <article className="rounded-xl border border-[#f97316] bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
       <span className={`inline-flex rounded-lg border px-2 py-0.5 text-[11px] font-semibold ${toneStyles[tone]}`}>
         {label}
       </span>
@@ -449,7 +479,7 @@ function SummaryCard({ label, value, tone }: { label: string; value: number; ton
 
 function SourceCounter({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-xl border border-[#e2e8f0] bg-white p-4 text-center">
+    <div className="rounded-xl border border-[#f97316] bg-white p-4 text-center">
       <p className="text-2xl font-semibold text-[#7c3aed]">{value}</p>
       <p className="mt-1 text-xs font-medium text-[#64748b]">{label}</p>
     </div>
@@ -480,7 +510,7 @@ function EmptyState({
 }) {
   return (
     <section className="rounded-2xl border border-dashed border-[#e2e8f0] bg-white p-10 text-center">
-      <span className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#e2e8f0] bg-[#f8fafc] text-[#64748b]">
+      <span className="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-full border border-[#f97316] bg-[#f8fafc] text-[#64748b]">
         <Icon size={22} />
       </span>
       <h3 className="mt-4 text-base font-semibold text-[#0f172a]">{title}</h3>

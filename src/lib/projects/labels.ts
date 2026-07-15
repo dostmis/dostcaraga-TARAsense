@@ -40,6 +40,23 @@ export const PROJECT_STATUS_BADGE: Record<ProjectStatus, string> = {
   ARCHIVED: "border-slate-200 bg-slate-50 text-slate-500",
 };
 
+/** Friendly labels for a Study's stage, shown on the project study tabs. */
+export const STUDY_STAGE_LABELS: Record<string, string> = {
+  EXPLORATORY: "Exploratory",
+  PROTOTYPE_CHECK: "Prototyping",
+  REFINEMENT: "Refinement",
+  MARKET_READINESS: "Market Readiness",
+};
+
+export function formatStudyStage(stage: string): string {
+  return STUDY_STAGE_LABELS[stage] ?? stage.replace(/_/g, " ");
+}
+
+/** All sensory studies share one type today; kept as a helper for the study tabs. */
+export function formatStudyType(): string {
+  return "Sensory";
+}
+
 export function formatCategory(category: ProductCategory): string {
   return CATEGORY_LABELS[category] ?? category;
 }
