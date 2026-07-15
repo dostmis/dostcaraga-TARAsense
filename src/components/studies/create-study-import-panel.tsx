@@ -33,6 +33,7 @@ export function CreateStudyImportPanel() {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [file, setFile] = useState<File | null>(null);
+  const [scoreType, setScoreType] = useState<"ATTRIBUTE_LIKING" | "JAR">("ATTRIBUTE_LIKING");
   const [result, setResult] = useState<ImportCreateResult | null>(null);
 
   const onCreateFromImportFile = () => {
@@ -51,6 +52,7 @@ export function CreateStudyImportPanel() {
     startTransition(async () => {
       const formData = new FormData();
       formData.set("file", file);
+      formData.set("scoreType", scoreType);
       const actionResult = await createStudyAndImportFromFile(formData);
       setResult(actionResult);
 
@@ -70,6 +72,35 @@ export function CreateStudyImportPanel() {
         </p>
         <p className="text-xs text-[#475569]">Required columns: {REQUIRED_COLUMNS.join(", ")}</p>
       </div>
+
+      <fieldset className="space-y-1.5">
+        <legend className="text-xs font-semibold text-[#1e3a8a]">What do the attribute scores measure?</legend>
+        <div className="flex flex-wrap gap-4 text-sm text-[#334155]">
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="scoreType"
+              value="ATTRIBUTE_LIKING"
+              checked={scoreType === "ATTRIBUTE_LIKING"}
+              onChange={() => setScoreType("ATTRIBUTE_LIKING")}
+            />
+            Attribute Liking (hedonic score)
+          </label>
+          <label className="flex items-center gap-2">
+            <input
+              type="radio"
+              name="scoreType"
+              value="JAR"
+              checked={scoreType === "JAR"}
+              onChange={() => setScoreType("JAR")}
+            />
+            JAR intensity (1 = too low → 5 = too high)
+          </label>
+        </div>
+        <p className="text-[11px] text-[#64748b]">
+          The score column applies to every attribute. Choose JAR only for 1–5 “too little / just right / too much” ratings.
+        </p>
+      </fieldset>
 
       <div className="grid gap-2 md:grid-cols-[1fr_auto]">
         <input

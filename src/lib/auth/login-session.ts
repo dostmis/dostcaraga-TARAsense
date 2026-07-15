@@ -1,28 +1,86 @@
 import type { cookies } from "next/headers";
-import { AppRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
+import { AppRole, parseRole, ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { clearGuestSessionCookies, SESSION_KEYS } from "@/lib/auth/session";
-import { createSessionToken } from "@/lib/auth/session-token";
+import {
+  ADMIN_SESSION_TTL_SECONDS,
+  createSessionToken,
+  REMEMBER_SESSION_TTL_SECONDS,
+  SESSION_TTL_SECONDS,
+} from "@/lib/auth/session-token";
 
 type CookieStore = Awaited<ReturnType<typeof cookies>>;
 
-export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7; // 7 days
+/** @deprecated kept for compatibility; prefer sessionAbsoluteTtlSeconds(role). */
+export const SESSION_MAX_AGE_SECONDS = SESSION_TTL_SECONDS;
+
+/** Who we are issuing a session for; tokenVersion is embedded for revocation. */
+export interface SessionPrincipal {
+  userId: string;
+  tokenVersion: number;
+  /** Effective app role; ADMIN sessions get a shorter absolute lifetime. */
+  role?: AppRole | string | null;
+}
 
 /**
  * Shared session/redirect helpers used by both the credential server actions
- * (`auth-actions.ts`) and the Google OAuth callback route, so every sign-in
- * path establishes the session and resolves the post-login destination the
- * same way.
+ * (`auth-actions.ts`) and the Google OAuth routes, so every sign-in path
+ * establishes the session and resolves the post-login destination the same way.
  */
 
-export function setSessionCookie(store: CookieStore, userId: string) {
-  const token = createSessionToken(userId);
-  store.set(SESSION_KEYS.token, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_MAX_AGE_SECONDS,
+/** Absolute session lifetime by role — privileged roles expire sooner. */
+export function sessionAbsoluteTtlSeconds(role?: AppRole | string | null): number {
+  return parseRole(String(role ?? "")) === "ADMIN"
+    ? ADMIN_SESSION_TTL_SECONDS
+    : SESSION_TTL_SECONDS;
+}
+
+/** Options for how long a freshly-issued session should live. */
+export interface SessionCookieOptions {
+  /**
+   * "Remember this device": extend the absolute lifetime and drop the idle
+   * timeout so the session survives long gaps of inactivity. Ignored for
+   * privileged (ADMIN) sessions, which always keep their short lifetime.
+   */
+  remember?: boolean;
+}
+
+/** Build the signed session token + matching cookie options for a principal. */
+export function buildSessionCookie(
+  principal: SessionPrincipal,
+  { remember = false }: SessionCookieOptions = {}
+) {
+  const isAdmin = parseRole(String(principal.role ?? "")) === "ADMIN";
+  const rememberDevice = remember && !isAdmin;
+  const maxAge = rememberDevice
+    ? REMEMBER_SESSION_TTL_SECONDS
+    : sessionAbsoluteTtlSeconds(principal.role);
+  const value = createSessionToken(principal.userId, principal.tokenVersion, {
+    absoluteTtlSeconds: maxAge,
+    // Widening the idle window to the absolute window disables the idle timeout
+    // for remembered sessions — the middleware's slide only ever shrinks exp, so
+    // its re-issue guard leaves the far-future exp untouched.
+    ...(rememberDevice ? { idleTtlSeconds: maxAge } : {}),
   });
+  return {
+    name: SESSION_KEYS.token,
+    value,
+    options: {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax" as const,
+      path: "/",
+      maxAge,
+    },
+  };
+}
+
+export function setSessionCookie(
+  store: CookieStore,
+  principal: SessionPrincipal,
+  options: SessionCookieOptions = {}
+) {
+  const { name, value, options: cookieOptions } = buildSessionCookie(principal, options);
+  store.set(name, value, cookieOptions);
 }
 
 export function clearLegacySessionCookies(store: CookieStore) {
@@ -31,8 +89,8 @@ export function clearLegacySessionCookies(store: CookieStore) {
 }
 
 /** Set the session cookie and clear legacy + guest cookies in one step. */
-export function establishUserSession(store: CookieStore, userId: string) {
-  setSessionCookie(store, userId);
+export function establishUserSession(store: CookieStore, principal: SessionPrincipal) {
+  setSessionCookie(store, principal);
   clearLegacySessionCookies(store);
   clearGuestSessionCookies(store);
 }

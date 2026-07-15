@@ -22,10 +22,15 @@ model User {
   assignedFacility      String?
   assignmentUpdatedAt   DateTime?
   assignmentUpdatedById String?
+  // Monotonic counter embedded in every issued session token. Bumping it
+  // invalidates all outstanding sessions for this user (password change,
+  // "log out everywhere", forced logout). See src/lib/auth/session-token.ts.
+  tokenVersion          Int                    @default(0)
   deviceTokens          DeviceToken[]
   ficAssignmentHistory  FicAssignmentHistory[]
   ficAvailability       FicAvailability[]
   ficFacilityProfile    FicFacilityProfile?
+  mfaChallenges         AdminMfaChallenge[]
   notifications         Notification[]
   panelistProfile       Panelist?
   reviewedRequests      RoleUpgradeRequest[]   @relation("RequestReviewer")
@@ -33,10 +38,30 @@ model User {
   studies               Study[]
   usageLogs             UserUsageLog[]
   profile               UserProfile?
+  projects              Project[]
 
   @@index([role])
   @@index([role, organization])
   @@index([role, assignedRegion, assignedFacility])
+}
+
+/// Second-factor email OTP challenge issued during privileged (ADMIN) sign-in.
+/// The plaintext code is never stored — only a salted scrypt hash. A row is
+/// short-lived (see MFA_CHALLENGE_TTL_MS) and single-use (consumedAt).
+model AdminMfaChallenge {
+  id          String    @id @default(cuid())
+  userId      String
+  codeHash    String
+  expiresAt   DateTime
+  attempts    Int       @default(0)
+  consumedAt  DateTime?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
 }
 
 model DeviceToken {
@@ -145,6 +170,7 @@ model Panelist {
 model Study {
   id                 String                 @id @default(cuid())
   creatorId          String
+  projectId          String?
   title              String
   productName        String
   category           ProductCategory
@@ -152,6 +178,7 @@ model Study {
   description        String?
   targetDemographics Json
   screeningCriteria  Json
+  customQuestions    Json?
   stratificationVar  String?
   sampleSize         Int
   location           String
@@ -167,6 +194,7 @@ model Study {
   responses          SensoryResponse[]
   responseDrafts     SensoryResponseDraft[]
   creator            User                   @relation(fields: [creatorId], references: [id])
+  project            Project?               @relation(fields: [projectId], references: [id])
   analysis           StudyAnalysis?
   participants       StudyParticipant[]
   attributes         CoreAttribute[]
@@ -180,6 +208,82 @@ model Study {
   @@index([status, createdAt])
   @@index([location, status])
   @@index([status, scheduleEndsAt])
+  @@index([projectId])
+}
+
+/// Product-development workspace owned by an innovator (MSME/ADMIN). Acts as a
+/// container that binds together the core product concept, related sensory
+/// studies, supporting files, notes, and (future) AI-grounded assistance.
+model Project {
+  id              String            @id @default(cuid())
+  creatorId       String
+  name            String
+  category        ProductCategory
+  targetConsumer  String
+  targetPrice     String
+  description     String
+  // Optional product-development detail.
+  productType     String?
+  innovationStage String?
+  objectives      String?
+  keyIngredients  String?
+  intendedMarket  String?
+  notes           String?
+  status          ProjectStatus     @default(DRAFT)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+  creator         User              @relation(fields: [creatorId], references: [id])
+  studies         Study[]
+  files           ProjectFile[]
+  noteEntries     ProjectNote[]
+  activities      ProjectActivity[]
+
+  @@index([creatorId, updatedAt])
+  @@index([creatorId, status])
+}
+
+/// Supporting document attached to a Project. Bytes are stored outside /public
+/// (see src/lib/project-uploads.ts); the DB only holds the generated basename.
+/// Future AI grounding will read these as project sources.
+model ProjectFile {
+  id           String   @id @default(cuid())
+  projectId    String
+  fileName     String
+  storedPath   String
+  contentType  String
+  sizeBytes    Int
+  uploadedById String
+  createdAt    DateTime @default(now())
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+/// A structured note entry inside a Project (formulation ideas, observations,
+/// next steps, etc.).
+model ProjectNote {
+  id        String   @id @default(cuid())
+  projectId String
+  authorId  String
+  body      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
+}
+
+/// Append-only timeline of meaningful actions taken on a Project.
+model ProjectActivity {
+  id        String   @id @default(cuid())
+  projectId String
+  actorId   String?
+  type      String
+  summary   String
+  createdAt DateTime @default(now())
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, createdAt])
 }
 
 model ScreeningResponse {
@@ -607,9 +711,20 @@ enum ProductCategory {
 }
 
 enum StudyStage {
+  EXPLORATORY
   PROTOTYPE_CHECK
   REFINEMENT
   MARKET_READINESS
+}
+
+enum ProjectStatus {
+  DRAFT
+  ACTIVE
+  IN_STUDY
+  UNDER_EVALUATION
+  AI_READY
+  COMPLETED
+  ARCHIVED
 }
 
 enum StudyStatus {

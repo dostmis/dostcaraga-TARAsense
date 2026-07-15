@@ -14,6 +14,8 @@ import {
   evaluateAssumptions,
   formatPValue,
   computeCompactLetterDisplay,
+  cochransQTest,
+  analyzeCata,
 } from "./dist/statistics.js";
 
 function buildSample(sampleNumber, label, valuesByRespondentObj) {
@@ -150,4 +152,52 @@ test("post-hoc empty when ANOVA is not significant", () => {
   const c = buildSample(3, "C", Object.fromEntries(respondents.map((r) => [r, 7])));
   const result = compareSamples([a, b, c], { studyDesign: "WITHIN_SUBJECT" });
   assert.equal(result.postHocResults.length, 0);
+});
+
+test("Cochran's Q: strong across-sample difference is significant", () => {
+  // 5 subjects check the term for sample A but never for B or C.
+  const matrix = Array.from({ length: 5 }, () => [1, 0, 0]);
+  const { Q, df, pValue } = cochransQTest(matrix);
+  assert.equal(Q, 10);
+  assert.equal(df, 2);
+  assert.ok(pValue !== null && pValue < 0.05, `expected significant, got p=${pValue}`);
+});
+
+test("Cochran's Q: all-constant rows yield Q=0, p=1", () => {
+  const matrix = [
+    [1, 1, 1],
+    [0, 0, 0],
+    [1, 1, 1],
+  ];
+  const { Q, pValue } = cochransQTest(matrix);
+  assert.equal(Q, 0);
+  assert.equal(pValue, 1);
+});
+
+test("Cochran's Q: fewer than 2 samples is not computable", () => {
+  const { pValue } = cochransQTest([[1], [0], [1]]);
+  assert.equal(pValue, null);
+});
+
+test("analyzeCata: frequencies and percentages are correct", () => {
+  const result = analyzeCata(
+    ["Sweet", "Bitter"],
+    ["A", "B"],
+    [
+      { respondentId: "r1", checksBySample: { A: ["Sweet"], B: ["Bitter"] } },
+      { respondentId: "r2", checksBySample: { A: ["Sweet"], B: [] } },
+      { respondentId: "r3", checksBySample: { A: ["Sweet"], B: ["Bitter"] } },
+    ]
+  );
+  assert.deepEqual(result.respondentsPerSample, [3, 3]);
+  assert.equal(result.completeCaseCount, 3);
+  const sweet = result.terms.find((t) => t.term === "Sweet");
+  const bitter = result.terms.find((t) => t.term === "Bitter");
+  assert.deepEqual(sweet.countsBySample, [3, 0]);
+  assert.deepEqual(sweet.percentBySample, [100, 0]);
+  assert.deepEqual(bitter.countsBySample, [0, 2]);
+  // Every term gets a Cochran's Q p-value in [0, 1] when complete cases exist.
+  for (const term of result.terms) {
+    assert.ok(term.pValue !== null && term.pValue >= 0 && term.pValue <= 1);
+  }
 });

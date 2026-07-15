@@ -1596,3 +1596,160 @@ function logGamma(value: number): number {
   const t = z + coefficients.length - 0.5;
   return 0.5 * Math.log(2 * Math.PI) + (z + 0.5) * Math.log(t) - t + Math.log(x);
 }
+
+/* ------------------------------------------------------------------ */
+/* CATA (Check-All-That-Apply) analysis                                */
+/* ------------------------------------------------------------------ */
+
+export interface CataTermResult {
+  term: string;
+  /** Check count per sample, index-aligned to `sampleLabels`. */
+  countsBySample: number[];
+  /** Percentage (0–100) of evaluating panelists who ticked the term, per sample. */
+  percentBySample: number[];
+  totalChecks: number;
+  /** Cochran's Q statistic across samples (0 when not computable). */
+  cochranQ: number;
+  df: number;
+  pValue: number | null;
+  significant: boolean;
+  interpretation: string;
+}
+
+export interface CataAnalysisResult {
+  sampleLabels: string[];
+  respondentsPerSample: number[];
+  /** Panelists who evaluated every sample (Cochran's Q operates on these). */
+  completeCaseCount: number;
+  terms: CataTermResult[];
+  warnings: string[];
+}
+
+/**
+ * Per-respondent CATA answers: for each evaluated sample (keyed by its label),
+ * the list of terms the respondent ticked.
+ */
+export interface CataResponseInput {
+  respondentId: string;
+  checksBySample: Record<string, string[]>;
+}
+
+/**
+ * Cochran's Q test for k related binary treatments. `matrix` rows are subjects,
+ * columns are treatments (0/1). Under H0 the proportion of successes is equal
+ * across treatments; Q ~ chi-square(k-1). Constant rows drop out naturally.
+ */
+export function cochransQTest(matrix: number[][]): { Q: number; df: number; pValue: number | null } {
+  const k = matrix[0]?.length ?? 0;
+  if (k < 2 || matrix.length === 0) {
+    return { Q: 0, df: Math.max(0, k - 1), pValue: null };
+  }
+  const colSums = new Array<number>(k).fill(0);
+  let sumRowSq = 0;
+  let grand = 0;
+  for (const row of matrix) {
+    if (row.length !== k) {
+      continue;
+    }
+    let rowSum = 0;
+    for (let j = 0; j < k; j += 1) {
+      const value = row[j] ? 1 : 0;
+      colSums[j] += value;
+      rowSum += value;
+    }
+    sumRowSq += rowSum * rowSum;
+    grand += rowSum;
+  }
+  const sumColSq = colSums.reduce((sum, c) => sum + c * c, 0);
+  const df = k - 1;
+  const denom = k * grand - sumRowSq;
+  if (denom <= 0) {
+    // Every subject responded identically across samples — no evidence of a difference.
+    return { Q: 0, df, pValue: 1 };
+  }
+  const Q = Math.max(0, ((k - 1) * (k * sumColSq - grand * grand)) / denom);
+  return { Q: roundDp(Q, 3), df, pValue: clamp(chiSquareSurvival(Q, df), 0, 1) };
+}
+
+/**
+ * Frequency Analysis + Cochran's Q for a CATA study. For each term we report
+ * the per-sample check counts/percentages and test whether the proportion of
+ * panelists selecting that term differs across samples (repeated-measures,
+ * complete cases only). Terms are returned most-discriminating first.
+ */
+export function analyzeCata(
+  terms: string[],
+  sampleLabels: string[],
+  responses: CataResponseInput[],
+  alpha = 0.05
+): CataAnalysisResult {
+  const warnings: string[] = [];
+  const cleanTerms = terms.map((term) => term.trim()).filter((term) => term.length > 0);
+  const labels = sampleLabels.slice();
+  const k = labels.length;
+
+  const evaluated = (response: CataResponseInput, label: string) =>
+    Array.isArray(response.checksBySample[label]);
+  const checked = (response: CataResponseInput, label: string, term: string) =>
+    (response.checksBySample[label] ?? []).some((entry) => entry.trim().toLowerCase() === term.toLowerCase());
+
+  const respondentsPerSample = labels.map(
+    (label) => responses.filter((response) => evaluated(response, label)).length
+  );
+
+  // Complete cases: respondents who evaluated every sample — required for Cochran's Q.
+  const completeCases = responses.filter((response) => labels.every((label) => evaluated(response, label)));
+  if (k < 2) {
+    warnings.push("Cochran's Q requires at least 2 samples; only frequencies are reported.");
+  } else if (completeCases.length < 2) {
+    warnings.push("Cochran's Q needs at least 2 panelists who evaluated every sample.");
+  }
+
+  const termResults: CataTermResult[] = cleanTerms.map((term) => {
+    const countsBySample = labels.map((label) =>
+      responses.reduce((count, response) => count + (checked(response, label, term) ? 1 : 0), 0)
+    );
+    const percentBySample = countsBySample.map((count, index) =>
+      respondentsPerSample[index] > 0 ? roundDp((count / respondentsPerSample[index]) * 100, 1) : 0
+    );
+    const totalChecks = countsBySample.reduce((sum, count) => sum + count, 0);
+
+    let cochranQ = 0;
+    let df = Math.max(0, k - 1);
+    let pValue: number | null = null;
+    if (k >= 2 && completeCases.length >= 2) {
+      const matrix = completeCases.map((response) =>
+        labels.map((label) => (checked(response, label, term) ? 1 : 0))
+      );
+      const result = cochransQTest(matrix);
+      cochranQ = result.Q;
+      df = result.df;
+      pValue = result.pValue;
+    }
+
+    const significant = pValue !== null && pValue < alpha;
+    const interpretation =
+      pValue === null
+        ? "Not enough data to test differences across samples."
+        : significant
+          ? `Samples differ in how often "${term}" was selected (Cochran's Q = ${cochranQ}, p = ${formatPValue(pValue)}).`
+          : `No significant difference across samples for "${term}" (p = ${formatPValue(pValue)}).`;
+
+    return { term, countsBySample, percentBySample, totalChecks, cochranQ, df, pValue, significant, interpretation };
+  });
+
+  termResults.sort((a, b) => {
+    const ap = a.pValue ?? 1;
+    const bp = b.pValue ?? 1;
+    if (ap !== bp) return ap - bp;
+    return b.totalChecks - a.totalChecks;
+  });
+
+  return {
+    sampleLabels: labels,
+    respondentsPerSample,
+    completeCaseCount: completeCases.length,
+    terms: termResults,
+    warnings,
+  };
+}

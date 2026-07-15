@@ -14,6 +14,8 @@ export type ResolvedGoogleUser = {
   role: AppRole;
   /** Stored role string, preserved exactly as-is in the database. */
   storedRole: string;
+  /** Current session token version, embedded in the issued session token. */
+  tokenVersion: number;
   isNewUser: boolean;
   name: string;
   email: string;
@@ -41,7 +43,7 @@ export async function findLinkableGoogleUser(info: GoogleProfileInput): Promise<
 
   const existing = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, role: true, name: true, image: true },
+    select: { id: true, role: true, name: true, image: true, tokenVersion: true },
   });
 
   if (!existing) {
@@ -73,6 +75,7 @@ export async function findLinkableGoogleUser(info: GoogleProfileInput): Promise<
       userId: existing.id,
       role,
       storedRole: existing.role,
+      tokenVersion: existing.tokenVersion,
       isNewUser: false,
       name: updates.name ?? existing.name,
       email,
@@ -153,6 +156,7 @@ export async function createGoogleUser(profile: GoogleProfileInput): Promise<Res
     userId: created.id,
     role: "CONSUMER",
     storedRole: "CONSUMER",
+    tokenVersion: 0,
     isNewUser: true,
     name: created.name,
     email,

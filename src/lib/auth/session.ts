@@ -36,10 +36,16 @@ export async function getCurrentSession(): Promise<AuthSession | null> {
 
   const user = await prisma.user.findUnique({
     where: { id: verified.userId },
-    select: { id: true, role: true },
+    select: { id: true, role: true, tokenVersion: true },
   });
 
   if (!user) {
+    return null;
+  }
+
+  // Server-side revocation: a token minted before the user's tokenVersion was
+  // bumped (password change, forced/global logout) is no longer valid.
+  if (user.tokenVersion !== verified.tokenVersion) {
     return null;
   }
 
@@ -49,6 +55,19 @@ export async function getCurrentSession(): Promise<AuthSession | null> {
   }
 
   return { userId: user.id, role };
+}
+
+/**
+ * Invalidate every outstanding session for a user by bumping their token
+ * version. The next request carrying an old token fails the check above.
+ * Call after a password change, on "log out of all devices", or to force a
+ * compromised account offline.
+ */
+export async function revokeUserSessions(userId: string): Promise<void> {
+  await prisma.user.update({
+    where: { id: userId },
+    data: { tokenVersion: { increment: 1 } },
+  });
 }
 
 export async function getCurrentGuestSession(): Promise<GuestSession | null> {

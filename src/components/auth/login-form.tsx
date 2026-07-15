@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Loader2, Lock, Mail } from "lucide-react";
+import { useState } from "react";
+import { ArrowRight, Eye, EyeOff, Loader2, Lock, Mail } from "lucide-react";
 import { useFormStatus } from "react-dom";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
 
@@ -11,6 +12,8 @@ type LoginFormProps = {
 };
 
 export function LoginForm({ action, redirectTo = "" }: LoginFormProps) {
+  const [showPassword, setShowPassword] = useState(false);
+
   return (
     <form action={action} className="mt-6 space-y-5">
       <input type="hidden" name="redirectTo" value={redirectTo} />
@@ -53,16 +56,34 @@ export function LoginForm({ action, redirectTo = "" }: LoginFormProps) {
           <input
             id="password"
             name="password"
-            type="password"
+            type={showPassword ? "text" : "password"}
             placeholder="Enter your password"
             className="app-icon-input__control"
             autoComplete="current-password"
             required
           />
+          <button
+            type="button"
+            onClick={() => setShowPassword((visible) => !visible)}
+            className="app-icon-input__icon cursor-pointer text-muted-foreground transition-colors hover:text-foreground"
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            aria-pressed={showPassword}
+            title={showPassword ? "Hide password" : "Show password"}
+          >
+            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+          </button>
         </div>
       </div>
 
-      <div className="flex items-center justify-end">
+      <div className="flex items-center justify-between gap-3">
+        <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-muted-foreground">
+          <input
+            type="checkbox"
+            name="remember"
+            className="h-4 w-4 cursor-pointer rounded border-divider accent-[#f97316]"
+          />
+          Remember this device
+        </label>
         <Link
           href="/login?message=Please+contact+your+administrator+to+reset+your+password"
           className="link-accent text-sm text-brand"

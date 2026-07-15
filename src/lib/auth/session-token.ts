@@ -1,31 +1,103 @@
 import { createHmac, timingSafeEqual } from "crypto";
+import {
+  ADMIN_SESSION_TTL_SECONDS,
+  MIN_SECRET_LENGTH,
+  REMEMBER_SESSION_TTL_SECONDS,
+  SESSION_IDLE_TTL_SECONDS,
+  SESSION_TOKEN_COOKIE_KEY,
+  SESSION_TTL_SECONDS,
+} from "@/lib/auth/session-constants";
+
+// Re-export so existing `from "@/lib/auth/session-token"` imports keep working.
+export {
+  ADMIN_SESSION_TTL_SECONDS,
+  REMEMBER_SESSION_TTL_SECONDS,
+  SESSION_IDLE_TTL_SECONDS,
+  SESSION_TOKEN_COOKIE_KEY,
+  SESSION_TTL_SECONDS,
+};
 
 type SessionTokenPayload = {
   uid: string;
+  /** Token version snapshot — must match User.tokenVersion or the token is revoked. */
+  tv: number;
+  /** Issued-at (unix seconds) — set once at login, preserved across idle re-issues. */
   iat: number;
+  /** Absolute expiry (unix seconds) — hard deadline, never extended. */
+  abs: number;
+  /** Effective expiry (unix seconds) — slides forward on activity, capped at abs. */
   exp: number;
 };
 
-const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
-const MIN_SECRET_LENGTH = 32;
+export interface CreateSessionTokenOptions {
+  now?: Date;
+  /** Absolute lifetime in seconds (defaults to SESSION_TTL_SECONDS). */
+  absoluteTtlSeconds?: number;
+  /** Idle window in seconds (defaults to SESSION_IDLE_TTL_SECONDS). */
+  idleTtlSeconds?: number;
+}
 
-export const SESSION_TOKEN_COOKIE_KEY = "tara_session";
-
-export function createSessionToken(userId: string, now = new Date()) {
-  const issuedAtSeconds = Math.floor(now.getTime() / 1000);
+export function createSessionToken(
+  userId: string,
+  tokenVersion: number,
+  options: CreateSessionTokenOptions = {}
+) {
+  const now = options.now ?? new Date();
+  const absoluteTtl = options.absoluteTtlSeconds ?? SESSION_TTL_SECONDS;
+  const idleTtl = options.idleTtlSeconds ?? SESSION_IDLE_TTL_SECONDS;
+  const iat = Math.floor(now.getTime() / 1000);
+  const abs = iat + absoluteTtl;
   const payload: SessionTokenPayload = {
     uid: userId,
-    iat: issuedAtSeconds,
-    exp: issuedAtSeconds + SESSION_TTL_SECONDS,
+    tv: Number.isFinite(tokenVersion) ? tokenVersion : 0,
+    iat,
+    abs,
+    exp: Math.min(iat + idleTtl, abs),
   };
 
-  const payloadJson = JSON.stringify(payload);
-  const payloadBase64 = base64UrlEncode(payloadJson);
+  return encodeSignedPayload(payload);
+}
+
+export interface VerifiedSessionToken {
+  userId: string;
+  tokenVersion: number;
+  issuedAt: Date;
+  absoluteExpiresAt: Date;
+  expiresAt: Date;
+}
+
+export function verifySessionToken(token: string): VerifiedSessionToken | null {
+  const parsed = decodeAndVerify(token);
+  if (!parsed) {
+    return null;
+  }
+
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (parsed.exp <= nowSeconds || parsed.abs <= nowSeconds) {
+    return null;
+  }
+
+  return {
+    userId: parsed.uid,
+    tokenVersion: parsed.tv,
+    issuedAt: new Date(parsed.iat * 1000),
+    absoluteExpiresAt: new Date(parsed.abs * 1000),
+    expiresAt: new Date(parsed.exp * 1000),
+  };
+}
+
+export function isSessionSecretConfigured() {
+  return Boolean(readSessionSecret());
+}
+
+function encodeSignedPayload(payload: SessionTokenPayload) {
+  const payloadBase64 = base64UrlEncode(JSON.stringify(payload));
   const signature = signPayload(payloadBase64, getSessionSecret());
   return `${payloadBase64}.${signature}`;
 }
 
-export function verifySessionToken(token: string): { userId: string; expiresAt: Date } | null {
+/** Verify the signature + structure of a token without enforcing expiry. */
+function decodeAndVerify(token: string): SessionTokenPayload | null {
   if (!token) {
     return null;
   }
@@ -66,19 +138,7 @@ export function verifySessionToken(token: string): { userId: string; expiresAt: 
     return null;
   }
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
-  if (parsed.exp <= nowSeconds) {
-    return null;
-  }
-
-  return {
-    userId: parsed.uid,
-    expiresAt: new Date(parsed.exp * 1000),
-  };
-}
-
-export function isSessionSecretConfigured() {
-  return Boolean(readSessionSecret());
+  return parsed;
 }
 
 function getSessionSecret() {
@@ -133,8 +193,12 @@ function isSessionPayload(value: unknown): value is SessionTokenPayload {
   return (
     typeof candidate.uid === "string" &&
     candidate.uid.length > 0 &&
+    typeof candidate.tv === "number" &&
+    Number.isFinite(candidate.tv) &&
     typeof candidate.iat === "number" &&
     Number.isFinite(candidate.iat) &&
+    typeof candidate.abs === "number" &&
+    Number.isFinite(candidate.abs) &&
     typeof candidate.exp === "number" &&
     Number.isFinite(candidate.exp)
   );

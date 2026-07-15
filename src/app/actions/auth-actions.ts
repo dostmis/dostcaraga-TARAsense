@@ -15,6 +15,18 @@ import {
   safeInternalRedirect,
   setSessionCookie,
 } from "@/lib/auth/login-session";
+import {
+  createMfaChallenge,
+  createMfaPendingToken,
+  getLastChallengeIssuedAt,
+  MFA_CHALLENGE_TTL_MS,
+  MFA_PENDING_COOKIE_KEY,
+  MFA_RESEND_COOLDOWN_MS,
+  verifyMfaChallenge,
+  verifyMfaPendingToken,
+} from "@/lib/auth/mfa";
+import { isEmailConfigured, sendMail } from "@/lib/email/mailer";
+import { adminOtpEmail } from "@/lib/email/templates";
 import { checkRateLimit, AUTH_RATE_LIMIT } from "@/lib/rate-limit";
 import { notifyRole, notifyUser } from "@/lib/notifications";
 import { normalizeRegionFacility } from "@/lib/facility-constants";
@@ -50,7 +62,7 @@ export async function login(formData: FormData) {
 
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, password: true, role: true },
+    select: { id: true, password: true, role: true, name: true, email: true, tokenVersion: true },
   });
 
   if (!user?.password || !verifyPassword(password, user.password)) {
@@ -62,9 +74,20 @@ export async function login(formData: FormData) {
     redirect(authRouteWithFeedback("/login", redirectTo, "error", "Unsupported role configuration"));
   }
 
+  // Privileged accounts require a second factor (email OTP) before a session is
+  // created. The password being correct is necessary but not sufficient.
+  if (role === "ADMIN") {
+    await startAdminMfa({ userId: user.id, name: user.name, email: user.email }, requestHeaders, redirectTo);
+    // startAdminMfa always redirects; this is unreachable.
+    return;
+  }
+
+  // "Remember this device": longer-lived session with no idle timeout. Admins
+  // never reach here — they always go through the short-lived MFA flow above.
+  const remember = formData.get("remember") === "on";
   const store = await cookies();
   try {
-    setSessionCookie(store, user.id);
+    setSessionCookie(store, { userId: user.id, tokenVersion: user.tokenVersion, role }, { remember });
   } catch {
     redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
@@ -89,6 +112,189 @@ export async function login(formData: FormData) {
   });
 
   redirect(postLoginPath);
+}
+
+const MFA_PENDING_COOKIE_MAX_AGE = 10 * 60; // 10 minutes — outlives the OTP itself
+
+function mfaPendingCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax" as const,
+    path: "/",
+    maxAge: MFA_PENDING_COOKIE_MAX_AGE,
+  };
+}
+
+/**
+ * Issue an email OTP challenge for a privileged sign-in: create the challenge,
+ * email the code, set the signed MFA-pending cookie, and redirect to the verify
+ * page. Always redirects (success or failure) and never establishes a session.
+ * If email is not configured, admin sign-in is blocked rather than bypassed.
+ */
+async function startAdminMfa(
+  principal: { userId: string; name: string; email: string },
+  requestHeaders: Awaited<ReturnType<typeof headers>>,
+  redirectTo: string
+): Promise<never> {
+  if (!isEmailConfigured()) {
+    redirect(
+      authRouteWithFeedback(
+        "/login",
+        redirectTo,
+        "error",
+        "Admin verification is unavailable because email is not configured. Contact an administrator."
+      )
+    );
+  }
+
+  const ip = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  const userAgent = requestHeaders.get("user-agent") ?? null;
+
+  const challenge = await createMfaChallenge({ userId: principal.userId, ipAddress: ip, userAgent });
+  const { subject, html, text } = adminOtpEmail({
+    name: principal.name,
+    code: challenge.code,
+    expiresMinutes: Math.round(MFA_CHALLENGE_TTL_MS / 60000),
+  });
+
+  const sent = await sendMail({ to: principal.email, subject, html, text });
+  if (!sent) {
+    redirect(
+      authRouteWithFeedback("/login", redirectTo, "error", "Could not send your verification code. Please try again.")
+    );
+  }
+
+  const store = await cookies();
+  store.set(
+    MFA_PENDING_COOKIE_KEY,
+    createMfaPendingToken({ challengeId: challenge.challengeId, userId: principal.userId }),
+    mfaPendingCookieOptions()
+  );
+
+  await logUserUsage({
+    actorUserId: principal.userId,
+    action: "MFA_CHALLENGE_ISSUED",
+    entityType: "User",
+    entityId: principal.userId,
+    summary: "Admin sign-in second-factor code issued.",
+    metadata: { channel: "email" },
+  });
+
+  redirect(verifyRouteWithFeedback(redirectTo, "message", "We emailed you a 6-digit verification code."));
+}
+
+/** Second step of admin sign-in: verify the emailed OTP and open the session. */
+export async function verifyAdminOtp(formData: FormData) {
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"));
+  const code = String(formData.get("code") ?? "").trim();
+
+  const requestHeaders = await headers();
+  const ip = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  if (!checkRateLimit(`mfa-verify:${ip}`, AUTH_RATE_LIMIT).allowed) {
+    redirect(verifyRouteWithFeedback(redirectTo, "error", "Too many attempts. Please wait and try again."));
+  }
+
+  const store = await cookies();
+  const pending = verifyMfaPendingToken(store.get(MFA_PENDING_COOKIE_KEY)?.value ?? "");
+  if (!pending) {
+    store.delete(MFA_PENDING_COOKIE_KEY);
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Your verification session expired. Please sign in again."));
+  }
+
+  const result = await verifyMfaChallenge({
+    challengeId: pending.challengeId,
+    userId: pending.userId,
+    code,
+  });
+
+  if (!result.ok) {
+    await logUserUsage({
+      actorUserId: pending.userId,
+      action: "MFA_FAILED",
+      entityType: "User",
+      entityId: pending.userId,
+      summary: "Admin second-factor verification failed.",
+      metadata: { reason: result.reason },
+    });
+
+    // Recoverable on the same page only for a wrong code; otherwise restart.
+    if (result.reason === "invalid-code") {
+      redirect(verifyRouteWithFeedback(redirectTo, "error", "That code is incorrect. Please try again."));
+    }
+    store.delete(MFA_PENDING_COOKIE_KEY);
+    const message =
+      result.reason === "expired"
+        ? "Your verification code expired. Please sign in again."
+        : result.reason === "too-many-attempts"
+          ? "Too many incorrect codes. Please sign in again."
+          : "Your verification session is no longer valid. Please sign in again.";
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", message));
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: pending.userId },
+    select: { id: true, role: true, tokenVersion: true },
+  });
+  const role = user ? parseRole(user.role) : null;
+  if (!user || !role) {
+    store.delete(MFA_PENDING_COOKIE_KEY);
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Your account could not be signed in. Please contact an administrator."));
+  }
+
+  try {
+    setSessionCookie(store, { userId: user.id, tokenVersion: user.tokenVersion, role });
+  } catch {
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Session configuration error. Please contact an administrator"));
+  }
+  clearLegacySessionCookies(store);
+  clearGuestSessionCookies(store);
+  store.delete(MFA_PENDING_COOKIE_KEY);
+
+  const postLoginPath = resolvePostLoginRedirect(role, redirectTo);
+  await logUserUsage({
+    actorUserId: user.id,
+    action: "LOGIN",
+    entityType: "User",
+    entityId: user.id,
+    summary: "Admin logged in (password + email OTP).",
+    metadata: { role, mfa: "email" },
+  });
+  redirect(postLoginPath);
+}
+
+/** Re-send a fresh admin OTP, throttled by a per-user cooldown + IP rate limit. */
+export async function resendAdminOtp(formData: FormData) {
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"));
+
+  const requestHeaders = await headers();
+  const ip = requestHeaders.get("x-forwarded-for")?.split(",")[0]?.trim() ?? "unknown";
+  if (!checkRateLimit(`mfa-resend:${ip}`, AUTH_RATE_LIMIT).allowed) {
+    redirect(verifyRouteWithFeedback(redirectTo, "error", "Too many requests. Please wait and try again."));
+  }
+
+  const store = await cookies();
+  const pending = verifyMfaPendingToken(store.get(MFA_PENDING_COOKIE_KEY)?.value ?? "");
+  if (!pending) {
+    store.delete(MFA_PENDING_COOKIE_KEY);
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Your verification session expired. Please sign in again."));
+  }
+
+  const lastIssuedAt = await getLastChallengeIssuedAt(pending.userId);
+  if (lastIssuedAt && Date.now() - lastIssuedAt.getTime() < MFA_RESEND_COOLDOWN_MS) {
+    redirect(verifyRouteWithFeedback(redirectTo, "error", "Please wait a moment before requesting another code."));
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: pending.userId },
+    select: { id: true, name: true, email: true, role: true },
+  });
+  if (!user || parseRole(user.role) !== "ADMIN") {
+    store.delete(MFA_PENDING_COOKIE_KEY);
+    redirect(authRouteWithFeedback("/login", redirectTo, "error", "Your verification session is no longer valid. Please sign in again."));
+  }
+
+  await startAdminMfa({ userId: user.id, name: user.name, email: user.email }, requestHeaders, redirectTo);
 }
 
 export async function register(formData: FormData) {
@@ -190,7 +396,8 @@ export async function register(formData: FormData) {
 
   const store = await cookies();
   try {
-    setSessionCookie(store, created.id);
+    // Newly registered accounts are always CONSUMER with tokenVersion 0.
+    setSessionCookie(store, { userId: created.id, tokenVersion: 0, role: "CONSUMER" });
   } catch {
     redirect(authRouteWithFeedback("/register", redirectTo, "error", "Session configuration error. Please contact an administrator"));
   }
@@ -914,6 +1121,13 @@ function resolveAdminRedirectTarget(value: FormDataEntryValue | null) {
 
 function authRouteWithFeedback(path: "/login" | "/register", redirectTo: string, key: "error" | "message", value: string) {
   const target = new URL(path, "http://localhost");
+  target.searchParams.set("next", redirectTo);
+  target.searchParams.set(key, value);
+  return `${target.pathname}${target.search}`;
+}
+
+function verifyRouteWithFeedback(redirectTo: string, key: "error" | "message", value: string) {
+  const target = new URL("/login/verify", "http://localhost");
   target.searchParams.set("next", redirectTo);
   target.searchParams.set(key, value);
   return `${target.pathname}${target.search}`;

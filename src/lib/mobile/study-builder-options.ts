@@ -20,9 +20,10 @@ export const SENSORY_STUDY_TYPES = [
 ];
 
 export const CONSUMER_OBJECTIVES = [
-  { value: "MARKET_READINESS", label: "Consumer Acceptability", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
-  { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
-  { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
+  { value: "EXPLORATORY", label: "Exploratory Consumer Evaluation (FGD)", minTarget: 4, maxTarget: 12, panelCount: 4, bufferCount: 0, defaultTarget: 4 },
+  { value: "PROTOTYPING", label: "Prototyping", minTarget: 20, maxTarget: 30, panelCount: 20, bufferCount: 0, defaultTarget: 20 },
+  { value: "REFINEMENT", label: "Refinement", minTarget: 50, maxTarget: 100, panelCount: 50, bufferCount: 0, defaultTarget: 50 },
+  { value: "MARKET_READINESS", label: "Acceptability", minTarget: 75, maxTarget: 100, panelCount: 75, bufferCount: 0, defaultTarget: 75 },
 ];
 
 export const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];

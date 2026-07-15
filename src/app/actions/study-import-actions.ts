@@ -20,6 +20,50 @@ import {
 const ALLOWED_IMPORT_EXTENSIONS = new Set([".csv", ".xlsx"]);
 const IMPORT_METADATA_SOURCE = "STUDY_FILE_IMPORT_V1";
 
+const STANDARD_JAR_OPTIONS = {
+  low: "Much too low",
+  midLow: "Slightly too low",
+  mid: "Just about right",
+  midHigh: "Slightly too high",
+  high: "Much too high",
+  labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
+};
+
+type ImportScoreType = "ATTRIBUTE_LIKING" | "JAR";
+
+// Whether the uploaded attribute-score column is a hedonic liking score or a JAR intensity
+// rating. Defaults to ATTRIBUTE_LIKING (the common consumer-test case); JAR is opt-in.
+function parseImportScoreType(formData: FormData): ImportScoreType {
+  return formData.get("scoreType") === "JAR" ? "JAR" : "ATTRIBUTE_LIKING";
+}
+
+// Build a sensory-attribute payload for a single imported attribute column, typed per the
+// selected score kind. JAR keeps its structured 5-point options; Attribute Liking is a plain
+// hedonic score.
+function buildImportedScoredAttribute(attributeName: string, scoreType: ImportScoreType) {
+  if (scoreType === "JAR") {
+    return {
+      name: attributeName,
+      type: "JAR" as const,
+      attributeType: "taste",
+      sourceAttributeName: attributeName,
+      isCustom: true,
+      questionType: "JAR" as const,
+      scaleType: "JAR_5PT" as const,
+      jarOptions: { ...STANDARD_JAR_OPTIONS },
+    };
+  }
+  return {
+    name: attributeName,
+    type: "ATTRIBUTE_LIKING" as const,
+    attributeType: "taste",
+    sourceAttributeName: attributeName,
+    isCustom: true,
+    questionType: "HEDONIC" as const,
+    scaleType: "NINE_PT" as const,
+  };
+}
+
 interface StudyImportActionResult {
   success: boolean;
   valid?: boolean;
@@ -429,6 +473,7 @@ export async function createImportReadyCloneFromFile(
     sourceStudy.description?.trim() ||
     "Import-ready clone generated from existing study configuration for historical sensory data onboarding.";
 
+  const scoreType = parseImportScoreType(formData);
   const attributesPayload = [
     {
       name: overallQuestionName,
@@ -436,23 +481,7 @@ export async function createImportReadyCloneFromFile(
       questionType: "HEDONIC" as const,
       scaleType: "NINE_PT" as const,
     },
-    ...profile.attributeNames.map((attributeName) => ({
-      name: attributeName,
-      type: "JAR" as const,
-      attributeType: "taste",
-      sourceAttributeName: attributeName,
-      isCustom: true,
-      questionType: "JAR" as const,
-      scaleType: "JAR_5PT" as const,
-      jarOptions: {
-        low: "Much too low",
-        midLow: "Slightly too low",
-        mid: "Just about right",
-        midHigh: "Slightly too high",
-        high: "Much too high",
-        labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
-      },
-    })),
+    ...profile.attributeNames.map((attributeName) => buildImportedScoredAttribute(attributeName, scoreType)),
     {
       name: openEndedQuestionName,
       type: "OPEN_ENDED" as const,
@@ -584,6 +613,7 @@ export async function createStudyAndImportFromFile(formData: FormData): Promise<
   const titleBase = hints.datasetTitle?.trim() || productName;
   const title = `${titleBase} - Imported ${timestamp}`;
 
+  const scoreType = parseImportScoreType(formData);
   const createResult = await createStudy(
     {
       title,
@@ -613,23 +643,7 @@ export async function createStudyAndImportFromFile(formData: FormData): Promise<
           questionType: "HEDONIC",
           scaleType: "NINE_PT",
         },
-        ...profile.attributeNames.map((attributeName) => ({
-          name: attributeName,
-          type: "JAR" as const,
-          attributeType: "taste",
-          sourceAttributeName: attributeName,
-          isCustom: true,
-          questionType: "JAR" as const,
-          scaleType: "JAR_5PT" as const,
-          jarOptions: {
-            low: "Much too low",
-            midLow: "Slightly too low",
-            mid: "Just about right",
-            midHigh: "Slightly too high",
-            high: "Much too high",
-            labels: ["Much too low", "Slightly too low", "Just about right", "Slightly too high", "Much too high"],
-          },
-        })),
+        ...profile.attributeNames.map((attributeName) => buildImportedScoredAttribute(attributeName, scoreType)),
         {
           name: "What should be improved?",
           type: "OPEN_ENDED",

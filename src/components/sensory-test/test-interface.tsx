@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Beaker, Check, ListOrdered, MessageSquareText, Star } from "lucide-react";
 import { deleteResponseDraft, getResponseDraft, saveResponseDraft, submitResponse } from "@/app/actions/response-actions";
+import type { CustomAnswers, CustomAnswerValue, CustomQuestion } from "@/lib/custom-questions";
 
 type AttributeType = "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
 type EvaluationPhase = "instructions" | "sample" | "ranking" | "comments";
@@ -39,6 +40,7 @@ interface TestInterfaceProps {
   studyId: string;
   participantId: string;
   attributes: SensoryAttribute[];
+  customQuestions?: CustomQuestion[];
   productName: string;
   sampleCount?: number;
   samplePlan?: SamplePlanItem[];
@@ -56,6 +58,7 @@ interface EvaluationDraftPayload {
   responsesBySample: Record<number, Record<string, unknown>>;
   sampleRanking: Record<number, number | null>;
   comments: FinalComments;
+  customAnswers: CustomAnswers;
   samplePlanSignature: string;
   updatedAt: string;
 }
@@ -64,6 +67,7 @@ export function SensoryTestInterface({
   studyId,
   participantId,
   attributes,
+  customQuestions = [],
   productName,
   sampleCount = 1,
   samplePlan,
@@ -101,6 +105,7 @@ export function SensoryTestInterface({
   const [responsesBySample, setResponsesBySample] = useState<Record<number, Record<string, unknown>>>({});
   const [sampleRanking, setSampleRanking] = useState<Record<number, number | undefined>>({});
   const [comments, setComments] = useState<FinalComments>({ likedMost: "", improvements: "" });
+  const [customAnswers, setCustomAnswers] = useState<CustomAnswers>({});
   const [cooldownSeconds, setCooldownSeconds] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -168,6 +173,7 @@ export function SensoryTestInterface({
           setResponsesBySample,
           setSampleRanking,
           setComments,
+          setCustomAnswers,
         });
       }
       setDraftReady(true);
@@ -192,6 +198,7 @@ export function SensoryTestInterface({
       responsesBySample,
       sampleRanking,
       comments,
+      customAnswers,
       samplePlanSignature,
     });
     latestDraftRef.current = draft;
@@ -210,6 +217,7 @@ export function SensoryTestInterface({
     };
   }, [
     comments,
+    customAnswers,
     currentSampleIndex,
     currentStep,
     draftReady,
@@ -246,6 +254,10 @@ export function SensoryTestInterface({
         [attributeName]: value,
       },
     }));
+  };
+
+  const handleCustomAnswerChange = (questionId: string, value: string | string[]) => {
+    setCustomAnswers((previous) => ({ ...previous, [questionId]: value }));
   };
 
   const handleNext = () => {
@@ -323,12 +335,28 @@ export function SensoryTestInterface({
       return;
     }
 
+    const missingRequired = customQuestions.find((question) => {
+      if (!question.required) {
+        return false;
+      }
+      const answer = customAnswers[question.id];
+      return question.type === "CHECKBOXES"
+        ? !Array.isArray(answer) || answer.length === 0
+        : typeof answer !== "string" || answer.trim().length === 0;
+    });
+    if (missingRequired) {
+      setIsSubmitting(false);
+      setError(`Please answer: "${missingRequired.text}".`);
+      return;
+    }
+
     const result = await submitResponse(studyId, participantId, {
       overallLiking: payload.overallLiking,
       attributes: payload.attributes,
       sampleResponses: payload.sampleResponses,
       sampleRanking: rankingRows,
       comments,
+      customAnswers,
       submittedAt: new Date().toISOString(),
     });
 
@@ -470,6 +498,9 @@ export function SensoryTestInterface({
             productName={productName}
             comments={comments}
             openEndedQuestions={openEndedQuestions}
+            customQuestions={customQuestions}
+            customAnswers={customAnswers}
+            onCustomAnswerChange={handleCustomAnswerChange}
             isSubmitting={isSubmitting}
             error={error}
             onChange={setComments}
@@ -612,6 +643,9 @@ function CommentsPanel({
   productName,
   comments,
   openEndedQuestions,
+  customQuestions,
+  customAnswers,
+  onCustomAnswerChange,
   isSubmitting,
   error,
   onChange,
@@ -620,6 +654,9 @@ function CommentsPanel({
   productName: string;
   comments: FinalComments;
   openEndedQuestions: SensoryAttribute[];
+  customQuestions: CustomQuestion[];
+  customAnswers: CustomAnswers;
+  onCustomAnswerChange: (questionId: string, value: string | string[]) => void;
   isSubmitting: boolean;
   error: string | null;
   onChange: (comments: FinalComments) => void;
@@ -661,6 +698,19 @@ function CommentsPanel({
         </label>
       </div>
 
+      {customQuestions.length > 0 && (
+        <div className="space-y-5 border-t border-[#e2e8f0] pt-5">
+          {customQuestions.map((question) => (
+            <CustomQuestionField
+              key={question.id}
+              question={question}
+              answer={customAnswers[question.id]}
+              onChange={onCustomAnswerChange}
+            />
+          ))}
+        </div>
+      )}
+
       {error && <p className="text-center text-sm text-red-600">{error}</p>}
 
       <button
@@ -672,6 +722,91 @@ function CommentsPanel({
         {isSubmitting ? "Submitting..." : "Submit Test"}
       </button>
     </section>
+  );
+}
+
+function CustomQuestionField({
+  question,
+  answer,
+  onChange,
+}: {
+  question: CustomQuestion;
+  answer: CustomAnswerValue | undefined;
+  onChange: (questionId: string, value: string | string[]) => void;
+}) {
+  const label = (
+    <span className="text-sm font-medium text-[#0f172a]">
+      {question.text}
+      {question.required && <span className="ml-1 text-red-600">*</span>}
+    </span>
+  );
+
+  if (question.type === "PARAGRAPH") {
+    const textValue = typeof answer === "string" ? answer : "";
+    return (
+      <label className="block space-y-2">
+        {label}
+        <textarea
+          className="h-28 w-full rounded-lg border border-[#e2e8f0] bg-white p-3 text-sm text-[#0f172a] outline-none transition focus:border-[#f97316] focus:ring-2 focus:ring-[#fed7aa]"
+          value={textValue}
+          maxLength={2000}
+          onChange={(event) => onChange(question.id, event.target.value)}
+        />
+      </label>
+    );
+  }
+
+  if (question.type === "MULTIPLE_CHOICE") {
+    const selected = typeof answer === "string" ? answer : "";
+    return (
+      <div className="space-y-2">
+        {label}
+        <div className="space-y-2">
+          {question.options.map((option) => (
+            <label
+              key={option}
+              className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-sm text-[#334155] hover:bg-[#f8fafc]"
+            >
+              <input
+                type="radio"
+                name={`custom-${question.id}`}
+                checked={selected === option}
+                onChange={() => onChange(question.id, option)}
+              />
+              {option}
+            </label>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  const selectedList = Array.isArray(answer) ? answer : [];
+  const toggle = (option: string) => {
+    const next = selectedList.includes(option)
+      ? selectedList.filter((item) => item !== option)
+      : [...selectedList, option];
+    onChange(question.id, next);
+  };
+  return (
+    <div className="space-y-2">
+      {label}
+      <div className="space-y-2">
+        {question.options.map((option) => (
+          <label
+            key={option}
+            className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#e2e8f0] bg-white px-3 py-2 text-sm text-[#334155] hover:bg-[#f8fafc]"
+          >
+            <input
+              type="checkbox"
+              checked={selectedList.includes(option)}
+              onChange={() => toggle(option)}
+            />
+            {option}
+          </label>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -986,6 +1121,7 @@ function buildEvaluationDraft(input: {
   responsesBySample: Record<number, Record<string, unknown>>;
   sampleRanking: Record<number, number | undefined>;
   comments: FinalComments;
+  customAnswers: CustomAnswers;
   samplePlanSignature: string;
 }): EvaluationDraftPayload {
   const normalizedRanking: Record<number, number | null> = {};
@@ -1000,6 +1136,7 @@ function buildEvaluationDraft(input: {
     responsesBySample: input.responsesBySample,
     sampleRanking: normalizedRanking,
     comments: input.comments,
+    customAnswers: input.customAnswers,
     samplePlanSignature: input.samplePlanSignature,
     updatedAt: new Date().toISOString(),
   };
@@ -1068,9 +1205,25 @@ function normalizeEvaluationDraft(value: unknown, samplePlanSignature: string): 
       likedMost: typeof row.comments?.likedMost === "string" ? row.comments.likedMost : "",
       improvements: typeof row.comments?.improvements === "string" ? row.comments.improvements : "",
     },
+    customAnswers: normalizeDraftCustomAnswers(row.customAnswers),
     samplePlanSignature,
     updatedAt: row.updatedAt,
   };
+}
+
+function normalizeDraftCustomAnswers(value: unknown): CustomAnswers {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const output: CustomAnswers = {};
+  for (const [questionId, answer] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof answer === "string") {
+      output[questionId] = answer;
+    } else if (Array.isArray(answer)) {
+      output[questionId] = answer.filter((item): item is string => typeof item === "string");
+    }
+  }
+  return output;
 }
 
 function applyEvaluationDraft(
@@ -1084,6 +1237,7 @@ function applyEvaluationDraft(
     setResponsesBySample: (responses: Record<number, Record<string, unknown>>) => void;
     setSampleRanking: (ranking: Record<number, number | undefined>) => void;
     setComments: (comments: FinalComments) => void;
+    setCustomAnswers: (answers: CustomAnswers) => void;
   }
 ) {
   options.setPhase(draft.phase);
@@ -1096,6 +1250,7 @@ function applyEvaluationDraft(
     ) as Record<number, number | undefined>
   );
   options.setComments(draft.comments);
+  options.setCustomAnswers(draft.customAnswers);
 }
 
 function normalizeDraftResponseRows(value: unknown): Record<number, Record<string, unknown>> {

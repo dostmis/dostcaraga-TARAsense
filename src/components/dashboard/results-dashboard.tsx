@@ -13,7 +13,6 @@ import {
   ErrorBar,
   LabelList,
   Legend,
-  ReferenceLine,
   PieChart,
   Pie,
   Cell,
@@ -283,6 +282,21 @@ interface AutomaticInterpretation {
   };
 }
 
+interface CustomQuestionOptionCount {
+  option: string;
+  count: number;
+  percent: number;
+}
+
+interface CustomQuestionSummary {
+  id: string;
+  text: string;
+  type: "MULTIPLE_CHOICE" | "CHECKBOXES" | "PARAGRAPH";
+  responseCount: number;
+  optionCounts?: CustomQuestionOptionCount[];
+  textAnswers?: string[];
+}
+
 interface AnalysisPayload {
   generatedAt: string;
   studyOverview?: StudyOverview | null;
@@ -301,6 +315,7 @@ interface AnalysisPayload {
     automaticInterpretation?: AutomaticInterpretation | null;
     dataQuality?: DataQualityReport | null;
     advancedAnalytics?: AdvancedAnalytics | null;
+    customQuestionSummaries?: CustomQuestionSummary[];
     studyDesign?: "MONADIC" | "WITHIN_SUBJECT";
   };
   attributeStats: Array<{
@@ -426,6 +441,7 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
   const automaticInterpretation = analysis.automaticInterpretation ?? overallLiking.automaticInterpretation ?? null;
   const dataQuality = analysis.dataQuality ?? overallLiking.dataQuality ?? null;
   const advancedAnalytics = analysis.advancedAnalytics ?? overallLiking.advancedAnalytics ?? null;
+  const customQuestionSummaries = overallLiking.customQuestionSummaries ?? [];
   const exportContext = buildAnalysisExportContext(analysis);
 
   const sampleTabs =
@@ -632,6 +648,12 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
         </Card>
       )}
 
+      {customQuestionSummaries.length > 0 && (
+        <Card title="Additional Questions">
+          <CustomQuestionSummariesCard summaries={customQuestionSummaries} />
+        </Card>
+      )}
+
       {sampleTabs.length > 0 && (
         <nav className="rounded-xl border border-[#e2e8f0] bg-white p-2 shadow-[0_1px_3px_rgba(15,23,42,0.06)]" aria-label="Analysis results by sample">
           <div className="flex flex-wrap gap-2">
@@ -794,10 +816,6 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
 
           {comparativeAnalysis?.attributeLikingComparison && comparativeAnalysis.attributeLikingComparison.length > 0 && (
             <AttributeLikingComparisonChart entries={comparativeAnalysis.attributeLikingComparison} />
-          )}
-
-          {comparativeAnalysis?.jarRatingComparison && comparativeAnalysis.jarRatingComparison.length > 0 && (
-            <JarRatingComparisonChart entries={comparativeAnalysis.jarRatingComparison} />
           )}
 
           {comparativeAnalysis?.jarDistributionComparison && comparativeAnalysis.jarDistributionComparison.length > 0 && (
@@ -1039,6 +1057,14 @@ function AttributeLikingComparisonChart({ entries }: { entries: AttributeLikingC
     return row;
   });
 
+  // Adapt the axis to the liking scale actually present: imported datasets may use a 5-point
+  // liking scale, while study-builder attribute liking uses the 9-point hedonic scale.
+  const maxLikingValue = Math.max(
+    0,
+    ...entries.flatMap((entry) => entry.samples.map((sample) => sample.mean + (sample.stdError ?? 0)))
+  );
+  const likingAxisMax = maxLikingValue <= 5 ? 5 : 9;
+
   return (
     <Card title="Mean Attribute Liking Comparison Across Samples" className="lg:col-span-2">
       <div className="h-80 min-h-80 min-w-0">
@@ -1046,7 +1072,7 @@ function AttributeLikingComparisonChart({ entries }: { entries: AttributeLikingC
           <BarChart data={data} margin={{ top: 24, right: 16, left: 0, bottom: 8 }}>
             <CartesianGrid strokeDasharray="3 3" vertical={false} />
             <XAxis dataKey="attribute" />
-            <YAxis domain={[0, 9]} label={{ value: "Mean attribute liking", angle: -90, position: "insideLeft" }} />
+            <YAxis domain={[0, likingAxisMax]} label={{ value: "Mean attribute liking", angle: -90, position: "insideLeft" }} />
             <Tooltip />
             {sampleLabels.map((label, index) => (
               <Bar key={label} dataKey={label} fill={colorPalette[index % colorPalette.length]} radius={[4, 4, 0, 0]}>
@@ -1079,89 +1105,6 @@ function AttributeLikingComparisonChart({ entries }: { entries: AttributeLikingC
                   const match = entry.samples.find((sample) => sample.sampleLabel === label);
                   return (
                     <td key={`cell-${entry.attribute}-${label}`} className="px-3 py-2 text-center">
-                      {match ? `${match.mean.toFixed(2)}${match.letter ? ` (${match.letter})` : ""}` : "-"}
-                    </td>
-                  );
-                })}
-                <td className="px-3 py-2 text-center text-[#475569]">{entry.statisticalComparison.testLabel}</td>
-                <td className="px-3 py-2 text-center">
-                  {entry.statisticalComparison.formattedPValue}
-                  {entry.statisticalComparison.significant ? <span className="ml-1 font-semibold text-red-600">*</span> : null}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </Card>
-  );
-}
-
-function JarRatingComparisonChart({ entries }: { entries: AttributeLikingComparisonEntry[] }) {
-  if (entries.length === 0) return null;
-  const sampleLabels = Array.from(new Set(entries.flatMap((entry) => entry.samples.map((sample) => sample.sampleLabel))));
-  const colorPalette = ["#f97316", "#1d4ed8", "#16a34a", "#dc2626", "#9333ea", "#0891b2"];
-  const data = entries.map((entry) => {
-    const row: Record<string, number | string> = { attribute: entry.attribute };
-    entry.samples.forEach((sample) => {
-      row[sample.sampleLabel] = sample.mean;
-      row[`${sample.sampleLabel}__se`] = sample.stdError ?? 0;
-      row[`${sample.sampleLabel}__letter`] = sample.letter ?? "";
-    });
-    return row;
-  });
-
-  return (
-    <Card title="Mean JAR Rating Comparison Across Samples" className="lg:col-span-2">
-      <p className="mb-3 rounded-lg border border-[#dbeafe] bg-[#eff6ff] px-3 py-2 text-xs text-[#1e3a8a]">
-        Mean Just-About-Right rating per attribute on the 5-point JAR scale (1 = Much too low, 3 = Just right, 5 = Much too high).
-        A mean near 3 is ideal; below 3 leans &ldquo;too low&rdquo; and above 3 leans &ldquo;too high&rdquo;.
-      </p>
-      <div className="h-80 min-h-80 min-w-0">
-        <MeasuredResponsiveChart>
-          <BarChart data={data} margin={{ top: 24, right: 16, left: 0, bottom: 8 }}>
-            <CartesianGrid strokeDasharray="3 3" vertical={false} />
-            <XAxis dataKey="attribute" />
-            <YAxis domain={[0, 5]} ticks={[0, 1, 2, 3, 4, 5]} label={{ value: "Mean JAR rating (1-5)", angle: -90, position: "insideLeft" }} />
-            <Tooltip />
-            <Legend />
-            {sampleLabels.map((label, index) => (
-              <Bar key={label} dataKey={label} fill={colorPalette[index % colorPalette.length]} radius={[4, 4, 0, 0]}>
-                <ErrorBar dataKey={`${label}__se`} width={4} stroke="#1e293b" />
-              </Bar>
-            ))}
-            <ReferenceLine
-              y={3}
-              stroke="#16a34a"
-              strokeDasharray="5 4"
-              label={{ value: "Just right (3)", position: "insideTopRight", fontSize: 10, fill: "#16a34a" }}
-            />
-          </BarChart>
-        </MeasuredResponsiveChart>
-      </div>
-      <p className="mt-2 text-xs text-[#475569]">
-        Values are mean +/- SE. Letters compare samples within each attribute (samples sharing a letter are not significantly different, p &gt;= 0.05).
-      </p>
-      <div className="mt-3 overflow-x-auto">
-        <table className="w-full min-w-[640px] text-xs">
-          <thead className="bg-[#f8fafc]">
-            <tr>
-              <th className="px-3 py-2 text-left">Attribute</th>
-              {sampleLabels.map((label) => (
-                <th key={`jar-head-${label}`} className="px-3 py-2 text-center">{label}</th>
-              ))}
-              <th className="px-3 py-2 text-center">Test</th>
-              <th className="px-3 py-2 text-center">p-value</th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((entry) => (
-              <tr key={`jar-cmp-${entry.attribute}`} className="border-b border-[#e2e8f0]">
-                <td className="px-3 py-2 font-medium">{entry.attribute}</td>
-                {sampleLabels.map((label) => {
-                  const match = entry.samples.find((sample) => sample.sampleLabel === label);
-                  return (
-                    <td key={`jar-cell-${entry.attribute}-${label}`} className="px-3 py-2 text-center">
                       {match ? `${match.mean.toFixed(2)}${match.letter ? ` (${match.letter})` : ""}` : "-"}
                     </td>
                   );
@@ -1440,6 +1383,67 @@ function DataQualityCard({ report }: { report: DataQualityReport }) {
           No data quality issues detected.
         </p>
       )}
+    </div>
+  );
+}
+
+function CustomQuestionSummariesCard({ summaries }: { summaries: CustomQuestionSummary[] }) {
+  const typeLabels: Record<CustomQuestionSummary["type"], string> = {
+    MULTIPLE_CHOICE: "Multiple Choice",
+    CHECKBOXES: "Checkboxes",
+    PARAGRAPH: "Paragraph",
+  };
+  return (
+    <div className="space-y-5 text-sm">
+      {summaries.map((summary) => (
+        <div key={summary.id} className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4">
+          <div className="flex items-start justify-between gap-3">
+            <p className="font-semibold text-[#0f172a]">{summary.text}</p>
+            <span className="shrink-0 rounded-full bg-[#e2e8f0] px-2 py-0.5 text-[10px] uppercase tracking-wide text-[#475569]">
+              {typeLabels[summary.type]}
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-[#64748b]">
+            {summary.responseCount} response{summary.responseCount === 1 ? "" : "s"}
+          </p>
+
+          {summary.type === "PARAGRAPH" ? (
+            summary.textAnswers && summary.textAnswers.length > 0 ? (
+              <ul className="mt-3 max-h-60 space-y-2 overflow-y-auto">
+                {summary.textAnswers.map((answer, index) => (
+                  <li
+                    key={`${summary.id}-answer-${index}`}
+                    className="rounded-md border border-[#e2e8f0] bg-white px-3 py-2 text-xs text-[#334155]"
+                  >
+                    {answer}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-xs text-[#94a3b8]">No responses yet.</p>
+            )
+          ) : (
+            <div className="mt-3 space-y-2">
+              {(summary.optionCounts ?? []).map((option) => (
+                <div key={option.option}>
+                  <div className="flex items-center justify-between gap-3 text-xs text-[#334155]">
+                    <span className="truncate">{option.option}</span>
+                    <span className="shrink-0 tabular-nums text-[#64748b]">
+                      {option.count} ({option.percent}%)
+                    </span>
+                  </div>
+                  <div className="mt-1 h-2 w-full overflow-hidden rounded-full bg-[#e2e8f0]">
+                    <div
+                      className="h-full rounded-full bg-[#f97316]"
+                      style={{ width: `${Math.min(100, Math.max(0, option.percent))}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

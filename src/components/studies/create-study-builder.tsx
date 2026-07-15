@@ -14,6 +14,11 @@ import {
 import { FACILITIES_BY_REGION, REGIONS, getRegionForFacility } from "@/lib/facility-constants";
 import type { Region } from "@/lib/facility-constants";
 import {
+  MAX_CUSTOM_QUESTIONS,
+  MAX_CUSTOM_QUESTION_OPTIONS,
+  type CustomQuestionType,
+} from "@/lib/custom-questions";
+import {
   DEFAULT_TARGET_CONSUMER,
   TARGET_CONSUMER_DIETARY_OPTIONS,
   TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS,
@@ -41,6 +46,7 @@ type MarketStudyType =
   | "CONSUMER_USAGE_HABIT";
 type SensoryStudyType = "DISCRIMINATIVE" | "DESCRIPTIVE" | "CONSUMER_TEST";
 type ConsumerObjective =
+  | "EXPLORATORY"
   | "MARKET_READINESS"
   | "REFINEMENT"
   | "PROTOTYPING";
@@ -50,9 +56,11 @@ type TargetHealthFitness = (typeof TARGET_CONSUMER_HEALTH_FITNESS_OPTIONS)[numbe
 type TargetFoodConsumption = (typeof TARGET_CONSUMER_FOOD_CONSUMPTION_OPTIONS)[number]["value"];
 
 interface AttributeRow {
+  id: string;
   name: string;
   dimension: AttributeDimension;
   isJarTarget: boolean;
+  isLikingTarget: boolean;
   isCustom: boolean;
   actionable: boolean;
 }
@@ -78,7 +86,15 @@ interface SessionSlotDraft {
   label: string;
   startTime: string;
   endTime: string;
-  capacity: number;
+  capacity: string;
+}
+
+interface CustomQuestionDraft {
+  id: string;
+  text: string;
+  type: CustomQuestionType;
+  options: string[];
+  required: boolean;
 }
 
 interface CategoryProfile {
@@ -97,19 +113,32 @@ const MARKET_TYPE_OPTIONS: Array<{ value: MarketStudyType; label: string }> = [
   { value: "CONSUMER_USAGE_HABIT", label: "Consumer Usage & Habit Study" },
 ];
 
+/** What a consumer test measures per sample (Overall Liking is always collected). */
+type TestMode = "OVERALL_ONLY" | "ATTRIBUTE" | "CATA";
+
+const TEST_MODE_OPTIONS: Array<{ value: TestMode; label: string; description: string }> = [
+  { value: "OVERALL_ONLY", label: "Sample Overall Liking only", description: "Just the 9-point hedonic overall liking." },
+  { value: "ATTRIBUTE", label: "Attribute ratings", description: "JAR and/or Attribute Liking per attribute." },
+  { value: "CATA", label: "Check-All-That-Apply", description: "Panelists tick every term that applies." },
+];
+
+const CATA_MIN_TERMS = 5;
+const CATA_TARGET_TERMS = 15;
+const CATA_MAX_TERMS = 20;
+
 const DISCRIMINATIVE_METHODS = ["Triangle Test", "Duo-trio", "Tetrad", "Multiple Ranking"];
 const DESCRIPTIVE_METHODS = ["QDA", "Spectrum Method", "Similarity Measures"];
 
 const CONSUMER_OBJECTIVES: Array<{
   value: ConsumerObjective;
   label: string;
-  panelCount: number;
-  bufferCount: number;
-  defaultTarget: number;
+  minTarget: number;
+  maxTarget: number;
 }> = [
-  { value: "MARKET_READINESS", label: "Consumer Acceptability", panelCount: 100, bufferCount: 0, defaultTarget: 100 },
-  { value: "REFINEMENT", label: "Refinement", panelCount: 50, bufferCount: 0, defaultTarget: 50 },
-  { value: "PROTOTYPING", label: "Prototyping", panelCount: 25, bufferCount: 10, defaultTarget: 35 },
+  { value: "EXPLORATORY", label: "Exploratory Consumer Evaluation (FGD)", minTarget: 4, maxTarget: 12 },
+  { value: "PROTOTYPING", label: "Prototyping", minTarget: 20, maxTarget: 30 },
+  { value: "REFINEMENT", label: "Refinement", minTarget: 50, maxTarget: 100 },
+  { value: "MARKET_READINESS", label: "Acceptability", minTarget: 75, maxTarget: 100 },
 ];
 
 const DEFAULT_MARKET_QUESTIONS = [
@@ -302,12 +331,50 @@ const ATTRIBUTE_DIMENSIONS: AttributeDimension[] = [
 const PRODUCT_IMAGE_MAX_BYTES = 1_000_000;
 const PRODUCT_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
-export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean }) {
+// Kept in sync with the JAR jarOptions in study-builder-actions.ts (buildSensoryQuestionnaire).
+const JAR_SCALE_LABELS = [
+  "Much too low",
+  "Slightly too low",
+  "Just about right",
+  "Slightly too high",
+  "Much too high",
+];
+// Kept in sync with the 9-point hedonic labels in sensory-test/test-interface.tsx.
+const HEDONIC_SCALE_LABELS = [
+  "Dislike Extremely",
+  "Dislike Very Much",
+  "Dislike Moderately",
+  "Dislike Slightly",
+  "Neither",
+  "Like Slightly",
+  "Like Moderately",
+  "Like Very Much",
+  "Like Extremely",
+];
+
+export function CreateStudyBuilder({
+  embedded = false,
+  projectId,
+  mode = "msme",
+  backHref,
+}: {
+  embedded?: boolean;
+  projectId?: string;
+  /** "fic" enables the "on behalf of MSME" attribution block. */
+  mode?: "msme" | "fic";
+  /** Where the embedded Back button returns to. */
+  backHref?: string;
+}) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const isFicMode = mode === "fic";
+  const resolvedBackHref = backHref ?? "/msme/dashboard?view=dashboard";
 
   const [studyMode, setStudyMode] = useState<StudyMode>("SENSORY");
   const [coordinationMode, setCoordinationMode] = useState<CoordinationMode>("FIC_ASSISTED");
+  const [visibility, setVisibility] = useState<"PUBLIC" | "PRIVATE">("PUBLIC");
+  const [testMode, setTestMode] = useState<TestMode>("ATTRIBUTE");
+  const [cataTerms, setCataTerms] = useState<string[]>([]);
   const [marketStudyType, setMarketStudyType] = useState<MarketStudyType>("PACKAGING_EVALUATION");
 
   const [sensoryStudyType, setSensoryStudyType] = useState<SensoryStudyType>("CONSUMER_TEST");
@@ -324,7 +391,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     location: { regionId: null, provinceId: null, cityId: null, barangayId: null },
     labels: {},
   });
-  const [targetResponses, setTargetResponses] = useState(35);
+  const [targetResponses, setTargetResponses] = useState(20);
   const [targetAgeMin, setTargetAgeMin] = useState(DEFAULT_TARGET_CONSUMER.ageRange[0]);
   const [targetAgeMax, setTargetAgeMax] = useState(DEFAULT_TARGET_CONSUMER.ageRange[1]);
   const [targetGenders, setTargetGenders] = useState<TargetConsumerGender[]>(DEFAULT_TARGET_CONSUMER.genders);
@@ -333,6 +400,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [targetHealthFitness, setTargetHealthFitness] = useState<TargetHealthFitness[]>([]);
   const [targetFoodConsumption, setTargetFoodConsumption] = useState<TargetFoodConsumption[]>([]);
   const [consumerProfileExpanded, setConsumerProfileExpanded] = useState(false);
+  const [showRatingHelp, setShowRatingHelp] = useState(false);
 
   const [productName, setProductName] = useState("");
   const [profileKey, setProfileKey] = useState(CATEGORY_PROFILES[0].key);
@@ -352,6 +420,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [sampleSetupCount, setSampleSetupCount] = useState(1);
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
   const [marketQuestions, setMarketQuestions] = useState(DEFAULT_MARKET_QUESTIONS);
+  const [customQuestions, setCustomQuestions] = useState<CustomQuestionDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [assignedFicUsers, setAssignedFicUsers] = useState<FacilityAssignedFic[]>([]);
   const [ficOptions, setFicOptions] = useState<AvailableFic[]>([]);
@@ -367,6 +436,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const [facilityCalendarMonth, setFacilityCalendarMonth] = useState(() => new Date().getMonth());
   const [randomizePanelSelection, setRandomizePanelSelection] = useState(false);
   const [showStudySummary, setShowStudySummary] = useState(false);
+
+  // FIC-only: MSME the study is being created on behalf of (account-less MSME).
+  const [onBehalfBusinessName, setOnBehalfBusinessName] = useState("");
+  const [onBehalfContactPerson, setOnBehalfContactPerson] = useState("");
+  const [onBehalfContactEmail, setOnBehalfContactEmail] = useState("");
+  const [onBehalfContactPhone, setOnBehalfContactPhone] = useState("");
 
   // Cascade region/facility logic
   useEffect(() => {
@@ -598,8 +673,13 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const selectedConsumerObjective = useMemo(() => {
     return CONSUMER_OBJECTIVES.find((objective) => objective.value === consumerObjective) ?? CONSUMER_OBJECTIVES[0];
   }, [consumerObjective]);
-  const consumerMinimum = selectedConsumerObjective.defaultTarget;
+  const consumerMinimum = selectedConsumerObjective.minTarget;
   const isProductIntentMarketStudy = studyMode === "MARKET" && marketStudyType === "PRODUCT_INTENT";
+
+  const allJarSelected = attributes.length > 0 && attributes.every((attribute) => attribute.isJarTarget);
+  const someJarSelected = attributes.some((attribute) => attribute.isJarTarget);
+  const allLikingSelected = attributes.length > 0 && attributes.every((attribute) => attribute.isLikingTarget);
+  const someLikingSelected = attributes.some((attribute) => attribute.isLikingTarget);
 
   const sessionSlotsByDay = useMemo(() => {
     return Array.from({ length: normalizedTestingDuration }, (_, dayOffset) => ({
@@ -612,11 +692,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   }, [normalizedSelectedTestingDates, normalizedTestingDuration, sessionSlots, testingStartDate]);
 
   const totalSessionCapacity = useMemo(
-    () =>
-      sessionSlots.reduce(
-        (sum, slot) => sum + (Number.isFinite(slot.capacity) ? Math.max(1, Math.floor(slot.capacity)) : 1),
-        0
-      ),
+    () => sessionSlots.reduce((sum, slot) => sum + parseCapacity(slot.capacity), 0),
     [sessionSlots]
   );
 
@@ -735,7 +811,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     if (studyMode === "SENSORY") {
       const objective = CONSUMER_OBJECTIVES.find((o) => o.value === consumerObjective);
       if (objective) {
-        setTargetResponses((previous) => Math.max(previous, objective.defaultTarget));
+        setTargetResponses((previous) =>
+          Math.min(Math.max(previous, objective.minTarget), objective.maxTarget)
+        );
       }
     }
   }, [consumerObjective, sensoryStudyType, studyMode]);
@@ -820,6 +898,27 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
     );
   };
 
+  const updateAttributeRating = (index: number, kind: "jar" | "liking", checked: boolean) => {
+    setAttributes((previous) =>
+      previous.map((row, rowIndex) => {
+        if (rowIndex !== index) return row;
+        return kind === "jar"
+          ? { ...row, isJarTarget: checked }
+          : { ...row, isLikingTarget: checked };
+      })
+    );
+  };
+
+  const setAllRatings = (kind: "jar" | "liking", checked: boolean) => {
+    setAttributes((previous) =>
+      previous.map((row) =>
+        kind === "jar"
+          ? { ...row, isJarTarget: checked }
+          : { ...row, isLikingTarget: checked }
+      )
+    );
+  };
+
   const removeAttribute = (index: number) => {
     setAttributes((previous) => {
       if (previous.length <= 1) {
@@ -863,9 +962,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return [
         ...previous,
         {
+          id: createId(),
           name: trimmed,
           dimension: customAttributeType,
           isJarTarget: consumerObjective !== "MARKET_READINESS",
+          isLikingTarget: true,
           isCustom: true,
           actionable: true,
         },
@@ -930,6 +1031,81 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const updateMarketQuestion = (index: number, value: string) => {
     setMarketQuestions((previous) =>
       previous.map((question, questionIndex) => (questionIndex === index ? value : question))
+    );
+  };
+
+  const addCustomQuestion = () => {
+    setCustomQuestions((previous) => {
+      if (previous.length >= MAX_CUSTOM_QUESTIONS) {
+        return previous;
+      }
+      return [
+        ...previous,
+        { id: createId(), text: "", type: "MULTIPLE_CHOICE", options: ["", ""], required: false },
+      ];
+    });
+  };
+
+  const removeCustomQuestion = (id: string) => {
+    setCustomQuestions((previous) => previous.filter((question) => question.id !== id));
+  };
+
+  const updateCustomQuestionText = (id: string, value: string) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) => (question.id === id ? { ...question, text: value } : question))
+    );
+  };
+
+  const updateCustomQuestionType = (id: string, type: CustomQuestionType) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) => {
+        if (question.id !== id) return question;
+        if (type === "PARAGRAPH") {
+          return { ...question, type, options: [] };
+        }
+        const options = question.options.length >= 2 ? question.options : ["", ""];
+        return { ...question, type, options };
+      })
+    );
+  };
+
+  const addCustomQuestionOption = (id: string) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) => {
+        if (question.id !== id) return question;
+        if (question.options.length >= MAX_CUSTOM_QUESTION_OPTIONS) return question;
+        return { ...question, options: [...question.options, ""] };
+      })
+    );
+  };
+
+  const updateCustomQuestionOption = (id: string, optionIndex: number, value: string) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) => {
+        if (question.id !== id) return question;
+        return {
+          ...question,
+          options: question.options.map((option, index) => (index === optionIndex ? value : option)),
+        };
+      })
+    );
+  };
+
+  const removeCustomQuestionOption = (id: string, optionIndex: number) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) => {
+        if (question.id !== id) return question;
+        if (question.options.length <= 2) return question;
+        return { ...question, options: question.options.filter((_, index) => index !== optionIndex) };
+      })
+    );
+  };
+
+  const toggleCustomQuestionRequired = (id: string) => {
+    setCustomQuestions((previous) =>
+      previous.map((question) =>
+        question.id === id ? { ...question, required: !question.required } : question
+      )
     );
   };
 
@@ -1012,9 +1188,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         }
 
         if (field === "capacity") {
-          const parsed = Number(value);
-          const capacity = Number.isFinite(parsed) ? Math.max(1, Math.floor(parsed)) : 1;
-          return { ...slot, capacity };
+          // Keep the raw digits so the field can be cleared and typed freely;
+          // it is coerced to a valid number at validation/submit time.
+          return { ...slot, capacity: value.replace(/\D/g, "") };
         }
 
         return {
@@ -1048,6 +1224,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
   const onSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
+
+    if (isFicMode && !onBehalfBusinessName.trim()) {
+      setError("Enter the MSME business name you are creating this study for.");
+      return;
+    }
 
     if (coordinationMode === "FIC_ASSISTED") {
       if (!region) {
@@ -1103,11 +1284,6 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return;
     }
 
-    if (studyMode === "SENSORY" && targetResponses < 10) {
-      setError("Sensory studies require at least 10 target responses.");
-      return;
-    }
-
     if (studyMode === "SENSORY" && targetResponses > 200) {
       setError("Sensory studies support up to 200 target responses.");
       return;
@@ -1118,11 +1294,34 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       return;
     }
 
-    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST") {
+    if (studyMode === "SENSORY" && sensoryStudyType === "CONSUMER_TEST" && testMode === "ATTRIBUTE") {
       const planValidation = validateObjectiveSelection(attributes);
       if (!planValidation.valid) {
         setError(planValidation.error);
         return;
+      }
+    }
+    if (studyMode === "SENSORY" && testMode === "CATA") {
+      const cleanedTerms = cataTerms.map((term) => term.trim()).filter(Boolean);
+      if (cleanedTerms.length < CATA_MIN_TERMS) {
+        setError(`Add at least ${CATA_MIN_TERMS} CATA terms (aim for ${CATA_TARGET_TERMS}).`);
+        return;
+      }
+    }
+
+    if (studyMode === "SENSORY") {
+      for (const question of customQuestions) {
+        if (!question.text.trim()) {
+          setError("Each additional question needs question text.");
+          return;
+        }
+        if (question.type !== "PARAGRAPH") {
+          const filledOptions = question.options.map((option) => option.trim()).filter(Boolean);
+          if (filledOptions.length < 2) {
+            setError(`"${question.text.trim()}" needs at least 2 options.`);
+            return;
+          }
+        }
       }
     }
 
@@ -1165,8 +1364,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           !slot.label.trim() ||
           !slot.startTime ||
           !slot.endTime ||
-          !Number.isFinite(slot.capacity) ||
-          slot.capacity < 1
+          parseCapacity(slot.capacity) < 1
       );
       if (invalidSlot) {
         setError("Complete all session fields (label, start time, end time, capacity).");
@@ -1190,7 +1388,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             label: slot.label.trim(),
             startDateTime: startsAt.toISOString(),
             endDateTime: endsAt.toISOString(),
-            capacity: Math.max(1, Math.floor(slot.capacity)),
+            capacity: parseCapacity(slot.capacity),
           };
         })
         .filter(
@@ -1254,12 +1452,14 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
       const payload = {
         studyMode,
         coordinationMode,
+        visibility,
         marketStudyType: studyMode === "MARKET" ? marketStudyType : undefined,
         sensoryStudyType: studyMode === "SENSORY" ? sensoryStudyType : undefined,
         sensoryMethod: studyMode === "SENSORY" ? sensoryMethod : undefined,
         consumerObjective: studyMode === "SENSORY" ? consumerObjective : undefined,
         studyTitle: generatedStudyTitle,
         purpose: generatedPurpose,
+        projectId: projectId ?? undefined,
         targetConsumer: {
           ageRange: [targetAgeMin, targetAgeMax],
           genders: targetGenders,
@@ -1280,14 +1480,20 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
         categoryLabel: studyMode === "SENSORY" ? selectedProfile.label : undefined,
         attributes:
-          studyMode === "SENSORY"
+          studyMode === "SENSORY" && testMode === "ATTRIBUTE"
             ? attributes.map((attribute) => ({
                 name: attribute.name.trim(),
                 dimension: attribute.dimension,
                 isJarTarget: attribute.isJarTarget,
+                isLikingTarget: attribute.isLikingTarget,
                 isCustom: attribute.isCustom,
                 actionable: attribute.isCustom ? attribute.actionable : true,
               })).filter((attribute) => attribute.name.length > 0)
+            : [],
+        testMode: studyMode === "SENSORY" ? testMode : "ATTRIBUTE",
+        cataTerms:
+          studyMode === "SENSORY" && testMode === "CATA"
+            ? cataTerms.map((term) => term.trim()).filter(Boolean)
             : [],
         testingStartDate: studyMode === "SENSORY" ? normalizedSelectedTestingDates[0] ?? testingStartDate : undefined,
         testingDurationDays: studyMode === "SENSORY" ? normalizedTestingDuration : undefined,
@@ -1301,6 +1507,19 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   .filter((question) => question.length > 0)
               : marketQuestions.filter((question) => question.trim().length > 0)
             : [],
+        customQuestions:
+          studyMode === "SENSORY"
+            ? customQuestions.map((question) => ({
+                id: question.id,
+                text: question.text.trim(),
+                type: question.type,
+                options:
+                  question.type === "PARAGRAPH"
+                    ? []
+                    : question.options.map((option) => option.trim()).filter(Boolean),
+                required: question.required,
+              }))
+            : [],
         locationTarget: {
           scope: targeting.scope,
           regionId: targeting.location.regionId,
@@ -1308,6 +1527,16 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           cityId: targeting.location.cityId,
           barangayId: targeting.location.barangayId,
         },
+        ...(isFicMode
+          ? {
+              onBehalfOfMsme: {
+                businessName: onBehalfBusinessName.trim(),
+                contactPerson: onBehalfContactPerson.trim() || undefined,
+                contactEmail: onBehalfContactEmail.trim() || undefined,
+                contactPhone: onBehalfContactPhone.trim() || undefined,
+              },
+            }
+          : {}),
         randomizePanelSelection,
       };
 
@@ -1337,16 +1566,20 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         <TimedToast title="Create Study Error" message={error} variant="error" durationMs={5000} />
       </div>
       <div
-        className={`space-y-8 rounded-[28px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)] ${
+        className={`create-study-scale space-y-8 rounded-[28px] border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)] ${
           embedded ? "p-5 sm:p-6 md:p-8" : "mx-auto max-w-5xl p-5 sm:p-8"
         }`}
       >
         <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
             <h1 className="text-2xl font-bold text-[#0f172a]">Create Study</h1>
-            <p className="text-[#64748b]">Configure Market or Sensory studies and generate a form with QR code.</p>
+            <p className="text-[#64748b]">
+              {isFicMode
+                ? "Create a study on behalf of an MSME. Configure Market or Sensory studies and generate a form with QR code."
+                : "Configure Market or Sensory studies and generate a form with QR code."}
+            </p>
           </div>
-          {embedded && <AppBackButton fallbackHref="/msme/dashboard?view=dashboard" label="Back" />}
+          {embedded && <AppBackButton fallbackHref={resolvedBackHref} label="Back" />}
         </header>
 
         {error && (
@@ -1356,8 +1589,66 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
         )}
 
         <form onSubmit={onSubmit} className="space-y-8">
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Create Study</h2>
+          {isFicMode && (
+            <section className="space-y-4 rounded-2xl border border-[#1d4ed8] bg-[#eff6ff] p-5 sm:p-6">
+              <div className="space-y-1">
+                <h2 className="text-lg font-semibold text-[#000080]">MSME Details (creating on their behalf)</h2>
+                <p className="text-sm text-[#475569]">
+                  Record the MSME this study is for. This study is managed from your FIC workspace; the
+                  MSME does not need an account.
+                </p>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-1">
+                  <FieldLabel text="MSME / Business Name" />
+                  <input
+                    type="text"
+                    value={onBehalfBusinessName}
+                    onChange={(event) => setOnBehalfBusinessName(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g. Nanay's Kakanin"
+                    maxLength={200}
+                    required
+                  />
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="Contact Person (optional)" />
+                  <input
+                    type="text"
+                    value={onBehalfContactPerson}
+                    onChange={(event) => setOnBehalfContactPerson(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g. Maria Cruz"
+                    maxLength={160}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="Contact Email (optional)" />
+                  <input
+                    type="email"
+                    value={onBehalfContactEmail}
+                    onChange={(event) => setOnBehalfContactEmail(event.target.value)}
+                    className="app-input"
+                    placeholder="name@example.com"
+                    maxLength={160}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <FieldLabel text="Contact Phone (optional)" />
+                  <input
+                    type="tel"
+                    value={onBehalfContactPhone}
+                    onChange={(event) => setOnBehalfContactPhone(event.target.value)}
+                    className="app-input"
+                    placeholder="e.g. 0917 000 0000"
+                    maxLength={60}
+                  />
+                </div>
+              </div>
+            </section>
+          )}
+          <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+            <h2 className="text-lg font-semibold text-[#000080]">Type of Study</h2>
             <div className="grid md:grid-cols-2 gap-4">
               <div className="space-y-1">
                 <FieldLabel text="Study Type" />
@@ -1372,7 +1663,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </select>
               </div>
               <div className="space-y-1">
-                <FieldLabel text="Study Execution" />
+                <FieldLabel text="Study execution" />
                 <select
                   value={coordinationMode}
                   onChange={(event) => setCoordinationMode(event.target.value as CoordinationMode)}
@@ -1381,6 +1672,18 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 >
                   <option value="FIC_ASSISTED">Coordinate with FIC</option>
                   <option value="SELF_MANAGED_PUBLIC">Self-managed Sensory Test</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <FieldLabel text="Study Visibility" />
+                <select
+                  value={visibility}
+                  onChange={(event) => setVisibility(event.target.value as "PUBLIC" | "PRIVATE")}
+                  className="app-select"
+                  required
+                >
+                  <option value="PRIVATE">Private — only your targeted participants</option>
+                  <option value="PUBLIC">Public — discoverable in peer evaluation</option>
                 </select>
               </div>
             </div>
@@ -1461,7 +1764,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           <section
             className="space-y-4 rounded-2xl border p-5"
             style={{
-              borderColor: "var(--border)",
+              borderColor: "#f97316",
               background: "var(--surface-strong)",
             }}
           >
@@ -1484,8 +1787,8 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
           </section>
 
           {studyMode === "MARKET" && (
-            <section className="space-y-4">
-              <h2 className="text-lg font-semibold text-gray-900">Market Study Setup</h2>
+            <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+              <h2 className="text-lg font-semibold text-[#000080]">Market Study Setup</h2>
               <div className="grid md:grid-cols-2 gap-4">
                 <FieldLabel text="Market Study" />
                 <select
@@ -1519,7 +1822,8 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
           {studyMode === "SENSORY" && (
             <section className="space-y-6">
-              <h2 className="text-lg font-semibold text-gray-900">Type of Sensory Test</h2>
+              <div style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+              <h2 className="text-lg font-semibold text-[#000080]">Type of Sensory Test</h2>
 
               <div className="grid md:grid-cols-2 gap-4">
                 <FieldLabel text="Sensory Study" />
@@ -1612,9 +1916,38 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   ))}
                 </select>
               </div>
+              </div>
 
-              <section className="space-y-4">
-                <h2 className="text-lg font-semibold text-gray-900">Target Consumer</h2>
+              <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+                <h2 className="text-lg font-semibold text-[#000080]">Target Consumer</h2>
+
+                <div className="space-y-2">
+                  <FieldLabel text="Number of Target Responses" />
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={targetResponses === 0 ? "" : String(targetResponses)}
+                    onChange={(event) => {
+                      const digits = event.target.value.replace(/\D/g, "");
+                      setTargetResponses(digits ? Number(digits) : 0);
+                    }}
+                    className="app-input"
+                    required
+                  />
+                  {studyMode === "SENSORY" && (
+                    <p className="text-xs text-gray-500">
+                      Recommended participants: {selectedConsumerObjective.minTarget}
+                      {"–"}
+                      {selectedConsumerObjective.maxTarget} for {selectedConsumerObjective.label}
+                    </p>
+                  )}
+                  {studyMode === "SENSORY" && targetResponses > selectedConsumerObjective.maxTarget && (
+                    <p className="text-xs font-medium text-[#c2410c]">
+                      Above the recommended {selectedConsumerObjective.maxTarget} for this stage. You can still proceed.
+                    </p>
+                  )}
+                </div>
 
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="space-y-1">
@@ -1668,7 +2001,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     + Add Consumer Profile Preference
                   </button>
                 ) : (
-                  <div className="space-y-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4">
+                  <div className="space-y-4 rounded-lg border border-[#e2e8f0] bg-white p-4">
                     <div className="flex items-start justify-between gap-3">
                       <p className="text-xs italic text-[#64748b]">Check all that applies</p>
                       <button
@@ -1716,7 +2049,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                   </div>
                 )}
 
-                <label className="inline-flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 text-sm font-medium text-[#334155] cursor-pointer hover:bg-[#f1f5f9]">
+                <label className="inline-flex items-center gap-3 rounded-lg border border-[#e2e8f0] bg-white px-4 py-3 text-sm font-medium text-[#334155] cursor-pointer hover:bg-[#f1f5f9]">
                   <input
                     type="checkbox"
                     checked={randomizePanelSelection}
@@ -1727,23 +2060,97 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </label>
               </section>
 
-              <section className="space-y-2">
-                <h2 className="text-lg font-semibold text-gray-900">Choose what to test</h2>
-                <div className="rounded-lg border border-[#dbe3ec] bg-[#f8fafc] p-3">
-                  <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
+              <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+                <h2 className="text-lg font-semibold text-[#000080]">Choose what to test</h2>
+                <p className="text-xs text-[#64748b]">
+                  Overall Liking (9-point hedonic scale) is always collected. Choose what else to measure per sample.
+                </p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {TEST_MODE_OPTIONS.map((option) => {
+                    const active = testMode === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => setTestMode(option.value)}
+                        className={`rounded-lg border p-3 text-left transition ${
+                          active ? "border-[#f97316] bg-[#fff7ed]" : "border-[#e2e8f0] bg-white hover:border-[#fdba74]"
+                        }`}
+                      >
+                        <span className={`block text-sm font-semibold ${active ? "text-[#c2410c]" : "text-[#0f172a]"}`}>
+                          {option.label}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-[#64748b]">{option.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {testMode === "OVERALL_ONLY" && (
+                  <div className="rounded-lg border border-[#dbe3ec] bg-white p-4 text-sm text-[#475569]">
+                    Only the <span className="font-semibold text-[#0f172a]">Overall Liking (9-point hedonic scale)</span> question
+                    will be collected for each sample. No attribute ratings or CATA terms are added.
+                  </div>
+                )}
+
+                {testMode === "CATA" && (
+                  <CataTermEditor terms={cataTerms} onChange={setCataTerms} categoryLabel={selectedProfile.label} />
+                )}
+
+                {testMode === "ATTRIBUTE" && (
+                  <>
+                <div className="rounded-lg border border-[#dbe3ec] bg-white p-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <p className="text-sm font-semibold text-[#0f172a]">Attribute</p>
+                    <button
+                      type="button"
+                      onClick={() => setShowRatingHelp((previous) => !previous)}
+                      aria-expanded={showRatingHelp}
+                      aria-label="What do these ratings mean?"
+                      className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[#cbd5e1] text-xs font-semibold text-[#475569] hover:bg-[#f1f5f9]"
+                    >
+                      ?
+                    </button>
+                  </div>
                   <p className="mt-1 text-xs text-[#64748b]">
-                    {consumerObjective === "MARKET_READINESS"
-                      ? "Consumer Acceptability does not add JAR diagnostics; listed attributes use Attribute Liking only."
-                      : "Each listed attribute will be evaluated with JAR first, followed by Attribute Liking."}
+                    Pick which ratings to collect for each attribute below: JAR diagnostics, Attribute Liking, or both.
                   </p>
-                  {consumerObjective !== "MARKET_READINESS" && (
-                    <p className="mt-2 text-xs text-[#64748b]">
-                      JAR shows whether each attribute is too low, just right, or too high; Attribute Liking captures preference on the 9-point scale.
-                    </p>
-                  )}
+                  <p className="mt-2 text-xs text-[#64748b]">
+                    JAR shows whether each attribute is too low, just right, or too high; Attribute Liking captures preference on the 9-point scale.
+                  </p>
                   <p className="mt-2 text-xs font-medium text-[#0f172a]">
                     Overall Liking (9-point hedonic scale) is always included as the first question for each sample.
                   </p>
+                  {showRatingHelp && (
+                    <div className="mt-3 grid gap-3 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs font-semibold text-[#0f172a]">JAR scale (1–5)</p>
+                        <p className="mt-1 text-[11px] text-[#64748b]">
+                          How far an attribute is from &ldquo;just right&rdquo; in either direction.
+                        </p>
+                        <ol className="mt-2 space-y-0.5 text-[11px] text-[#475569]">
+                          {JAR_SCALE_LABELS.map((label, scaleIndex) => (
+                            <li key={label}>
+                              <span className="font-medium">{scaleIndex + 1}</span> — {label}
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                      <div>
+                        <p className="text-xs font-semibold text-[#0f172a]">Attribute Liking — 9-point hedonic (1–9)</p>
+                        <p className="mt-1 text-[11px] text-[#64748b]">
+                          How much the panelist likes the attribute.
+                        </p>
+                        <ol className="mt-2 space-y-0.5 text-[11px] text-[#475569]">
+                          {HEDONIC_SCALE_LABELS.map((label, scaleIndex) => (
+                            <li key={label}>
+                              <span className="font-medium">{scaleIndex + 1}</span> — {label}
+                            </li>
+                          ))}
+                        </ol>
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
                   <table className="w-full min-w-[560px] text-sm">
@@ -1751,7 +2158,33 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                       <tr>
                         <th className="px-4 py-2 text-left">Attribute</th>
                         <th className="px-4 py-2 text-left">Type</th>
-                        <th className="px-4 py-2 text-left">Ratings</th>
+                        <th className="px-4 py-2 text-left">
+                          <span>Ratings</span>
+                          <div className="mt-1 flex flex-col gap-1 text-[11px] font-normal text-[#475569]">
+                            <label className="inline-flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={allJarSelected}
+                                ref={(node) => {
+                                  if (node) node.indeterminate = someJarSelected && !allJarSelected;
+                                }}
+                                onChange={(event) => setAllRatings("jar", event.target.checked)}
+                              />
+                              JAR
+                            </label>
+                            <label className="inline-flex items-center gap-1.5">
+                              <input
+                                type="checkbox"
+                                checked={allLikingSelected}
+                                ref={(node) => {
+                                  if (node) node.indeterminate = someLikingSelected && !allLikingSelected;
+                                }}
+                                onChange={(event) => setAllRatings("liking", event.target.checked)}
+                              />
+                              Attribute Liking
+                            </label>
+                          </div>
+                        </th>
                         <th className="px-4 py-2 text-left">Action</th>
                       </tr>
                     </thead>
@@ -1762,7 +2195,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                           ATTRIBUTE_DIMENSIONS.indexOf(a.dimension) - ATTRIBUTE_DIMENSIONS.indexOf(b.dimension)
                         )
                         .map(({ attribute, index }) => (
-                          <tr key={`${attribute.name}-${index}`} className="border-t">
+                          <tr key={attribute.id} className="border-t">
                             <td className="px-4 py-2">
                               <input
                                 value={attribute.name}
@@ -1780,16 +2213,30 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                                 className="app-select"
                               >
                                 {ATTRIBUTE_DIMENSIONS.map((dimension) => (
-                                  <option key={`${attribute.name}-${dimension}`} value={dimension}>
+                                  <option key={`${attribute.id}-${dimension}`} value={dimension}>
                                     {dimension}
                                   </option>
                                 ))}
                               </select>
                             </td>
                             <td className="px-4 py-2 text-gray-700">
-                              <div className="space-y-1 text-xs text-[#475569]">
-                                {consumerObjective !== "MARKET_READINESS" && <p>JAR</p>}
-                                <p>Attribute Liking</p>
+                              <div className="flex flex-col gap-1.5 text-xs text-[#475569]">
+                                <label className="inline-flex items-center gap-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={attribute.isJarTarget}
+                                    onChange={(event) => updateAttributeRating(index, "jar", event.target.checked)}
+                                  />
+                                  JAR
+                                </label>
+                                <label className="inline-flex items-center gap-1.5">
+                                  <input
+                                    type="checkbox"
+                                    checked={attribute.isLikingTarget}
+                                    onChange={(event) => updateAttributeRating(index, "liking", event.target.checked)}
+                                  />
+                                  Attribute Liking
+                                </label>
                               </div>
                             </td>
                             <td className="px-4 py-2 text-gray-700">
@@ -1849,23 +2296,138 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     </button>
                   </div>
                 </div>
+                  </>
+                )}
+              </section>
+
+              <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+                <div>
+                  <h2 className="text-lg font-semibold text-[#000080]">Additional Questions</h2>
+                  <p className="mt-1 text-xs text-[#64748b]">
+                    Optional custom questions panelists answer after the sensory evaluation. Pick an answer type for each
+                    question, just like a form builder.
+                  </p>
+                </div>
+
+                {customQuestions.length === 0 && (
+                  <p className="rounded-lg border border-dashed border-[#cbd5e1] bg-white px-4 py-3 text-sm text-[#64748b]">
+                    No additional questions yet. Add multiple choice, checkbox, or paragraph questions of your own.
+                  </p>
+                )}
+
+                <div className="space-y-4">
+                  {customQuestions.map((question, questionIndex) => (
+                    <div key={question.id} className="space-y-3 rounded-xl border border-[#e2e8f0] bg-white p-4">
+                      <div className="grid gap-3 md:grid-cols-[1fr_14rem]">
+                        <input
+                          value={question.text}
+                          onChange={(event) => updateCustomQuestionText(question.id, event.target.value)}
+                          placeholder="Untitled Question"
+                          className="app-input"
+                          aria-label={`Additional question ${questionIndex + 1}`}
+                        />
+                        <select
+                          value={question.type}
+                          onChange={(event) =>
+                            updateCustomQuestionType(question.id, event.target.value as CustomQuestionType)
+                          }
+                          className="app-select"
+                          aria-label={`Answer type for question ${questionIndex + 1}`}
+                        >
+                          <option value="MULTIPLE_CHOICE">Multiple Choice</option>
+                          <option value="CHECKBOXES">Checkboxes</option>
+                          <option value="PARAGRAPH">Paragraph</option>
+                        </select>
+                      </div>
+
+                      {question.type === "PARAGRAPH" ? (
+                        <div className="rounded-lg border border-dashed border-[#cbd5e1] bg-[#f8fafc] px-3 py-2 text-sm text-[#94a3b8]">
+                          Long answer text
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {question.options.map((option, optionIndex) => (
+                            <div key={`${question.id}-option-${optionIndex}`} className="flex items-center gap-2">
+                              <span className="w-4 shrink-0 text-center text-sm text-[#94a3b8]">
+                                {question.type === "MULTIPLE_CHOICE" ? "○" : "▢"}
+                              </span>
+                              <input
+                                value={option}
+                                onChange={(event) =>
+                                  updateCustomQuestionOption(question.id, optionIndex, event.target.value)
+                                }
+                                placeholder={`Option ${optionIndex + 1}`}
+                                className="app-input flex-1"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => removeCustomQuestionOption(question.id, optionIndex)}
+                                disabled={question.options.length <= 2}
+                                className="rounded-md border border-[#fecaca] px-2 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fef2f2] disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                          {question.options.length < MAX_CUSTOM_QUESTION_OPTIONS && (
+                            <button
+                              type="button"
+                              onClick={() => addCustomQuestionOption(question.id)}
+                              className="text-xs font-semibold text-[#c2410c] hover:underline"
+                            >
+                              + Add option
+                            </button>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center justify-between border-t border-[#e2e8f0] pt-3">
+                        <label className="inline-flex items-center gap-2 text-xs font-medium text-[#334155]">
+                          <input
+                            type="checkbox"
+                            checked={question.required}
+                            onChange={() => toggleCustomQuestionRequired(question.id)}
+                          />
+                          Required
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeCustomQuestion(question.id)}
+                          className="rounded-md border border-[#fecaca] px-2.5 py-1 text-xs font-semibold text-[#b91c1c] hover:bg-[#fef2f2]"
+                        >
+                          Delete question
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {customQuestions.length < MAX_CUSTOM_QUESTIONS && (
+                  <button
+                    type="button"
+                    onClick={addCustomQuestion}
+                    className="inline-flex items-center gap-2 rounded-lg border border-dashed border-[#cbd5e1] bg-white px-4 py-2 text-sm font-medium text-[#0f172a] hover:bg-[#f8fafc]"
+                  >
+                    + Add Additional Question
+                  </button>
+                )}
               </section>
 
               <div className="rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-4 text-sm text-[#334155]">
                 Questionnaire Logic generated on create:
                 <ul className="list-disc pl-5 mt-2 space-y-1">
                   <li>Overall Acceptability (9-point hedonic scale, mandatory)</li>
-                  <li>JAR only for selected TOP attributes (max 3)</li>
+                  <li>Attribute Liking and/or JAR per attribute, as selected above</li>
                   <li>5-point standardized JAR scale: Much too low → Much too high</li>
                   <li>Reporting collapses to Too Low (1-2), JAR (3), Too High (4-5)</li>
                   <li>Open-ended improvement question</li>
                 </ul>
               </div>
 
-              <section className="flex flex-col gap-4">
-                <h2 className="text-lg font-semibold text-gray-900">{requiresFicBooking ? "Book FIC" : "Testing Schedule"}</h2>
+              <section style={{ borderColor: "#f97316" }} className="flex flex-col gap-4 rounded-2xl border border-[#f97316] p-5 sm:p-6">
+                <h2 className="text-lg font-semibold text-[#000080]">{requiresFicBooking ? "Book FIC" : "Testing Schedule"}</h2>
               {requiresFicBooking && (
-                <div className="order-1 grid gap-4 md:grid-cols-2">
+                <div className="order-1 grid gap-4 md:grid-cols-2 rounded-2xl border border-slate-200 bg-[#f8fafc] p-5 sm:p-6">
                   <div className="space-y-1">
                     <FieldLabel text="Region" />
                     <select
@@ -2026,37 +2588,9 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                 </div>
               )}
 
-              <div className="order-2 grid md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <FieldLabel text="Number of Target Responses" />
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    pattern="[0-9]*"
-                    value={targetResponses === 0 ? "" : String(targetResponses)}
-                    onChange={(event) => {
-                      const digits = event.target.value.replace(/\D/g, "");
-                      setTargetResponses(digits ? Number(digits) : 0);
-                    }}
-                    className="app-input"
-                    required
-                  />
-                  {studyMode === "SENSORY" && (
-                    <p className="text-xs text-gray-500">
-                      Minimum participants: {selectedConsumerObjective.defaultTarget}
-                      {" "}({selectedConsumerObjective.panelCount}
-                      {selectedConsumerObjective.bufferCount > 0
-                        ? ` + ${selectedConsumerObjective.bufferCount} buffer`
-                        : " panelists"}
-                      )
-                    </p>
-                  )}
-                </div>
-              </div>
-              
               <div className="order-4 space-y-4 rounded-xl border border-[#e2e8f0] bg-[#f8fafc] p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <h3 className="text-base font-semibold text-[#0f172a]">Testing Schedule (Date, Time, Session Capacity)</h3>
+                  <h3 className="text-base font-semibold text-[#000080]">Testing Schedule (Date, Time, Session Capacity)</h3>
                   <span className="rounded-full bg-[#edf5ff] px-2.5 py-1 text-xs font-medium text-[#1e4f8f]">
                     Total session capacity: {totalSessionCapacity}
                   </span>
@@ -2278,11 +2812,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                               required
                             />
                             <input
-                              type="number"
-                              min={1}
+                              type="text"
+                              inputMode="numeric"
                               value={slot.capacity}
                               onChange={(event) => updateSessionSlot(slot.id, "capacity", event.target.value)}
                               className="app-input"
+                              placeholder="Session Capacity"
                               disabled={dayBlocked}
                               required
                             />
@@ -2307,10 +2842,10 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             </section>
           )}
 
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Details</h2>
-            <div className={`grid gap-4 ${studyMode === "MARKET" ? "md:grid-cols-2" : "md:grid-cols-1"}`}>
-              {studyMode === "MARKET" && (
+          {studyMode === "MARKET" && (
+            <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+              <h2 className="text-lg font-semibold text-[#000080]">Details</h2>
+              <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
                   <FieldLabel text="Number of Target Responses" />
                   <input
@@ -2326,12 +2861,12 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
                     required
                   />
                 </div>
-              )}
-            </div>
-          </section>
+              </div>
+            </section>
+          )}
 
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold text-gray-900">Sample Setups</h2>
+          <section style={{ borderColor: "#f97316" }} className="space-y-4 rounded-2xl border border-[#f97316] bg-[#f8fafc] p-5 sm:p-6">
+            <h2 className="text-lg font-semibold text-[#000080]">Sample Setups</h2>
             <div className="grid md:grid-cols-2 gap-4 items-end">
               <div className="space-y-2">
                 <FieldLabel text="No. of Sample Setups" />
@@ -2519,6 +3054,7 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
             type="submit"
             disabled={isPending}
             className="app-button-primary w-full py-3 disabled:opacity-70"
+            style={{ backgroundColor: "#000080", borderColor: "#000080" }}
           >
             {isPending ? "Creating Study..." : "Generate Study Form and QR"}
           </button>
@@ -2530,9 +3066,11 @@ export function CreateStudyBuilder({ embedded = false }: { embedded?: boolean })
 
 function createAttributeRowsFromProfile(profileAttributes: ProfileAttributeRow[]) {
   return profileAttributes.slice(0, 5).map((attribute) => ({
+    id: createId(),
     name: attribute.name,
     dimension: attribute.dimension,
     isJarTarget: true,
+    isLikingTarget: true,
     isCustom: false,
     actionable: true,
   }));
@@ -2574,11 +3112,106 @@ function validateObjectiveSelection(attributes: AttributeRow[]) {
     }
   }
 
+  const missingRating = attributes.find(
+    (attribute) => attribute.name.trim().length > 0 && !attribute.isJarTarget && !attribute.isLikingTarget
+  );
+  if (missingRating) {
+    return {
+      valid: false,
+      error: `Each attribute needs at least one rating (JAR or Attribute Liking): "${missingRating.name.trim()}".`,
+    };
+  }
+
   return { valid: true, error: "" };
 }
 
 function FieldLabel({ text }: { text: string }) {
   return <label className="text-sm font-medium text-[#334155]">{text}</label>;
+}
+
+function CataTermEditor({
+  terms,
+  onChange,
+  categoryLabel,
+}: {
+  terms: string[];
+  onChange: (next: string[]) => void;
+  categoryLabel: string;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const addTerm = (raw: string) => {
+    const value = raw.trim();
+    if (!value || terms.length >= CATA_MAX_TERMS) return;
+    if (terms.some((term) => term.toLowerCase() === value.toLowerCase())) {
+      setDraft("");
+      return;
+    }
+    onChange([...terms, value]);
+    setDraft("");
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="rounded-lg border border-[#dbe3ec] bg-white p-3">
+        <p className="text-sm font-semibold text-[#0f172a]">Check-All-That-Apply (CATA) terms</p>
+        <p className="mt-1 text-xs text-[#64748b]">
+          Panelists tick every term that applies to each sample. Aim for {CATA_TARGET_TERMS} terms ({CATA_MAX_TERMS} max,
+          at least {CATA_MIN_TERMS}).{categoryLabel ? ` Suggested for: ${categoryLabel}.` : ""}
+        </p>
+        <div className="mt-3 flex gap-2">
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                addTerm(draft);
+              }
+            }}
+            placeholder="e.g., Sweet, Crunchy, Artificial aftertaste"
+            className="app-input"
+          />
+          <button
+            type="button"
+            onClick={() => addTerm(draft)}
+            disabled={terms.length >= CATA_MAX_TERMS}
+            className="shrink-0 rounded-md border border-[#ed7f2a] px-3 py-1 text-xs font-semibold text-[#c2410c] hover:bg-[#fff6ed] disabled:opacity-50"
+          >
+            Add term
+          </button>
+        </div>
+        <p className="mt-2 text-[11px] text-[#64748b]">
+          {terms.length}/{CATA_MAX_TERMS} terms
+        </p>
+      </div>
+
+      {terms.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {terms.map((term, index) => (
+            <span
+              key={`${term}-${index}`}
+              className="inline-flex items-center gap-1.5 rounded-full border border-[#fed7aa] bg-[#fff7ed] px-3 py-1 text-xs font-semibold text-[#c2410c]"
+            >
+              {term}
+              <button
+                type="button"
+                onClick={() => onChange(terms.filter((_, itemIndex) => itemIndex !== index))}
+                aria-label={`Remove ${term}`}
+                className="text-sm leading-none text-[#c2410c] hover:text-[#9a3412]"
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[11px] text-[#64748b]">
+        CATA results are analyzed with Frequency Analysis and Cochran&apos;s Q Test.
+      </p>
+    </div>
+  );
 }
 
 function ConsumerCategory<T extends string>({
@@ -2702,12 +3335,19 @@ function createSessionSlotDraft(dayOffset: number, slotIndex: number): SessionSl
     label: template.label,
     startTime: template.startTime,
     endTime: template.endTime,
-    capacity: 10,
+    capacity: "",
   };
 }
 
 function createId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Session capacity is edited as a free-text string; coerce it to a positive
+// integer for totals/validation/payload (0 signals empty or invalid input).
+function parseCapacity(value: string) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function isSafeProductImageDataUrl(value: string) {

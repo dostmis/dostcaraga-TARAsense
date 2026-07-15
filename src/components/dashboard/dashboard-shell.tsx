@@ -81,13 +81,13 @@ export function DashboardShell({
 
         <div className="app-dashboard-shell h-full">
           <aside className="app-shell-sidebar flex h-full min-h-0 flex-col border-r border-[#e2e8f0] bg-white shadow-[0_14px_34px_rgba(15,23,42,0.08)] lg:shadow-none">
-            <div className="border-b border-[#e2e8f0] px-4 py-4 md:px-5 md:py-5">
+            <div className="border-b border-[#e2e8f0] px-4 py-4 md:px-5 md:py-5 lg:h-[72px] lg:flex lg:flex-col lg:justify-center lg:py-0">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="text-2xl font-bold tracking-tight text-[#0f172a]">
                     TARA<span className="text-[#f97316]">sense</span>
                   </p>
-                  <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[#64748b]">{workspaceLabel}</p>
+                  <p className="mt-1 text-sm font-semibold uppercase tracking-[0.14em] text-[#14264A]">{workspaceLabel}</p>
                 </div>
 
                 <label
@@ -111,7 +111,7 @@ export function DashboardShell({
                     "group flex items-center justify-between rounded-xl border px-2.5 py-2 transition-all",
                     item.active
                       ? "border-[#fed7aa] bg-gradient-to-r from-[#fff7ed] to-white text-[#c2410c] shadow-[0_4px_16px_rgba(249,115,22,0.14)]"
-                      : "border-transparent bg-transparent text-[#334155] hover:border-[#e2e8f0] hover:bg-[#f8fafc]"
+                      : "border-transparent bg-transparent text-[#334155] hover:border-[#fed7aa] hover:bg-[#fff7ed] hover:text-[#c2410c]"
                   )}
                 >
                   <span className="flex min-w-0 items-center gap-2.5 text-[13px] font-semibold leading-5">
@@ -120,7 +120,7 @@ export function DashboardShell({
                         "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border transition-colors",
                         item.active
                           ? "border-[#fdba74] bg-[#ffedd5] text-[#c2410c]"
-                          : "border-[#e2e8f0] bg-white text-[#64748b] group-hover:border-[#cbd5e1] group-hover:text-[#334155]"
+                          : "border-[#e2e8f0] bg-white text-[#64748b] group-hover:border-[#fdba74] group-hover:bg-[#ffedd5] group-hover:text-[#c2410c]"
                       )}
                     >
                       <item.icon size={15} />
@@ -140,7 +140,7 @@ export function DashboardShell({
           </aside>
 
           <main className="app-shell-main h-full min-h-0 overflow-y-auto">
-            <header className="sticky top-0 z-10 border-b border-[#e2e8f0] bg-white/90 px-3 py-3 backdrop-blur-sm sm:px-4 md:px-6 lg:px-8">
+            <header className="sticky top-0 z-10 border-b border-[#e2e8f0] bg-white/90 px-3 py-3 backdrop-blur-sm sm:px-4 md:px-6 lg:px-8 lg:h-[72px] lg:flex lg:flex-col lg:justify-center">
               <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
                 <div className="flex w-full items-center gap-2 xl:max-w-md">
                   <label
@@ -195,14 +195,14 @@ export function DashboardShell({
                 <header className="border-b border-[#e2e8f0] pb-5">
                   <div className="mt-1 min-w-0">
                     <p className="text-xs uppercase tracking-[0.18em] text-[#64748b]">{workspaceLabel}</p>
-                    <h1 className="mt-1 break-words text-2xl font-semibold leading-tight text-[#0f172a] sm:text-3xl">{title}</h1>
+                    <h1 className="mt-1 break-words text-2xl font-semibold leading-tight text-[#14264A] sm:text-3xl">{title}</h1>
                     <p className="mt-1 max-w-2xl text-sm leading-6 text-[#64748b]">{subtitle}</p>
                   </div>
 
                   {stats.length > 0 && (
                     <section className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                       {stats.map((stat) => (
-                        <article key={stat.label} className="rounded-lg border border-[#e2e8f0] bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
+                        <article key={stat.label} className="rounded-lg border border-[#f97316] bg-white p-4 shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
                           <div className="flex min-w-0 items-center gap-3">
                             <span
                               className={cx(

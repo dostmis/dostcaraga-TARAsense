@@ -8,14 +8,24 @@ import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
 import { buildSessionSchedule, extractBookingDatesFromSchedule } from "@/lib/study-session-builder";
 import { DEFAULT_TARGET_CONSUMER, normalizeTargetConsumer } from "@/lib/target-consumer";
+import type { OnBehalfOfMsme } from "@/lib/study-on-behalf";
 import { logUserUsage } from "@/lib/user-usage";
 import { validateLocationConsistency } from "@/lib/locations/psgc-queries";
 import { findUsersMatchingTarget } from "@/lib/locations/study-visibility";
 import { z } from "zod";
-import type { StudyTargetScope } from "@prisma/client";
+import { randomUUID } from "node:crypto";
+import type { Prisma, StudyTargetScope } from "@prisma/client";
+import {
+  CUSTOM_QUESTION_TYPES,
+  MAX_CUSTOM_OPTION_TEXT,
+  MAX_CUSTOM_QUESTION_OPTIONS,
+  MAX_CUSTOM_QUESTION_TEXT,
+  MAX_CUSTOM_QUESTIONS,
+  finalizeCustomQuestions,
+} from "@/lib/custom-questions";
 
-type ConsumerObjective = "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING";
-type StudyStageValue = "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS";
+type ConsumerObjective = "EXPLORATORY" | "MARKET_READINESS" | "REFINEMENT" | "PROTOTYPING";
+type StudyStageValue = "EXPLORATORY" | "PROTOTYPE_CHECK" | "REFINEMENT" | "MARKET_READINESS";
 const ATTRIBUTE_DIMENSIONS = [
   "Appearance",
   "Aroma",
@@ -55,6 +65,12 @@ const BuilderSessionSlotSchema = z.object({
 const BuilderPayloadSchema = z.object({
   studyMode: z.enum(["MARKET", "SENSORY"]),
   coordinationMode: z.enum(["FIC_ASSISTED", "SELF_MANAGED_PUBLIC"]).default("FIC_ASSISTED"),
+  // PUBLIC studies are discoverable in peer evaluation; PRIVATE studies are only
+  // reachable by their targeted participants / direct QR link.
+  visibility: z.enum(["PUBLIC", "PRIVATE"]).default("PUBLIC"),
+  // What a consumer test measures per sample (Overall Liking is always collected).
+  testMode: z.enum(["OVERALL_ONLY", "ATTRIBUTE", "CATA"]).default("ATTRIBUTE"),
+  cataTerms: z.array(z.string().trim().min(1).max(80)).max(20).default([]),
   marketStudyType: z
     .enum([
       "PACKAGING_EVALUATION",
@@ -67,6 +83,7 @@ const BuilderPayloadSchema = z.object({
   sensoryMethod: z.string().optional(),
   consumerObjective: z
     .enum([
+      "EXPLORATORY",
       "MARKET_READINESS",
       "REFINEMENT",
       "PROTOTYPING",
@@ -74,6 +91,9 @@ const BuilderPayloadSchema = z.object({
     .optional(),
   studyTitle: z.string().min(3),
   purpose: z.string().min(3),
+  // Optional Project this study should be linked to when created from a
+  // Project workspace. The link is only applied if the caller owns the project.
+  projectId: z.string().min(1).optional(),
   targetConsumer: z
     .object({
       ageRange: z.tuple([z.number().int().min(10).max(100), z.number().int().min(10).max(100)]),
@@ -109,6 +129,7 @@ const BuilderPayloadSchema = z.object({
         name: z.string().min(1),
         dimension: AttributeDimensionSchema,
         isJarTarget: z.boolean().optional(),
+        isLikingTarget: z.boolean().optional(),
         isCustom: z.boolean().optional(),
         actionable: z.boolean().optional(),
       })
@@ -131,6 +152,21 @@ const BuilderPayloadSchema = z.object({
   testingDurationDays: z.number().int().min(1).max(31).optional(),
   sessionSlots: z.array(BuilderSessionSlotSchema).default([]),
   questions: z.array(z.string().min(1)).default([]),
+  customQuestions: z
+    .array(
+      z.object({
+        id: z.string().max(64).optional(),
+        text: z.string().max(MAX_CUSTOM_QUESTION_TEXT),
+        type: z.enum(CUSTOM_QUESTION_TYPES),
+        options: z
+          .array(z.string().max(MAX_CUSTOM_OPTION_TEXT))
+          .max(MAX_CUSTOM_QUESTION_OPTIONS)
+          .default([]),
+        required: z.boolean().default(false),
+      })
+    )
+    .max(MAX_CUSTOM_QUESTIONS)
+    .default([]),
   locationTarget: z
     .object({
       scope: z.enum(["ALL", "REGION", "PROVINCE", "CITY", "BARANGAY"]).default("CITY"),
@@ -140,12 +176,23 @@ const BuilderPayloadSchema = z.object({
       barangayId: z.string().nullable().optional(),
     })
     .optional(),
+  // Captured when a FIC creates a study on behalf of an MSME without an account.
+  // Stored inside the study's targetDemographics JSON (no schema migration).
+  onBehalfOfMsme: z
+    .object({
+      businessName: z.string().trim().max(200).optional(),
+      contactPerson: z.string().trim().max(160).optional(),
+      contactEmail: z.string().trim().max(160).email().optional().or(z.literal("")),
+      contactPhone: z.string().trim().max(60).optional(),
+    })
+    .optional(),
 });
 
 const OBJECTIVE_PANEL_REQUIREMENTS: Record<ConsumerObjective, number> = {
-  MARKET_READINESS: 100,
+  EXPLORATORY: 4,
+  MARKET_READINESS: 75,
   REFINEMENT: 50,
-  PROTOTYPING: 35,
+  PROTOTYPING: 20,
 };
 
 type ResolvedLocationContext =
@@ -163,6 +210,25 @@ type ResolvedLocationContext =
       publicAddressDetails: string;
     };
 
+function normalizeOnBehalfOfMsme(
+  input: z.infer<typeof BuilderPayloadSchema>["onBehalfOfMsme"]
+): OnBehalfOfMsme | null {
+  const businessName = input?.businessName?.trim() ?? "";
+  if (!businessName) {
+    return null;
+  }
+  const asTrimmed = (value: string | undefined) => {
+    const trimmed = value?.trim() ?? "";
+    return trimmed.length > 0 ? trimmed : undefined;
+  };
+  return {
+    businessName,
+    contactPerson: asTrimmed(input?.contactPerson),
+    contactEmail: asTrimmed(input?.contactEmail),
+    contactPhone: asTrimmed(input?.contactPhone),
+  };
+}
+
 export async function createStudyFromBuilder(
   payload: unknown,
   actor?: { userId: string; role: "MSME" | "ADMIN" | "FIC" | "CONSUMER" }
@@ -178,8 +244,15 @@ export async function createStudyFromBuilder(
     if (!session) {
       return { success: false, error: "Login required." };
     }
-    if (session.role !== "MSME" && session.role !== "ADMIN") {
-      return { success: false, error: "Only MSME or Admin users can create studies." };
+    if (session.role !== "MSME" && session.role !== "ADMIN" && session.role !== "FIC") {
+      return { success: false, error: "Only MSME, FIC, or Admin users can create studies." };
+    }
+
+    // FIC users always create on behalf of an (account-less) MSME, so the MSME's
+    // business name is required for attribution.
+    const onBehalfOfMsme = normalizeOnBehalfOfMsme(validated.onBehalfOfMsme);
+    if (session.role === "FIC" && !onBehalfOfMsme) {
+      return { success: false, error: "Enter the MSME business name you are creating this study for." };
     }
 
     const creator = await prisma.user.findUnique({
@@ -191,15 +264,15 @@ export async function createStudyFromBuilder(
     }
 
     if (validated.studyMode === "MARKET") {
-      const result = await createMarketStudy(validated, creator.id, locationContext.value);
+      const result = await createMarketStudy(validated, creator.id, locationContext.value, onBehalfOfMsme);
       if (result.success && result.studyId) {
         await persistStudyLocationTarget(result.studyId, validated, locationContext.value, null);
       }
       scheduleStudyNotifications(validated, creator.id, session.role, result);
-      return result;
+      return await applyProjectLink(result, validated.projectId, creator.id, session.role);
     }
 
-    const result = await createSensoryStudy(validated, creator.id, locationContext.value);
+    const result = await createSensoryStudy(validated, creator.id, locationContext.value, onBehalfOfMsme);
     if (result.success && result.studyId) {
       const ficUserId =
         locationContext.value.coordinationMode === "FIC_ASSISTED" && validated.ficUserId
@@ -208,7 +281,7 @@ export async function createStudyFromBuilder(
       await persistStudyLocationTarget(result.studyId, validated, locationContext.value, ficUserId);
     }
     scheduleStudyNotifications(validated, creator.id, session.role, result);
-    return result;
+    return await applyProjectLink(result, validated.projectId, creator.id, session.role);
   } catch (error) {
     console.error("Create study from builder failed:", error);
     if (error instanceof z.ZodError) {
@@ -221,6 +294,55 @@ export async function createStudyFromBuilder(
       return { success: false, error: error.message };
     }
     return { success: false, error: "Failed to create study." };
+  }
+}
+
+/**
+ * If the study was created from a Project workspace, link it to that project
+ * (verifying ownership) and redirect back into the project's Studies tab.
+ * Any failure here is non-fatal: the study still exists, we just skip the link.
+ */
+async function applyProjectLink<
+  T extends { success?: boolean; studyId?: string; redirectPath?: string }
+>(
+  result: T,
+  projectId: string | undefined,
+  creatorId: string,
+  role: "MSME" | "ADMIN" | "FIC" | "CONSUMER"
+): Promise<T> {
+  if (!projectId || !result.success || !result.studyId) {
+    return result;
+  }
+  try {
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { id: true, creatorId: true },
+    });
+    if (!project || (project.creatorId !== creatorId && role !== "ADMIN")) {
+      return result;
+    }
+    const study = await prisma.study.findUnique({
+      where: { id: result.studyId },
+      select: { title: true },
+    });
+    await prisma.$transaction([
+      prisma.study.update({ where: { id: result.studyId }, data: { projectId } }),
+      prisma.projectActivity.create({
+        data: {
+          projectId,
+          actorId: creatorId,
+          type: "STUDY_CREATED",
+          summary: `Study “${study?.title ?? "Untitled"}” created`,
+        },
+      }),
+    ]);
+    return {
+      ...result,
+      redirectPath: `/msme/dashboard?view=projects&projectId=${projectId}&tab=studies`,
+    };
+  } catch (error) {
+    console.error("Failed to link study to project:", error);
+    return result;
   }
 }
 
@@ -275,7 +397,8 @@ function resolveLocationContext(payload: z.infer<typeof BuilderPayloadSchema>) {
 async function createMarketStudy(
   payload: z.infer<typeof BuilderPayloadSchema>,
   creatorId: string,
-  locationContext: ResolvedLocationContext
+  locationContext: ResolvedLocationContext,
+  onBehalfOfMsme: OnBehalfOfMsme | null
 ) {
   if (!payload.marketStudyType) {
     return { success: false, error: "Select a market study type." };
@@ -303,8 +426,12 @@ async function createMarketStudy(
         targetConsumer,
         studyMode: "MARKET",
         coordinationMode: locationContext.coordinationMode,
+        visibility: payload.visibility,
         marketStudyType: payload.marketStudyType,
         numberOfSamples: payload.numberOfSamples,
+        ...(onBehalfOfMsme
+          ? { onBehalfOfMsme: JSON.parse(JSON.stringify(onBehalfOfMsme)) as Prisma.InputJsonObject }
+          : {}),
         ...(locationContext.coordinationMode === "FIC_ASSISTED"
           ? {
               region: locationContext.region,
@@ -351,7 +478,8 @@ async function createMarketStudy(
 async function createSensoryStudy(
   payload: z.infer<typeof BuilderPayloadSchema>,
   creatorId: string,
-  locationContext: ResolvedLocationContext
+  locationContext: ResolvedLocationContext,
+  onBehalfOfMsme: OnBehalfOfMsme | null
 ) {
   if (!payload.sensoryStudyType) {
     return { success: false, error: "Select a sensory study type." };
@@ -451,15 +579,22 @@ async function createSensoryStudy(
   await ensurePanelists(Math.max(payload.targetResponses * 2, 40));
 
   const stage = mapStage(payload.sensoryStudyType, objective);
+  if (payload.testMode === "CATA" && payload.cataTerms.length < 5) {
+    return { success: false, error: "Add at least 5 CATA terms." };
+  }
   const planResult = validateSensoryAttributePlan(payload.attributes, objective);
   if (!planResult.success) {
     return { success: false, error: planResult.error };
   }
 
-  const attributeQuestions = buildSensoryQuestionnaire(
-    planResult.rows,
-    payload.sensoryStudyType === "CONSUMER_TEST" && objective !== "MARKET_READINESS"
+  const attributeQuestions = buildSensoryQuestionnaire(planResult.rows);
+  const customQuestionsResult = finalizeCustomQuestions(
+    payload.customQuestions ?? [],
+    () => randomUUID()
   );
+  if (!customQuestionsResult.success) {
+    return { success: false, error: customQuestionsResult.error };
+  }
   const ficBookingPayload =
     selectedFic && locationContext.coordinationMode === "FIC_ASSISTED"
       ? {
@@ -488,6 +623,10 @@ async function createSensoryStudy(
         experience: "regular-consumer",
         studyMode: "SENSORY",
         coordinationMode: locationContext.coordinationMode,
+        visibility: payload.visibility,
+        testMode: payload.testMode,
+        cataTerms: payload.cataTerms,
+        ...(onBehalfOfMsme ? { onBehalfOfMsme } : {}),
         sensoryStudyType: payload.sensoryStudyType,
         sensoryMethod: payload.sensoryMethod,
         consumerObjective: objective,
@@ -496,8 +635,8 @@ async function createSensoryStudy(
               consumerPanelRequirement: {
                 requiredPanels: OBJECTIVE_PANEL_REQUIREMENTS[objective],
                 minimumPanels: OBJECTIVE_PANEL_REQUIREMENTS[objective],
-                panelCount: objective === "PROTOTYPING" ? 25 : OBJECTIVE_PANEL_REQUIREMENTS[objective],
-                bufferCount: objective === "PROTOTYPING" ? 10 : 0,
+                panelCount: OBJECTIVE_PANEL_REQUIREMENTS[objective],
+                bufferCount: 0,
               },
             }
           : {}),
@@ -521,6 +660,7 @@ async function createSensoryStudy(
       sopMode: "STRICT_NEW_STUDY",
       ficBooking: ficBookingPayload,
       attributes: attributeQuestions,
+      customQuestions: customQuestionsResult.value,
       screeningQuestions: [
         {
           question: "Age qualification check",
@@ -689,9 +829,9 @@ function buildSensoryQuestionnaire(
     name: string;
     dimension: AttributeDimension;
     isJarTarget: boolean;
+    isLikingTarget: boolean;
     isCustom: boolean;
-  }>,
-  includeJarRatings: boolean
+  }>
 ) {
   const rows = attributes.slice(0, 5).filter((attribute) => attribute.name.trim().length > 0);
   const output: Array<{
@@ -720,17 +860,19 @@ function buildSensoryQuestionnaire(
   });
 
   rows.forEach((attribute) => {
-    output.push({
-      name: attribute.name,
-      type: "ATTRIBUTE_LIKING",
-      attributeType: attribute.dimension.toLowerCase(),
-      sourceAttributeName: attribute.name,
-      isCustom: attribute.isCustom,
-      questionType: "HEDONIC",
-      scaleType: "NINE_PT",
-    });
+    if (attribute.isLikingTarget) {
+      output.push({
+        name: attribute.name,
+        type: "ATTRIBUTE_LIKING",
+        attributeType: attribute.dimension.toLowerCase(),
+        sourceAttributeName: attribute.name,
+        isCustom: attribute.isCustom,
+        questionType: "HEDONIC",
+        scaleType: "NINE_PT",
+      });
+    }
 
-    if (includeJarRatings) {
+    if (attribute.isJarTarget) {
       output.push({
         name: `${attribute.name} (JAR)`,
         type: "JAR",
@@ -774,12 +916,14 @@ function mapStage(
 ): StudyStageValue {
   if (objective === "MARKET_READINESS") return "MARKET_READINESS";
   if (objective === "REFINEMENT") return "REFINEMENT";
+  if (objective === "EXPLORATORY") return "EXPLORATORY";
   return "PROTOTYPE_CHECK";
 }
 
 function formatConsumerObjectiveLabel(objective: ConsumerObjective) {
-  if (objective === "MARKET_READINESS") return "Consumer Acceptability";
+  if (objective === "MARKET_READINESS") return "Acceptability";
   if (objective === "REFINEMENT") return "Refinement";
+  if (objective === "EXPLORATORY") return "Exploratory Consumer Evaluation (FGD)";
   return "Prototyping";
 }
 
@@ -788,6 +932,7 @@ function validateSensoryAttributePlan(
     name: string;
     dimension: AttributeDimension;
     isJarTarget?: boolean;
+    isLikingTarget?: boolean;
     isCustom?: boolean;
     actionable?: boolean;
   }>,
@@ -797,11 +942,20 @@ function validateSensoryAttributePlan(
     .map((attribute) => ({
       name: attribute.name.trim(),
       dimension: attribute.dimension,
-      isJarTarget: objective === "MARKET_READINESS" ? false : true,
+      isJarTarget: attribute.isJarTarget ?? objective !== "MARKET_READINESS",
+      isLikingTarget: attribute.isLikingTarget ?? true,
       isCustom: Boolean(attribute.isCustom),
       actionable: Boolean(attribute.actionable),
     }))
     .filter((attribute) => attribute.name.length > 0);
+
+  const missingRating = rows.find((row) => !row.isJarTarget && !row.isLikingTarget);
+  if (missingRating) {
+    return {
+      success: false as const,
+      error: `Each attribute needs at least one rating (JAR or Attribute Liking): "${missingRating.name}".`,
+    };
+  }
 
   if (rows.length > 5) {
     return { success: false as const, error: "A maximum of 5 attributes may be selected per test." };
@@ -1049,7 +1203,7 @@ async function notifyLocationMatchedConsumers(
 async function pushStudyNotifications(
   payload: z.infer<typeof BuilderPayloadSchema>,
   creatorId: string,
-  creatorRole: "MSME" | "ADMIN",
+  creatorRole: "MSME" | "ADMIN" | "FIC",
   result: { success: boolean; studyId?: string }
 ) {
   if (!result.success || !result.studyId) {
@@ -1075,15 +1229,20 @@ async function pushStudyNotifications(
     },
   });
 
-  if (creatorRole !== "MSME") {
+  // Admin-created studies do not broadcast to consumers or FIC staff.
+  if (creatorRole === "ADMIN") {
     return;
   }
 
+  // MSME- and FIC-created studies recruit real consumers via location-targeted
+  // notifications so panelists in the target area are invited to respond.
   if (payload.studyMode === "SENSORY" || payload.studyMode === "MARKET") {
     await notifyLocationMatchedConsumers(result.studyId, payload.studyTitle);
   }
 
-  if (payload.coordinationMode === "FIC_ASSISTED") {
+  // Only MSME-submitted bookings need to alert FIC facility staff. When a FIC
+  // creates a FIC-assisted study themselves, they already know about it.
+  if (creatorRole === "MSME" && payload.coordinationMode === "FIC_ASSISTED") {
     await notifyRole("FIC", {
       title: "New MSME booking to FIC",
       message: `${payload.studyTitle} was submitted for FIC-assisted coordination at ${payload.facilityType ?? "assigned facility"}.`,
@@ -1098,7 +1257,7 @@ async function pushStudyNotifications(
 function scheduleStudyNotifications(
   payload: z.infer<typeof BuilderPayloadSchema>,
   creatorId: string,
-  creatorRole: "MSME" | "ADMIN",
+  creatorRole: "MSME" | "ADMIN" | "FIC",
   result: { success: boolean; studyId?: string }
 ) {
   if (!result.success || !result.studyId) {
