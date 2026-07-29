@@ -4,7 +4,7 @@ import { saveFicFacilityProfile } from "@/app/actions/auth-actions";
 import { getUserLocationLabels } from "@/app/actions/location-actions";
 import { AppBackButton } from "@/components/ui/app-back-button";
 import { TimedToast } from "@/components/ui/timed-toast";
-import { ROLE_DASHBOARD_PATH, type AppRole } from "@/lib/auth/roles";
+import { ROLE_DASHBOARD_PATH, ROLE_LABEL, type AppRole } from "@/lib/auth/roles";
 import { prisma } from "@/lib/db";
 import { SurfaceCard } from "@/components/ui/page-shell";
 import { ProfileLocationSection } from "@/components/profile/profile-location-section";
@@ -323,7 +323,7 @@ export async function ProfileWorkspace({
 
       <SurfaceCard className="text-sm text-[#6f5b4f]">
         <p>
-          Account Role: <span className="font-medium text-[#2f241d]">{user.role}</span>
+          Account Role: <span className="font-medium text-[#2f241d]">{ROLE_LABEL[role]}</span>
         </p>
         <p className="mt-1">
           Joined: <span className="font-medium text-[#2f241d]">{new Date(user.createdAt).toLocaleDateString()}</span>

@@ -170,6 +170,7 @@ export default async function SensoryTestPage({ params }: PageProps) {
         : null,
   }));
   const customQuestions = parseCustomQuestions(participant.study.customQuestions);
+  const cataTerms = resolveStudyCataTerms(participant.study.targetDemographics);
   const sampleCount = resolveStudySampleCount(participant.study.targetDemographics);
   const samplePlan = buildSamplePlan(
     participant.sampleCodes,
@@ -188,8 +189,23 @@ export default async function SensoryTestPage({ params }: PageProps) {
       productName={participant.study.productName}
       sampleCount={sampleCount}
       samplePlan={samplePlan}
+      cataTerms={cataTerms}
     />
   );
+}
+
+function resolveStudyCataTerms(value: unknown): string[] {
+  if (!value || typeof value !== "object") {
+    return [];
+  }
+  const raw = (value as { cataTerms?: unknown }).cataTerms;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
 }
 
 function resolveStudySampleCount(value: unknown) {

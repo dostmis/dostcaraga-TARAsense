@@ -297,6 +297,26 @@ interface CustomQuestionSummary {
   textAnswers?: string[];
 }
 
+interface CataTermResult {
+  term: string;
+  countsBySample: number[];
+  percentBySample: number[];
+  totalChecks: number;
+  cochranQ: number;
+  df: number;
+  pValue: number | null;
+  significant: boolean;
+  interpretation: string;
+}
+
+interface CataAnalysis {
+  sampleLabels: string[];
+  respondentsPerSample: number[];
+  completeCaseCount: number;
+  terms: CataTermResult[];
+  warnings: string[];
+}
+
 interface AnalysisPayload {
   generatedAt: string;
   studyOverview?: StudyOverview | null;
@@ -316,6 +336,7 @@ interface AnalysisPayload {
     dataQuality?: DataQualityReport | null;
     advancedAnalytics?: AdvancedAnalytics | null;
     customQuestionSummaries?: CustomQuestionSummary[];
+    cataAnalysis?: CataAnalysis | null;
     studyDesign?: "MONADIC" | "WITHIN_SUBJECT";
   };
   attributeStats: Array<{
@@ -442,6 +463,7 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
   const dataQuality = analysis.dataQuality ?? overallLiking.dataQuality ?? null;
   const advancedAnalytics = analysis.advancedAnalytics ?? overallLiking.advancedAnalytics ?? null;
   const customQuestionSummaries = overallLiking.customQuestionSummaries ?? [];
+  const cataAnalysis = overallLiking.cataAnalysis ?? null;
   const exportContext = buildAnalysisExportContext(analysis);
 
   const sampleTabs =
@@ -651,6 +673,12 @@ export function ResultsDashboard({ studyId, backHref }: ResultsDashboardProps) {
       {customQuestionSummaries.length > 0 && (
         <Card title="Additional Questions">
           <CustomQuestionSummariesCard summaries={customQuestionSummaries} />
+        </Card>
+      )}
+
+      {cataAnalysis && (
+        <Card title="Check-All-That-Apply (CATA)">
+          <CataAnalysisCard analysis={cataAnalysis} />
         </Card>
       )}
 
@@ -1383,6 +1411,78 @@ function DataQualityCard({ report }: { report: DataQualityReport }) {
           No data quality issues detected.
         </p>
       )}
+    </div>
+  );
+}
+
+function CataAnalysisCard({ analysis }: { analysis: CataAnalysis }) {
+  if (analysis.terms.length === 0) {
+    const messages = analysis.warnings.length > 0 ? analysis.warnings : ["No CATA data available yet."];
+    return (
+      <div className="space-y-2 text-sm text-[#64748b]">
+        {messages.map((warning, index) => (
+          <p key={index}>{warning}</p>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4 text-sm">
+      <p className="text-xs text-[#64748b]">
+        Percentage of panelists who selected each term per sample (Frequency Analysis). Cochran&apos;s Q tests whether the
+        selection rate differs across samples (complete cases: {analysis.completeCaseCount}).
+      </p>
+      <div className="overflow-x-auto rounded-lg border border-[#e2e8f0]">
+        <table className="w-full min-w-[520px] text-sm">
+          <thead className="bg-[#f8fafc] text-left text-xs uppercase tracking-wide text-[#64748b]">
+            <tr>
+              <th className="px-3 py-2 font-semibold">Term</th>
+              {analysis.sampleLabels.map((label) => (
+                <th key={label} className="px-3 py-2 font-semibold">
+                  {label}
+                </th>
+              ))}
+              <th className="px-3 py-2 font-semibold">Cochran&apos;s Q</th>
+              <th className="px-3 py-2 font-semibold">p-value</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#f1f5f9]">
+            {analysis.terms.map((term) => (
+              <tr key={term.term}>
+                <td className="px-3 py-2 font-medium text-[#1e293b]">
+                  {term.term}
+                  {term.significant && (
+                    <span className="ml-2 rounded-full bg-[#fff7ed] px-2 py-0.5 text-[10px] font-semibold text-[#c2410c]">
+                      Differs
+                    </span>
+                  )}
+                </td>
+                {term.percentBySample.map((percent, index) => (
+                  <td key={index} className="px-3 py-2 tabular-nums text-[#475569]">
+                    {percent}% <span className="text-[#94a3b8]">({term.countsBySample[index] ?? 0})</span>
+                  </td>
+                ))}
+                <td className="px-3 py-2 tabular-nums text-[#475569]">{term.pValue === null ? "—" : term.cochranQ}</td>
+                <td className={`px-3 py-2 tabular-nums ${term.significant ? "font-semibold text-[#c2410c]" : "text-[#64748b]"}`}>
+                  {term.pValue === null ? "—" : term.pValue < 0.001 ? "<0.001" : term.pValue.toFixed(3)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {analysis.warnings.length > 0 && (
+        <div className="space-y-1">
+          {analysis.warnings.map((warning, index) => (
+            <p key={index} className="text-xs text-[#94a3b8]">
+              {warning}
+            </p>
+          ))}
+        </div>
+      )}
+      <p className="text-[11px] text-[#64748b]">
+        A significant Cochran&apos;s Q (p &lt; 0.05) means the term was selected at different rates across samples.
+      </p>
     </div>
   );
 }

@@ -70,7 +70,7 @@ export function RoleApplicationView({
           <RoleCard
             accent="emerald"
             icon={Store}
-            title="MSME"
+            title="INNOVATOR"
             tagline="Micro, Small, and Medium Enterprise"
             description="For businesses engaged in food production, processing, or related services that meet the criteria for MSME."
             bullets={["Operate a registered business", "Are involved in food-related products or services", "Want to access MSME-exclusive resources and opportunities"]}
@@ -297,7 +297,7 @@ function MsmeApplyScreen({ hasPendingMsmeRequest }: { hasPendingMsmeRequest: boo
   return (
     <div className="space-y-6">
       <BackLink />
-      <PageHeading title="Apply as MSME" subtitle="Tell us why you'd like MSME access. Our team will review your request and notify you of the result." />
+      <PageHeading title="Apply as INNOVATOR" subtitle="Tell us why you'd like MSME access. Our team will review your request and notify you of the result." />
 
       <section className="overflow-hidden rounded-2xl border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
         <div className="h-1.5 bg-emerald-600" />

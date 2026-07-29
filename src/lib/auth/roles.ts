@@ -9,6 +9,14 @@ export const ROLE_DASHBOARD_PATH: Record<AppRole, string> = {
   ADMIN: "/admin/dashboard",
 };
 
+/** User-facing display name for each app role. The MSME role is branded "INNOVATOR". */
+export const ROLE_LABEL: Record<AppRole, string> = {
+  MSME: "INNOVATOR",
+  FIC: "FIC",
+  CONSUMER: "CONSUMER",
+  ADMIN: "ADMIN",
+};
+
 export function parseRole(value: string): AppRole | null {
   if (value === "FIC_MANAGER") return "FIC";
   if (value === "RESEARCHER") return "CONSUMER";

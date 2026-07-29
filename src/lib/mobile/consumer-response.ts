@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { createWorkflowTraceId, runInBackground } from "@/lib/async-workflow";
 import { prisma } from "@/lib/db";
+import { normalizeCataSelections, resolveStudyCataTerms } from "@/lib/cata";
 import { notifyUser } from "@/lib/notifications";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { logUserUsage } from "@/lib/user-usage";
@@ -68,6 +69,15 @@ const SubmitResponseSchema = z.object({
     })
     .optional(),
   customAnswers: CustomAnswersSchema.optional(),
+  cataSelections: z
+    .array(
+      z.object({
+        sampleNumber: z.number().int().min(1),
+        terms: z.array(z.string().trim().min(1).max(80)).max(50),
+      })
+    )
+    .max(MAX_SAMPLE_RESPONSES)
+    .optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -203,6 +213,9 @@ export async function submitMobileConsumerResponse(input: {
       return { success: false as const, error: customAnswersResult.error };
     }
 
+    const cataTerms = resolveStudyCataTerms(participant.study.targetDemographics);
+    const cataSelections = normalizeCataSelections(validated.cataSelections, cataTerms, sampleCount);
+
     const responseData = JSON.parse(
       JSON.stringify({
         overallLiking: normalized.overallLiking,
@@ -211,6 +224,7 @@ export async function submitMobileConsumerResponse(input: {
         sampleRanking: normalized.sampleRanking,
         comments: normalized.comments,
         customAnswers: customAnswersResult.value,
+        ...(cataSelections.length > 0 ? { cataSelections } : {}),
       })
     ) as Prisma.InputJsonValue;
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowRight, Building2, Loader2, Lock, Mail, User } from "lucide-react";
+import { ArrowRight, Loader2, Lock, Mail, User } from "lucide-react";
 import { useState } from "react";
 import { useFormStatus } from "react-dom";
 import { GoogleSignInButton } from "@/components/auth/google-sign-in-button";
@@ -41,18 +41,6 @@ export function RegisterForm({ action, redirectTo = "" }: RegisterFormProps) {
             <User className="h-4 w-4" />
           </span>
           <input id="name" name="name" placeholder="Jane Doe" required className="app-icon-input__control" autoComplete="name" />
-        </div>
-      </div>
-
-      <div className="space-y-2">
-        <label htmlFor="organization" className="text-sm font-medium text-foreground">
-          Organization <span className="text-xs font-normal text-muted-foreground">(optional)</span>
-        </label>
-        <div className="app-icon-input">
-          <span className="app-icon-input__icon">
-            <Building2 className="h-4 w-4" />
-          </span>
-          <input id="organization" name="organization" placeholder="Acme Corp" className="app-icon-input__control" autoComplete="organization" />
         </div>
       </div>
 

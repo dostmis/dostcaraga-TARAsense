@@ -2,10 +2,13 @@ import { prisma } from "@/lib/db";
 import { DecisionType, Prisma, StudyDesign as PrismaStudyDesign } from "@prisma/client";
 import { createOpenAICompatibleClient, parseJsonObjectResponse } from "@/lib/ai/openai-compatible";
 import {
+  analyzeCata,
   compareSamples,
   computeCompactLetterDisplay,
   formatPValue,
   meanConfidenceInterval,
+  type CataAnalysisResult,
+  type CataResponseInput,
   type ComparisonResult,
   type ConfidenceInterval,
   type StudyDesign,
@@ -47,6 +50,7 @@ interface StudyResponse {
   overallLiking?: number;
   attributes: Record<string, unknown>;
   customAnswers?: CustomAnswers;
+  cataSelections?: Array<{ sampleNumber: number; terms: string[] }>;
   sampleResponses?: SampleResponseEntry[];
   startedAt?: string;
   submittedAt?: string;
@@ -252,6 +256,7 @@ export class SensoryAnalysisEngine {
       parseCustomQuestions(study?.customQuestions),
       parsedResponses
     );
+    const cataAnalysis = this.buildCataAnalysis(study?.targetDemographics, parsedResponses, sampleObservations);
     const automaticInterpretation = this.buildAutomaticInterpretation(
       overallStats,
       sampleInsights,
@@ -306,6 +311,7 @@ export class SensoryAnalysisEngine {
       dataQuality,
       advancedAnalytics,
       customQuestionSummaries,
+      cataAnalysis,
       jarFramework: {
         tooLow: "1-2",
         justRight: "3",
@@ -356,6 +362,85 @@ export class SensoryAnalysisEngine {
     }
 
     return analysis;
+  }
+
+  private resolveCataTerms(targetDemographics: unknown): string[] {
+    if (!targetDemographics || typeof targetDemographics !== "object") {
+      return [];
+    }
+    const raw = (targetDemographics as { cataTerms?: unknown }).cataTerms;
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    const seen = new Set<string>();
+    const terms: string[] = [];
+    for (const entry of raw) {
+      if (typeof entry !== "string") continue;
+      const value = entry.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      terms.push(value);
+    }
+    return terms;
+  }
+
+  /**
+   * Frequency Analysis + Cochran's Q for a CATA study. Returns null for non-CATA
+   * studies; returns an empty-terms result (with a warning) when no CATA answers
+   * have been collected yet.
+   */
+  private buildCataAnalysis(
+    targetDemographics: unknown,
+    responses: StudyResponse[],
+    sampleObservations: SampleObservation[]
+  ): CataAnalysisResult | null {
+    const cataTerms = this.resolveCataTerms(targetDemographics);
+    if (cataTerms.length === 0) {
+      return null;
+    }
+
+    const labelByNumber = new Map<number, string>();
+    sampleObservations.forEach((observation) => {
+      if (!labelByNumber.has(observation.sampleNumber)) {
+        labelByNumber.set(observation.sampleNumber, observation.sampleLabel || `Sample ${observation.sampleNumber}`);
+      }
+    });
+    responses.forEach((response) => {
+      (response.cataSelections ?? []).forEach((entry) => {
+        if (!labelByNumber.has(entry.sampleNumber)) {
+          labelByNumber.set(entry.sampleNumber, `Sample ${entry.sampleNumber}`);
+        }
+      });
+    });
+    const sampleNumbers = Array.from(labelByNumber.keys()).sort((left, right) => left - right);
+    const sampleLabels = sampleNumbers.map((sampleNumber) => labelByNumber.get(sampleNumber) as string);
+
+    const cataInputs: CataResponseInput[] = responses
+      .filter((response) => Array.isArray(response.cataSelections) && response.cataSelections.length > 0)
+      .map((response) => {
+        const checksBySample: Record<string, string[]> = {};
+        (response.cataSelections ?? []).forEach((entry) => {
+          const label = labelByNumber.get(entry.sampleNumber);
+          if (label) {
+            checksBySample[label] = Array.isArray(entry.terms) ? entry.terms : [];
+          }
+        });
+        return { respondentId: response.respondentId, checksBySample };
+      });
+
+    if (cataInputs.length === 0) {
+      return {
+        sampleLabels,
+        respondentsPerSample: sampleLabels.map(() => 0),
+        completeCaseCount: 0,
+        terms: [],
+        warnings: ["No CATA responses have been collected yet."],
+      };
+    }
+
+    return analyzeCata(cataTerms, sampleLabels, cataInputs);
   }
 
   private buildCustomQuestionSummaries(customQuestions: CustomQuestion[], responses: StudyResponse[]) {

@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { cookies } from "next/headers";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { CATA_RESPONSE_KEY, normalizeCataSelections, resolveStudyCataTerms } from "@/lib/cata";
 import { SensoryAnalysisEngine } from "@/lib/services/analysis-engine";
 import { Prisma } from "@prisma/client";
 import { notifyUser } from "@/lib/notifications";
@@ -41,6 +42,8 @@ const JAR_BUCKET_VALUES = new Set(["too_low", "just_right", "too_high"]);
 const DraftAttributeValueSchema = z.union([
   z.number().min(1).max(9),
   z.string().max(MAX_OPEN_ENDED_LENGTH),
+  // CATA selections for a sample (list of ticked terms).
+  z.array(z.string().max(80)).max(50),
   z
     .object({
       type: z.string().max(40).optional(),
@@ -125,6 +128,15 @@ const SubmitResponseSchema = z.object({
     })
     .optional(),
   customAnswers: CustomAnswersSchema.optional(),
+  cataSelections: z
+    .array(
+      z.object({
+        sampleNumber: z.number().int().min(1),
+        terms: z.array(z.string().trim().min(1).max(80)).max(50),
+      })
+    )
+    .max(MAX_SAMPLE_RESPONSES)
+    .optional(),
   submittedAt: z.string().datetime().optional(),
 });
 
@@ -316,6 +328,10 @@ function validateDraftResponsesAgainstStudy(
     }
 
     for (const [attributeName, value] of Object.entries(row)) {
+      if (attributeName === CATA_RESPONSE_KEY) {
+        // CATA selections are validated at submit time against the study's terms.
+        continue;
+      }
       const attribute = sampleAttributeByName.get(attributeName);
       if (!attribute) {
         return { success: false as const, error: `Unknown draft attribute "${attributeName}".` };
@@ -378,6 +394,9 @@ export async function submitResponse(studyId: string, participantId: string, pay
       return { success: false, error: customAnswersResult.error };
     }
 
+    const cataTerms = resolveStudyCataTerms(participant.study.targetDemographics);
+    const cataSelections = normalizeCataSelections(validated.cataSelections, cataTerms, sampleCount);
+
     const responseData = JSON.parse(
       JSON.stringify({
         overallLiking: normalized.overallLiking,
@@ -386,6 +405,7 @@ export async function submitResponse(studyId: string, participantId: string, pay
         sampleRanking: normalized.sampleRanking,
         comments: normalized.comments,
         customAnswers: customAnswersResult.value,
+        ...(cataSelections.length > 0 ? { cataSelections } : {}),
       })
     ) as Prisma.InputJsonValue;
 

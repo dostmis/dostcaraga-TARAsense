@@ -182,17 +182,17 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
   return (
     <div className="min-h-screen bg-[#f8fafc] px-4 py-8">
       <div className="mx-auto max-w-3xl space-y-6">
-        <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6 shadow-sm">
+        <section className="rounded-2xl border border-[#ea580c] bg-white p-6 shadow-sm">
           <p className="text-xs uppercase tracking-[0.2em] text-[#9a5822]">Study Access</p>
-          <h1 className="mt-2 text-2xl font-semibold text-[#0f172a]">{study.title}</h1>
+          <h1 className="mt-2 text-2xl font-bold text-[#1746ff]">{study.title}</h1>
           <p className="mt-1 text-sm text-[#64748b]">{study.productName}</p>
           {error && <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
           {message && <p className="mt-3 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{message}</p>}
         </section>
 
         {!participant && isAuthenticatedEvaluator && (
-          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-            <h2 className="text-lg font-semibold text-[#0f172a]">Automated Eligibility Check</h2>
+          <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+            <h2 className="text-lg font-bold text-[#1746ff]">Automated Eligibility Check</h2>
             {!panelist && (
               <>
                 <p className="mt-1 text-sm text-[#64748b]">
@@ -305,8 +305,8 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
         )}
 
         {!participant && isGuest && (
-          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-            <h2 className="text-lg font-semibold text-[#0f172a]">Guest access not ready</h2>
+          <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+            <h2 className="text-lg font-bold text-[#1746ff]">Guest access not ready</h2>
             <p className="mt-1 text-sm text-[#64748b]">
               Your guest session could not be verified. Please rescan the walk-in QR code from the facilitator.
             </p>
@@ -314,8 +314,8 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
         )}
 
         {participant?.status === "WAITLIST" && (
-          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-            <h2 className="text-lg font-semibold text-[#0f172a]">Participation Submitted</h2>
+          <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+            <h2 className="text-lg font-bold text-[#1746ff]">Participation Submitted</h2>
             <p className="mt-1 text-sm text-[#64748b]">
               Your profile matched this study. Please wait for the MSME team to qualify your slot and send session instructions.
             </p>
@@ -326,8 +326,8 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
         )}
 
         {participant && participant.status !== "WAITLIST" && isScheduledCheckIn && !canProceedToScheduledEvaluation && (
-          <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-            <h2 className="text-lg font-semibold text-[#0f172a]">Slot Check-In Complete</h2>
+          <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+            <h2 className="text-lg font-bold text-[#1746ff]">Slot Check-In Complete</h2>
             <p className="mt-1 text-sm text-[#64748b]">
               {participantSessionState === "UPCOMING"
                 ? "Your account is checked in for this scheduled study. Evaluation will open when your assigned session starts."
@@ -336,7 +336,7 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
                   : "Your account is checked in for this scheduled study. Please ask the facilitator to confirm your testing session."}
             </p>
             <div className="mt-4 rounded-lg border border-[#e2e8f0] bg-[#f8fafc] p-3 text-sm">
-              <p className="font-medium text-[#0f172a]">Panelist No: {formatPanelistNumber(participant.panelistNumber)}</p>
+              <p className="font-small text-[#0f172a]">Panelist No.: {formatPanelistNumber(participant.panelistNumber)}</p>
               <p className="mt-1 text-[#64748b]">
                 Slot: {formatParticipantSession(participant.sessionAt ?? participant.requestedSessionAt, sessionSchedule)}
               </p>
@@ -346,10 +346,13 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
 
         {canShowEvaluationConsent && participant && (
           <>
-            <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-              <h2 className="text-lg font-semibold text-[#0f172a]">Assigned Sample Randomize Codes</h2>
+            <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+              <h2 className="text-lg font-bold text-[#1746ff]">Assigned Sample Randomize Codes</h2>
+              <p className="mt-2 text-2xl font-bold tracking-tight text-[#0f172a]">
+                Panelist No: {formatPanelistNumber(participant.panelistNumber)}
+              </p>
               <p className="mt-1 text-sm text-[#64748b]">
-                Panelist No: {formatPanelistNumber(participant.panelistNumber)} | Use these codes to match your physical samples.
+                Use these codes to match your physical samples.
               </p>
               {participant.guestCode && (
                 <p className="mt-1 text-xs font-medium text-[#ea580c]">Guest ID: {participant.guestCode}</p>
@@ -364,8 +367,8 @@ export default async function StartStudyPage({ params, searchParams }: PageProps
               </div>
             </section>
 
-            <section className="rounded-2xl border border-[#e2e8f0] bg-white p-6">
-              <h2 className="text-lg font-semibold text-[#0f172a]">TARAsense Sensory Evaluation Consent (Short Form)</h2>
+            <section className="rounded-2xl border border-[#ea580c] bg-white p-6">
+              <h2 className="text-lg font-bold text-[#1746ff]">TARAsense Sensory Evaluation Consent (Short Form)</h2>
               <p className="mt-2 text-sm text-[#64748b]">Please read before continuing.</p>
               <div className="mt-4 space-y-3 text-sm text-[#64748b]">
                 <p>You are invited to participate in a food sensory evaluation conducted through TARAsense.</p>

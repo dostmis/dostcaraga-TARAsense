@@ -262,7 +262,7 @@ export default async function ConsumerDashboardPage({ searchParams }: PageProps)
           active: activeView === "completed",
         },
         {
-          label: "Role Applications",
+          label: "Change Role",
           href: "/consumer/dashboard?view=applications",
           icon: ShieldCheck,
           badge: `${pendingApplications}`,

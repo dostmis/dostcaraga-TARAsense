@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Beaker, Check, ListOrdered, MessageSquareText, Star } from "lucide-react";
 import { deleteResponseDraft, getResponseDraft, saveResponseDraft, submitResponse } from "@/app/actions/response-actions";
 import type { CustomAnswers, CustomAnswerValue, CustomQuestion } from "@/lib/custom-questions";
+import { CATA_RESPONSE_KEY } from "@/lib/cata";
 
 type AttributeType = "OVERALL_LIKING" | "ATTRIBUTE_LIKING" | "JAR" | "OPEN_ENDED";
 type EvaluationPhase = "instructions" | "sample" | "ranking" | "comments";
@@ -25,9 +26,11 @@ interface SensoryAttribute {
 }
 
 interface SampleStep {
-  type: "JAR" | "ATTRIBUTE_LIKING" | "OVERALL_LIKING";
+  type: "JAR" | "ATTRIBUTE_LIKING" | "OVERALL_LIKING" | "CATA";
   baseName: string;
   attribute: SensoryAttribute;
+  /** CATA terms, present only for CATA steps. */
+  terms?: string[];
 }
 
 interface SamplePlanItem {
@@ -44,6 +47,8 @@ interface TestInterfaceProps {
   productName: string;
   sampleCount?: number;
   samplePlan?: SamplePlanItem[];
+  /** CATA terms (empty unless the study is a CATA study). */
+  cataTerms?: string[];
 }
 
 interface FinalComments {
@@ -71,6 +76,7 @@ export function SensoryTestInterface({
   productName,
   sampleCount = 1,
   samplePlan,
+  cataTerms = [],
 }: TestInterfaceProps) {
   const normalizedSamplePlan = useMemo(
     () => normalizeSamplePlan(samplePlan, sampleCount),
@@ -90,11 +96,12 @@ export function SensoryTestInterface({
           type: attribute.type,
           sourceAttributeName: attribute.sourceAttributeName ?? null,
         })),
+        cataTerms,
       }),
-    [attributes, normalizedSamplePlan]
+    [attributes, cataTerms, normalizedSamplePlan]
   );
   const totalSamples = normalizedSamplePlan.length;
-  const sampleSteps = useMemo(() => buildSampleSteps(attributes), [attributes]);
+  const sampleSteps = useMemo(() => buildSampleSteps(attributes, cataTerms), [attributes, cataTerms]);
   const openEndedQuestions = useMemo(
     () => attributes.filter((attribute) => attribute.type === "OPEN_ENDED"),
     [attributes]
@@ -307,7 +314,11 @@ export function SensoryTestInterface({
 
     const overallLikingEntry = attributes.find((attribute) => attribute.type === "OVERALL_LIKING");
     const sampleResponses = normalizedSamplePlan.map((sample, index) => {
-      const attributeValues = responsesBySample[index] ?? {};
+      // CATA selections are submitted separately (cataSelections), so keep the
+      // CATA key out of the attribute payload — the server rejects unknown keys.
+      const attributeValues = Object.fromEntries(
+        Object.entries(responsesBySample[index] ?? {}).filter(([key]) => key !== CATA_RESPONSE_KEY)
+      );
       return {
         sampleNumber: sample.sampleNumber,
         sampleLabel: `Sample ${sample.sampleNumber}`,
@@ -350,6 +361,17 @@ export function SensoryTestInterface({
       return;
     }
 
+    const cataSelections =
+      cataTerms.length > 0
+        ? normalizedSamplePlan.map((sample, index) => {
+            const selected = responsesBySample[index]?.[CATA_RESPONSE_KEY];
+            return {
+              sampleNumber: sample.sampleNumber,
+              terms: Array.isArray(selected) ? (selected as string[]) : [],
+            };
+          })
+        : undefined;
+
     const result = await submitResponse(studyId, participantId, {
       overallLiking: payload.overallLiking,
       attributes: payload.attributes,
@@ -357,6 +379,7 @@ export function SensoryTestInterface({
       sampleRanking: rankingRows,
       comments,
       customAnswers,
+      cataSelections,
       submittedAt: new Date().toISOString(),
     });
 
@@ -452,7 +475,9 @@ export function SensoryTestInterface({
                     ? "Overall Liking"
                     : currentStepConfig?.type === "JAR"
                       ? "JAR"
-                      : "Attribute Liking"}
+                      : currentStepConfig?.type === "CATA"
+                        ? "Check All That Apply"
+                        : "Attribute Liking"}
                 </span>
                 <p className="mt-3 text-xs font-medium uppercase tracking-wide text-[#64748b]">
                   {formatSampleDisplay(currentSample)}
@@ -817,6 +842,10 @@ function renderSampleScale(
 ) {
   if (!step) return null;
 
+  if (step.type === "CATA") {
+    return <CataScale terms={step.terms ?? []} currentResponses={currentResponses} onChange={onChange} />;
+  }
+
   if (step.type === "OVERALL_LIKING" || step.type === "ATTRIBUTE_LIKING") {
     return (
       <LikingScale
@@ -882,6 +911,56 @@ function LikingScale({
   );
 }
 
+function CataScale({
+  terms,
+  currentResponses,
+  onChange,
+}: {
+  terms: string[];
+  currentResponses: Record<string, unknown>;
+  onChange: (attributeName: string, value: unknown) => void;
+}) {
+  const selected = Array.isArray(currentResponses[CATA_RESPONSE_KEY])
+    ? (currentResponses[CATA_RESPONSE_KEY] as string[])
+    : [];
+  const toggle = (term: string) => {
+    const next = selected.includes(term) ? selected.filter((item) => item !== term) : [...selected, term];
+    onChange(CATA_RESPONSE_KEY, next);
+  };
+
+  return (
+    <div className="space-y-3">
+      <p className="text-center text-sm text-[#64748b]">Check every term that applies to this sample. Leave blank if none apply.</p>
+      <div className="grid grid-cols-2 gap-2">
+        {terms.map((term) => {
+          const isSelected = selected.includes(term);
+          return (
+            <button
+              type="button"
+              key={term}
+              onClick={() => toggle(term)}
+              className={`flex items-center gap-2 rounded-lg border px-3 py-2.5 text-left text-sm transition-all ${
+                isSelected
+                  ? "border-[#fdba74] bg-[#fff7ed] text-[#ea580c]"
+                  : "border-[#e2e8f0] bg-white text-[#0f172a] hover:border-[#fdba74]"
+              }`}
+            >
+              <span
+                className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                  isSelected ? "border-[#ea580c] bg-[#f97316] text-white" : "border-[#cbd5e1] bg-white"
+                }`}
+              >
+                {isSelected && <Check className="h-3 w-3" />}
+              </span>
+              <span className="leading-tight">{term}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function JarScale({
   attribute,
   currentResponses,
@@ -935,7 +1014,7 @@ function JarScale({
   );
 }
 
-function buildSampleSteps(attributes: SensoryAttribute[]) {
+function buildSampleSteps(attributes: SensoryAttribute[], cataTerms: string[] = []) {
   const overall = attributes.find((attribute) => attribute.type === "OVERALL_LIKING");
   const likingAttributes = attributes.filter((attribute) => attribute.type === "ATTRIBUTE_LIKING");
   const jarAttributes = attributes.filter((attribute) => attribute.type === "JAR");
@@ -980,11 +1059,23 @@ function buildSampleSteps(attributes: SensoryAttribute[]) {
     steps.push({ type: "OVERALL_LIKING", attribute: overall, baseName: overall.name });
   }
 
+  const cleanCataTerms = cataTerms.map((term) => term.trim()).filter((term) => term.length > 0);
+  if (cleanCataTerms.length > 0) {
+    steps.push({
+      type: "CATA",
+      baseName: "Check all that apply",
+      attribute: { id: CATA_RESPONSE_KEY, name: CATA_RESPONSE_KEY, type: "OVERALL_LIKING" },
+      terms: cleanCataTerms,
+    });
+  }
+
   return steps;
 }
 
 function isSampleStepAnswered(step: SampleStep | undefined, currentResponses: Record<string, unknown>) {
   if (!step) return false;
+  // Check-All-That-Apply allows "none apply" as a valid answer, so it never blocks.
+  if (step.type === "CATA") return true;
   return currentResponses[step.attribute.name] !== undefined;
 }
 
