@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000" viewBox="0 0 3000 2000">
+  <rect width="3000" height="2000" fill="#ffffff"/>
+  <rect x="110" y="110" width="2780" height="1780" rx="48" fill="#fcfcfd" stroke="#e8ecf4" stroke-width="3"/>
+
+  <text x="150" y="340" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="700" letter-spacing="4" fill="#0b1a40">TARAsense Brand Reference</text>
+  <text x="150" y="395" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="500" fill="#64748b">Print-ready visual guide with color hex values and font style notes</text>
+
+  <rect x="150" y="470" width="2700" height="980" rx="42" fill="#ffffff" stroke="#e5e7eb" stroke-width="3"/>
+
+  <text x="220" y="620" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="700" fill="#10254f">Primary Wordmark</text>
+  <text x="220" y="675" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="500" fill="#64748b">Use this layout for print, signage, and presentation materials.</text>
+
+  <text x="220" y="820" font-family="Inter, Arial, sans-serif" font-size="150" font-weight="900" fill="#10254f">TARA</text>
+  <text x="610" y="818" font-family="Inter, Arial, sans-serif" font-size="150" font-weight="900" fill="url(#senseGradient)">sense</text>
+  <text x="220" y="920" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="700" fill="#0b1a40">Test. Analyze. Refine. Advance.</text>
+
+  <rect x="220" y="1030" width="1140" height="300" rx="26" fill="#f8fafc" stroke="#e5e7eb" stroke-width="2"/>
+  <text x="270" y="1100" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700" fill="#10254f">Font Style</text>
+  <text x="270" y="1155" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="600" fill="#334155">Primary font: Inter, Arial, sans-serif</text>
+  <text x="270" y="1205" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="600" fill="#334155">Wordmark weight: Black / 900</text>
+  <text x="270" y="1255" font-family="Inter, Arial, sans-serif" font-size="26" font-weight="600" fill="#334155">Headings: Bold / 700, Body: Medium / 500</text>
+
+  <rect x="1480" y="1030" width="980" height="300" rx="26" fill="#f8fafc" stroke="#e5e7eb" stroke-width="2"/>
+  <text x="1530" y="1100" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700" fill="#10254f">Color Palette</text>
+
+  <rect x="1530" y="1120" width="36" height="36" rx="8" fill="#10254f"/>
+  <text x="1585" y="1148" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Deep Navy · #10254f</text>
+
+  <rect x="1530" y="1175" width="36" height="36" rx="8" fill="#1746ff"/>
+  <text x="1585" y="1203" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Brand Blue · #1746ff</text>
+
+  <rect x="1530" y="1230" width="36" height="36" rx="8" fill="#f97316"/>
+  <text x="1585" y="1258" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Brand Orange · #f97316</text>
+
+  <rect x="2200" y="1120" width="36" height="36" rx="8" fill="#ff5e00"/>
+  <text x="2255" y="1148" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Accent Orange · #ff5e00</text>
+
+  <rect x="2200" y="1175" width="36" height="36" rx="8" fill="#ff8a3d"/>
+  <text x="2255" y="1203" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Accent Glow · #ff8a3d</text>
+
+  <rect x="2200" y="1230" width="36" height="36" rx="8" fill="#f33f78"/>
+  <text x="2255" y="1258" font-family="Inter, Arial, sans-serif" font-size="24" font-weight="600" fill="#334155">Support Pink · #f33f78</text>
+
+  <rect x="220" y="1420" width="1800" height="240" rx="30" fill="#0b1a40"/>
+  <text x="280" y="1510" font-family="Inter, Arial, sans-serif" font-size="54" font-weight="800" fill="#ffffff">TARAsense</text>
+  <text x="280" y="1570" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="600" fill="#ffffff" opacity="0.8">Prepared for print and brand presentation use</text>
+
+  <defs>
+    <linearGradient id="senseGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#ff5e00"/>
+      <stop offset="100%" stop-color="#ff8a3d"/>
+    </linearGradient>
+  </defs>
+</svg>

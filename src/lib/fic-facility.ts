@@ -35,6 +35,33 @@ export const FIC_ID_ALLOWED_MIME_TYPES = ["image/jpeg", "image/png", "applicatio
 export const FIC_ID_ACCEPT_ATTRIBUTE = FIC_ID_ALLOWED_MIME_TYPES.join(",");
 export const MAX_FIC_ID_BYTES = 5 * 1024 * 1024; // 5MB
 
+/**
+ * Government ID capture target. Philippine government IDs follow the ID-1 / CR80
+ * card format (85.6 × 54 mm), so the cropper locks to that ratio and only lets the
+ * applicant pick which way round it sits.
+ */
+export const FIC_ID_ASPECT_RATIO = 85.6 / 54;
+export type FicIdOrientation = "landscape" | "portrait";
+
+/**
+ * Long edge of the re-encoded upload. Large enough for the ID text to stay legible
+ * to a reviewer, small enough that a phone photo lands a few hundred KB instead of
+ * several MB — oversized bodies were being rejected upstream before reaching us.
+ */
+export const FIC_ID_OUTPUT_LONG_EDGE = 1600;
+export const FIC_ID_OUTPUT_QUALITY = 0.85;
+
+/** Originals are re-encoded, so only guard against files too large to decode. */
+export const MAX_FIC_ID_SOURCE_BYTES = 25 * 1024 * 1024; // 25MB
+
+/** Output pixel dimensions for the chosen orientation, at the fixed card ratio. */
+export function ficIdOutputSize(orientation: FicIdOrientation): { width: number; height: number } {
+  const shortEdge = Math.round(FIC_ID_OUTPUT_LONG_EDGE / FIC_ID_ASPECT_RATIO);
+  return orientation === "landscape"
+    ? { width: FIC_ID_OUTPUT_LONG_EDGE, height: shortEdge }
+    : { width: shortEdge, height: FIC_ID_OUTPUT_LONG_EDGE };
+}
+
 const ALLOWED_FACILITY_TYPES = new Set<FicFacilityType>(FIC_FACILITY_TYPE_OPTIONS.map((option) => option.value));
 const ALLOWED_SENSORY_CAPABILITIES = new Set<string>(FIC_SENSORY_CAPABILITY_OPTIONS.map((option) => option.value));
 

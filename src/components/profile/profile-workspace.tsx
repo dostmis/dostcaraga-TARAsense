@@ -1,6 +1,6 @@
 import { Gender } from "@prisma/client";
 import { saveProfile } from "@/app/actions/profile-actions";
-import { saveFicFacilityProfile } from "@/app/actions/auth-actions";
+import { saveFicAssignment, saveFicFacilityProfile } from "@/app/actions/auth-actions";
 import { getUserLocationLabels } from "@/app/actions/location-actions";
 import { AppBackButton } from "@/components/ui/app-back-button";
 import { TimedToast } from "@/components/ui/timed-toast";
@@ -9,6 +9,7 @@ import { prisma } from "@/lib/db";
 import { SurfaceCard } from "@/components/ui/page-shell";
 import { ProfileLocationSection } from "@/components/profile/profile-location-section";
 import { FicFacilityForm } from "@/components/profile/fic-facility-form";
+import { FicAssignmentForm } from "@/components/profile/fic-assignment-form";
 import { buildFicFacilityFormInitial } from "@/lib/fic-facility-view";
 import {
   TARGET_CONSUMER_DIETARY_OPTIONS,
@@ -188,18 +189,6 @@ export async function ProfileWorkspace({
                 <input name="organization" defaultValue={user.organization ?? ""} className="app-input" />
               </Field>
 
-              {role === "FIC" && (
-                <>
-                  <Field label="Assigned Region (Admin Managed)">
-                    <input value={user.assignedRegion ?? "Not assigned yet"} className="app-input bg-[#f5ede6]" disabled />
-                  </Field>
-
-                  <Field label="Assigned Facility (Admin Managed)">
-                    <input value={user.assignedFacility ?? "Not assigned yet"} className="app-input bg-[#f5ede6]" disabled />
-                  </Field>
-                </>
-              )}
-
               <Field label="Age">
                 <input type="number" name="age" min={10} max={100} defaultValue={panelist?.age ?? 25} className="app-input" required />
               </Field>
@@ -263,11 +252,34 @@ export async function ProfileWorkspace({
       {role === "FIC" && (
         <SurfaceCard className="space-y-4">
           <div>
-            <h2 className="text-xl font-semibold text-[#2f241d]">Facility Information</h2>
+            <h2 className="text-xl font-semibold text-[#2f241d]">Region &amp; Facility Assignment</h2>
             <p className="mt-1 text-sm text-[#6f5b4f]">
-              Keep your facility details current. Your DOST region and facility assignment is managed by an admin and
-              shown read-only above.
+              Choose the DOST region and facility you operate from. Studies booked to that facility appear in your
+              queue and calendar. You can update this at any time.
             </p>
+            {user.assignedFacility ? (
+              <p className="mt-1 text-xs uppercase tracking-wide text-[#8d735f]">
+                Current: {user.assignedFacility}
+                {user.assignedRegion ? `, ${user.assignedRegion}` : ""}
+              </p>
+            ) : (
+              <p className="mt-1 text-xs uppercase tracking-wide text-[#c2410c]">Not assigned yet</p>
+            )}
+          </div>
+          <FicAssignmentForm
+            action={saveFicAssignment}
+            redirectTo={redirectTo}
+            assignedRegion={user.assignedRegion}
+            assignedFacility={user.assignedFacility}
+          />
+        </SurfaceCard>
+      )}
+
+      {role === "FIC" && (
+        <SurfaceCard className="space-y-4">
+          <div>
+            <h2 className="text-xl font-semibold text-[#2f241d]">Facility Information</h2>
+            <p className="mt-1 text-sm text-[#6f5b4f]">Keep your facility details current.</p>
             {ficFacilityProfile?.status ? (
               <p className="mt-1 text-xs uppercase tracking-wide text-[#8d735f]">
                 Application status: {ficFacilityProfile.status}

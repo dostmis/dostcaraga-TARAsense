@@ -608,7 +608,7 @@ export function TarasenseLanding() {
 
                   <div className="tara-reveal mt-8 max-w-xl">
                     <p className="text-body">
-                      A platform that connects Innovator, Food Innovation Centers (FICs), research facilities and participant to enable structured sensory evaluation, packaging and concept testing, data-driven product improvement at scale.
+                      AI-powered sensory intelligence platform for digital sensory evaluation, consumer research, and product optimization. Helping food innovators create products consumers love.
                     </p>
                     <p className="mt-12 text-lg font-semibold text-[#10254f]">
                       Developed by DOST CARAGA

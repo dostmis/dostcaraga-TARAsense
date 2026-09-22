@@ -4,6 +4,7 @@ import {
   assignSampleCodesFromCodeBook,
   createStudyRandomCodeBook,
   parseStudyRandomCodeBook,
+  resolveSampleOrderPlanFromDemographics,
   StudyRandomCodeBook,
 } from "@/lib/random-codebook";
 
@@ -192,7 +193,11 @@ async function resolveStudyAssignmentConfig(db: DbClient, studyId: string): Prom
   }
 
   // Backfill legacy studies so assignments become deterministic by panelist number.
-  const generated = createStudyRandomCodeBook(study.sampleSize, sampleCount);
+  const generated = createStudyRandomCodeBook(
+    study.sampleSize,
+    sampleCount,
+    resolveSampleOrderPlanFromDemographics(demographics, sampleCount)
+  );
   const nextDemographics = {
     ...demographics,
     randomCodeBook: generated,

@@ -419,6 +419,11 @@ export function CreateStudyBuilder({
 
   const [sampleSetupCount, setSampleSetupCount] = useState(1);
   const [sampleSetups, setSampleSetups] = useState<SampleSetupRow[]>([{ ...EMPTY_SAMPLE_SETUP }]);
+  // null until the creator explicitly picks ON/OFF (the choice is required).
+  const [randomizeSampleOrder, setRandomizeSampleOrder] = useState<boolean | null>(null);
+  // fixedSampleOrder[position] = sample number served in that position (raw text
+  // so the fields can be cleared and retyped; validated on change and at submit).
+  const [fixedSampleOrder, setFixedSampleOrder] = useState<string[]>(["1"]);
   const [marketQuestions, setMarketQuestions] = useState(DEFAULT_MARKET_QUESTIONS);
   const [customQuestions, setCustomQuestions] = useState<CustomQuestionDraft[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -670,6 +675,15 @@ export function CreateStudyBuilder({
     [profileKey]
   );
 
+  const fixedSampleOrderIssue = useMemo(
+    () => validateFixedSampleOrder(fixedSampleOrder, sampleSetupCount),
+    [fixedSampleOrder, sampleSetupCount]
+  );
+  const fixedSampleOrderPreview = useMemo(
+    () => fixedSampleOrder.map((value) => (value.trim() === "" ? "?" : value.trim())).join(" → "),
+    [fixedSampleOrder]
+  );
+
   const selectedConsumerObjective = useMemo(() => {
     return CONSUMER_OBJECTIVES.find((objective) => objective.value === consumerObjective) ?? CONSUMER_OBJECTIVES[0];
   }, [consumerObjective]);
@@ -826,6 +840,10 @@ export function CreateStudyBuilder({
       }
       return next.slice(0, sampleSetupCount);
     });
+  }, [sampleSetupCount]);
+
+  useEffect(() => {
+    setFixedSampleOrder((previous) => resizeFixedSampleOrder(previous, sampleSetupCount));
   }, [sampleSetupCount]);
 
   useEffect(() => {
@@ -1026,6 +1044,17 @@ export function CreateStudyBuilder({
       setError("Product image could not be read. Please choose another image.");
     };
     reader.readAsDataURL(file);
+  };
+
+  const updateFixedSampleOrderValue = (position: number, value: string) => {
+    const digits = value.replace(/\D/g, "").slice(0, 3);
+    setFixedSampleOrder((previous) =>
+      previous.map((entry, entryIndex) => (entryIndex === position ? digits : entry))
+    );
+  };
+
+  const resetFixedSampleOrder = () => {
+    setFixedSampleOrder(buildSequentialSampleOrder(sampleSetupCount));
   };
 
   const updateMarketQuestion = (index: number, value: string) => {
@@ -1284,6 +1313,16 @@ export function CreateStudyBuilder({
       return;
     }
 
+    if (randomizeSampleOrder === null) {
+      setError("Choose whether to randomize the sample presentation order (ON or OFF).");
+      return;
+    }
+
+    if (randomizeSampleOrder === false && fixedSampleOrderIssue) {
+      setError(fixedSampleOrderIssue);
+      return;
+    }
+
     if (studyMode === "SENSORY" && targetResponses > 200) {
       setError("Sensory studies support up to 200 target responses.");
       return;
@@ -1475,6 +1514,9 @@ export function CreateStudyBuilder({
         publicAddressDetails: coordinationMode === "SELF_MANAGED_PUBLIC" ? publicAddressDetails.trim() : undefined,
         ficUserId: studyMode === "SENSORY" && requiresFicBooking ? selectedFicUserId : undefined,
         numberOfSamples: Math.max(1, sampleSetupCount),
+        randomizeSampleOrder: randomizeSampleOrder !== false,
+        fixedSampleOrder:
+          randomizeSampleOrder === false ? fixedSampleOrder.map((value) => Number(value.trim())) : [],
         targetResponses,
         productName: studyMode === "SENSORY" ? productName : undefined,
         categoryCode: studyMode === "SENSORY" ? selectedProfile.categoryCode : undefined,
@@ -2984,6 +3026,116 @@ export function CreateStudyBuilder({
             </div>
           </section>
 
+          <section
+            style={{ borderColor: "#f97316" }}
+            className="space-y-4 rounded-2xl border-2 border-[#f97316] bg-[#fffbf5] p-5 sm:p-6"
+          >
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-[#000080]">
+                Sample Presentation Order <span className="text-[#dc2626]">*</span>
+              </h2>
+              <p className="text-xs text-[#64748b]">
+                Required. This controls the sequence in which each participant receives the samples.
+              </p>
+            </div>
+
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-semibold text-[#334155]">Randomize Sample Order:</legend>
+              <div className="flex flex-wrap gap-3">
+                {[
+                  { value: true, label: "ON" },
+                  { value: false, label: "OFF" },
+                ].map((option) => {
+                  const active = randomizeSampleOrder === option.value;
+                  return (
+                    <label
+                      key={option.label}
+                      className={`inline-flex min-w-28 items-center justify-center gap-2 rounded-lg border px-5 py-3 text-sm font-semibold cursor-pointer transition ${
+                        active
+                          ? "border-[#f97316] bg-[#fff7ed] text-[#c2410c]"
+                          : "border-[#e2e8f0] bg-white text-[#334155] hover:border-[#fdba74]"
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="randomizeSampleOrder"
+                        value={option.label}
+                        checked={active}
+                        onChange={() => {
+                          setRandomizeSampleOrder(option.value);
+                          setError(null);
+                        }}
+                        className="h-4 w-4 border-[#cbd5e1] accent-[#ed7f2a]"
+                        required
+                      />
+                      {option.label}
+                    </label>
+                  );
+                })}
+              </div>
+              <p className="text-xs text-[#64748b]">
+                When enabled, participants will receive samples in a different order. When disabled, all
+                participants will receive samples in the order specified below.
+              </p>
+            </fieldset>
+
+            {randomizeSampleOrder === true && (
+              <div className="rounded-lg border border-[#bbf7d0] bg-[#f0fdf4] p-4">
+                <p className="text-sm font-semibold text-[#166534]">Randomized order enabled</p>
+                <p className="mt-0.5 text-xs text-[#15803d]">
+                  Each participant will receive a randomized sample sequence.
+                </p>
+              </div>
+            )}
+
+            {randomizeSampleOrder === false && (
+              <div className="space-y-4 rounded-lg border border-[#dbe3ec] bg-white p-4">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm text-[#334155]">
+                    <span className="font-semibold text-[#0f172a]">Current order:</span>{" "}
+                    <span className="font-mono text-base font-semibold text-[#c2410c]">
+                      {fixedSampleOrderPreview}
+                    </span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={resetFixedSampleOrder}
+                    className="rounded-md border border-[#cbd5e1] px-2.5 py-1 text-xs font-semibold text-[#334155] hover:bg-[#f1f5f9]"
+                  >
+                    Reset to 1 → {sampleSetupCount}
+                  </button>
+                </div>
+
+                <p className="text-xs text-[#64748b]">
+                  Enter which Sample Set-up number is served in each position, using each number from 1 to{" "}
+                  {sampleSetupCount} exactly once.
+                </p>
+
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {fixedSampleOrder.map((value, position) => (
+                    <div key={`fixed-sample-order-${position}`} className="space-y-1">
+                      <FieldLabel text={`${formatOrdinal(position + 1)} sample served`} />
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={value}
+                        onChange={(event) => updateFixedSampleOrderValue(position, event.target.value)}
+                        className="app-input"
+                        aria-label={`Sample number served in position ${position + 1}`}
+                        required
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                {fixedSampleOrderIssue && (
+                  <p className="text-xs font-medium text-[#b91c1c]">{fixedSampleOrderIssue}</p>
+                )}
+              </div>
+            )}
+          </section>
+
           <div className="space-y-3">
             <button
               type="button"
@@ -3030,6 +3182,14 @@ export function CreateStudyBuilder({
                   )}
                   <li><span className="font-medium">Target Responses:</span> {targetResponses}</li>
                   <li><span className="font-medium">Number of Samples:</span> {sampleSetupCount}</li>
+                  <li>
+                    <span className="font-medium">Sample Presentation Order:</span>{" "}
+                    {randomizeSampleOrder === null
+                      ? "Not set"
+                      : randomizeSampleOrder
+                        ? "Randomized per participant"
+                        : `Fixed — ${fixedSampleOrderPreview}`}
+                  </li>
                   {studyMode === "SENSORY" && normalizedSelectedTestingDates.length > 0 && (
                     <li><span className="font-medium">Testing Date(s):</span> {normalizedSelectedTestingDates.join(", ")}</li>
                   )}
@@ -3074,6 +3234,66 @@ function createAttributeRowsFromProfile(profileAttributes: ProfileAttributeRow[]
     isCustom: false,
     actionable: true,
   }));
+}
+
+function formatOrdinal(value: number) {
+  const remainderTen = value % 10;
+  const remainderHundred = value % 100;
+  if (remainderTen === 1 && remainderHundred !== 11) return `${value}st`;
+  if (remainderTen === 2 && remainderHundred !== 12) return `${value}nd`;
+  if (remainderTen === 3 && remainderHundred !== 13) return `${value}rd`;
+  return `${value}th`;
+}
+
+function buildSequentialSampleOrder(sampleCount: number) {
+  return Array.from({ length: Math.max(1, sampleCount) }, (_, index) => String(index + 1));
+}
+
+/**
+ * Keeps the fixed order the same length as the sample setup count. Entries that
+ * are still valid and unique are preserved; every remaining slot is filled with
+ * an unused sample number so the order stays a complete permutation.
+ */
+function resizeFixedSampleOrder(values: string[], sampleCount: number) {
+  const total = Math.max(1, sampleCount);
+  const used = new Set<number>();
+  const kept = Array.from({ length: total }, (_, index) => {
+    const parsed = Number(values[index]?.trim());
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > total || used.has(parsed)) {
+      return "";
+    }
+    used.add(parsed);
+    return String(parsed);
+  });
+
+  const unused = Array.from({ length: total }, (_, index) => index + 1).filter((sample) => !used.has(sample));
+  return kept.map((entry) => (entry === "" ? String(unused.shift() ?? "") : entry));
+}
+
+/** Returns an error message when the fixed order is not a 1..n permutation. */
+function validateFixedSampleOrder(values: string[], sampleCount: number) {
+  const total = Math.max(1, sampleCount);
+  if (values.length !== total) {
+    return `Set a sample number for each of the ${total} positions.`;
+  }
+
+  const seen = new Set<number>();
+  for (const [index, value] of values.entries()) {
+    const trimmed = value.trim();
+    if (trimmed === "") {
+      return `Position ${index + 1} needs a sample number.`;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > total) {
+      return `Position ${index + 1} must be a sample number between 1 and ${total}.`;
+    }
+    if (seen.has(parsed)) {
+      return `Sample ${parsed} is used more than once. Each sample must appear exactly once.`;
+    }
+    seen.add(parsed);
+  }
+
+  return null;
 }
 
 function toggleSelection<T>(values: T[], value: T) {

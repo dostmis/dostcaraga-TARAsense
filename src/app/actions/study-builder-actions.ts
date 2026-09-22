@@ -11,6 +11,11 @@ import { DEFAULT_TARGET_CONSUMER, normalizeTargetConsumer } from "@/lib/target-c
 import type { OnBehalfOfMsme } from "@/lib/study-on-behalf";
 import { logUserUsage } from "@/lib/user-usage";
 import { validateLocationConsistency } from "@/lib/locations/psgc-queries";
+import {
+  normalizeFixedSampleOrder,
+  RANDOMIZED_SAMPLE_ORDER_PLAN,
+  type SampleOrderPlan,
+} from "@/lib/random-codebook";
 import { findUsersMatchingTarget } from "@/lib/locations/study-visibility";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
@@ -119,6 +124,11 @@ const BuilderPayloadSchema = z.object({
   publicAddressDetails: z.string().optional(),
   ficUserId: z.string().min(1).optional(),
   numberOfSamples: z.number().int().min(1),
+  // Sample presentation order. When randomizeSampleOrder is false, fixedSampleOrder
+  // must be a permutation of 1..numberOfSamples and every panelist is served in
+  // exactly that sequence.
+  randomizeSampleOrder: z.boolean().default(true),
+  fixedSampleOrder: z.array(z.number().int().min(1).max(900)).max(900).default([]),
   targetResponses: z.number().int().min(1),
   productName: z.string().optional(),
   categoryCode: PrismaCategorySchema.optional(),
@@ -227,6 +237,28 @@ function normalizeOnBehalfOfMsme(
     contactEmail: asTrimmed(input?.contactEmail),
     contactPhone: asTrimmed(input?.contactPhone),
   };
+}
+
+/**
+ * Validates the creator's Sample Presentation Order choice. A fixed order must
+ * list every sample number exactly once; the plan is stored in the study's
+ * targetDemographics JSON and consumed when the blind-code book is generated.
+ */
+function resolveSampleOrderPlan(payload: z.infer<typeof BuilderPayloadSchema>) {
+  const sampleCount = Math.max(1, Math.floor(payload.numberOfSamples));
+  if (payload.randomizeSampleOrder) {
+    return { ok: true as const, value: RANDOMIZED_SAMPLE_ORDER_PLAN };
+  }
+
+  const fixedOrder = normalizeFixedSampleOrder(payload.fixedSampleOrder, sampleCount);
+  if (!fixedOrder) {
+    return {
+      ok: false as const,
+      error: `Set the sample presentation order using each sample number from 1 to ${sampleCount} exactly once.`,
+    };
+  }
+
+  return { ok: true as const, value: { randomize: false, fixedOrder } satisfies SampleOrderPlan };
 }
 
 export async function createStudyFromBuilder(
@@ -407,6 +439,10 @@ async function createMarketStudy(
   if (!sampleSetupResult.success) {
     return { success: false, error: sampleSetupResult.error };
   }
+  const sampleOrderResult = resolveSampleOrderPlan(payload);
+  if (!sampleOrderResult.ok) {
+    return { success: false, error: sampleOrderResult.error };
+  }
   const targetConsumer = normalizeTargetConsumer(payload.targetConsumer);
 
   const study = await prisma.study.create({
@@ -429,6 +465,7 @@ async function createMarketStudy(
         visibility: payload.visibility,
         marketStudyType: payload.marketStudyType,
         numberOfSamples: payload.numberOfSamples,
+        sampleOrderPlan: sampleOrderResult.value,
         ...(onBehalfOfMsme
           ? { onBehalfOfMsme: JSON.parse(JSON.stringify(onBehalfOfMsme)) as Prisma.InputJsonObject }
           : {}),
@@ -499,6 +536,10 @@ async function createSensoryStudy(
   const sensorySampleSetupResult = normalizeSensorySampleSetups(payload.sampleSetups);
   if (!sensorySampleSetupResult.success) {
     return { success: false, error: sensorySampleSetupResult.error };
+  }
+  const sampleOrderResult = resolveSampleOrderPlan(payload);
+  if (!sampleOrderResult.ok) {
+    return { success: false, error: sampleOrderResult.error };
   }
   const targetConsumer = normalizeTargetConsumer(payload.targetConsumer);
 
@@ -642,6 +683,7 @@ async function createSensoryStudy(
           : {}),
         categoryLabel: payload.categoryLabel,
         numberOfSamples: payload.numberOfSamples,
+        sampleOrderPlan: sampleOrderResult.value,
         ...(locationContext.coordinationMode === "FIC_ASSISTED"
           ? {
               region: locationContext.region,

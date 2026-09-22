@@ -13,6 +13,11 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Served behind nginx + cloudflared on loopback, so the only clients that can
+        // reach this app are those proxies; trust their X-Forwarded-* headers or every
+        // generated URL comes out as http:// and isSecure() is false.
+        $middleware->trustProxies(at: '*');
+
         $middleware->alias([
             'mobile.auth' => \App\Http\Middleware\MobileAuth::class,
             'web.auth' => \App\Http\Middleware\WebAuth::class,

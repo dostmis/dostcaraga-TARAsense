@@ -2,7 +2,12 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getCurrentSession } from "@/lib/auth/session";
 import { formatPanelistNumber, parseSampleCodes } from "@/lib/participant-assignment";
-import { assignSampleCodesFromCodeBook, createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import {
+  assignSampleCodesFromCodeBook,
+  createStudyRandomCodeBook,
+  parseStudyRandomCodeBook,
+  resolveSampleOrderPlanFromDemographics,
+} from "@/lib/random-codebook";
 import { canAccessStudyByRole, canViewRandomizedBlindCodePlan } from "@/lib/study-access";
 
 type RouteContext = {
@@ -232,7 +237,12 @@ async function ensureRandomCodeBookForStudy(studyId: string, sampleSize: number,
     return existing;
   }
 
-  const generated = createStudyRandomCodeBook(sampleSize, resolveSampleCountFromTargetDemographics(existingMeta));
+  const sampleCount = resolveSampleCountFromTargetDemographics(existingMeta);
+  const generated = createStudyRandomCodeBook(
+    sampleSize,
+    sampleCount,
+    resolveSampleOrderPlanFromDemographics(existingMeta, sampleCount)
+  );
   await prisma.study.update({
     where: { id: studyId },
     data: {

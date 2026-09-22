@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { logout, reassignFicFacility, reviewRoleApplication } from "@/app/actions/auth-actions";
+import { logout, reviewRoleApplication } from "@/app/actions/auth-actions";
 import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { NotificationPanel } from "@/components/notifications/notification-panel";
@@ -8,7 +8,6 @@ import { DashboardShell } from "@/components/dashboard/dashboard-shell";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { ProfileWorkspace } from "@/components/profile/profile-workspace";
 import { Activity, Building2, CheckCircle2, FlaskConical, LayoutDashboard, ShieldCheck, UserRound, Users, XCircle } from "lucide-react";
-import { FACILITY_REGION_ROWS, REGIONS } from "@/lib/facility-constants";
 import { humanizeFicFacilityType, humanizeSensoryCapability } from "@/lib/fic-facility";
 import { getLocationPath } from "@/lib/locations/psgc-queries";
 import type { Prisma, UserRole } from "@prisma/client";
@@ -467,36 +466,18 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
                   </div>
                 )}
 
+                {request.status === "PENDING" && request.targetRole === "FIC" && (
+                  <p className="text-xs text-[#8c776a]">
+                    Approve or reject only. The approved FIC sets their own region and facility from their profile.
+                  </p>
+                )}
+
                 {request.status === "PENDING" && (
                   <div className="flex flex-wrap gap-2">
                     <form action={reviewRoleApplication}>
                       <input type="hidden" name="requestId" value={request.id} />
                       <input type="hidden" name="decision" value="APPROVE" />
                       <input type="hidden" name="redirectTo" value="/admin/dashboard?view=role-requests" />
-                      {request.targetRole === "FIC" && (
-                        <>
-                          <select name="assignedRegion" className="app-select min-w-[180px]" required defaultValue="">
-                            <option value="" disabled>
-                              Select Region
-                            </option>
-                            {REGIONS.map((region) => (
-                              <option key={`approve-region-${request.id}-${region}`} value={region}>
-                                {region}
-                              </option>
-                            ))}
-                          </select>
-                          <select name="assignedFacility" className="app-select min-w-[220px]" required defaultValue="">
-                            <option value="" disabled>
-                              Select Facility
-                            </option>
-                            {FACILITY_REGION_ROWS.map((row) => (
-                              <option key={`approve-facility-${request.id}-${row.facility}`} value={row.facility}>
-                                {row.facility} ({row.region})
-                              </option>
-                            ))}
-                          </select>
-                        </>
-                      )}
                       <button
                         type="submit"
                         className="inline-flex items-center justify-center rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700"
@@ -522,51 +503,16 @@ export default async function AdminDashboardPage({ searchParams }: PageProps) {
           </section>
 
           <section className="space-y-4 rounded-2xl border border-[#e4d7cc] bg-white p-6">
-            <h2 className="text-xl font-semibold text-[#2e231c]">FIC Region and Facility Assignment</h2>
+            <div>
+              <h2 className="text-xl font-semibold text-[#2e231c]">FIC Region and Facility Assignments</h2>
+              <p className="text-sm text-[#6f5b4f]">
+                Read-only. Each approved FIC sets their own region and facility from their profile.
+              </p>
+            </div>
             {ficUsers.length === 0 && <p className="text-sm text-[#6f5b4f]">No FIC users found.</p>}
 
             {ficUsers.length > 0 && (
               <>
-                <form action={reassignFicFacility} className="flex flex-wrap items-center gap-2 rounded-xl border border-[#eadfd6] bg-[#fffdfb] p-4">
-                  <input type="hidden" name="redirectTo" value="/admin/dashboard?view=role-requests" />
-                  <select name="ficUserId" className="app-select min-w-[280px]" required defaultValue="">
-                    <option value="" disabled>
-                      Select FIC User
-                    </option>
-                    {ficUsers.map((ficUser) => (
-                      <option key={`reassign-fic-user-${ficUser.id}`} value={ficUser.id}>
-                        {ficUser.name} ({ficUser.email})
-                      </option>
-                    ))}
-                  </select>
-                  <select name="assignedRegion" className="app-select min-w-[180px]" required defaultValue="">
-                    <option value="" disabled>
-                      Select Region
-                    </option>
-                    {REGIONS.map((region) => (
-                      <option key={`reassign-region-${region}`} value={region}>
-                        {region}
-                      </option>
-                    ))}
-                  </select>
-                  <select name="assignedFacility" className="app-select min-w-[240px]" required defaultValue="">
-                    <option value="" disabled>
-                      Select Facility
-                    </option>
-                    {FACILITY_REGION_ROWS.map((row) => (
-                      <option key={`reassign-facility-${row.facility}`} value={row.facility}>
-                        {row.facility} ({row.region})
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="submit"
-                    className="inline-flex items-center justify-center rounded-lg bg-[#2e231c] px-4 py-2 text-sm font-medium text-white hover:bg-[#20170f]"
-                  >
-                    Save Assignment
-                  </button>
-                </form>
-
                 <div className="overflow-x-auto rounded-xl border border-[#eadfd6] bg-[#fffdfb]">
                   <table className="min-w-full divide-y divide-[#eadfd6] text-sm">
                     <thead className="bg-[#faf6f2] text-left text-[#6f5b4f]">

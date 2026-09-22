@@ -8,7 +8,11 @@ import { getCurrentSession } from "@/lib/auth/session";
 import { verifyPassword } from "@/lib/auth/password";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
-import { createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import {
+  createStudyRandomCodeBook,
+  parseStudyRandomCodeBook,
+  resolveSampleOrderPlanFromDemographics,
+} from "@/lib/random-codebook";
 import { getStudyScheduleEnd } from "@/lib/study-schedule";
 import { buildSessionSchedule, extractBookingDatesFromSchedule } from "@/lib/study-session-builder";
 import { isFacilityInRegion, isValidRegion } from "@/lib/facility-constants";
@@ -825,7 +829,11 @@ function prepareTargetDemographicsForStudy(
   }
 
   const sampleCount = resolveSampleCountFromTargetDemographics(row);
-  row.randomCodeBook = createStudyRandomCodeBook(sampleSize, sampleCount);
+  row.randomCodeBook = createStudyRandomCodeBook(
+    sampleSize,
+    sampleCount,
+    resolveSampleOrderPlanFromDemographics(row, sampleCount)
+  );
   return row;
 }
 

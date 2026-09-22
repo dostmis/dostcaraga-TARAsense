@@ -8,7 +8,12 @@ import { prisma } from "@/lib/db";
 import { getCurrentSession, requireRole } from "@/lib/auth/session";
 import { ROLE_DASHBOARD_PATH } from "@/lib/auth/roles";
 import { formatPanelistNumber, parseOfferedSessions, parseSampleCodes } from "@/lib/participant-assignment";
-import { assignSampleCodesFromCodeBook, createStudyRandomCodeBook, parseStudyRandomCodeBook } from "@/lib/random-codebook";
+import {
+  assignSampleCodesFromCodeBook,
+  createStudyRandomCodeBook,
+  parseStudyRandomCodeBook,
+  resolveSampleOrderPlanFromDemographics,
+} from "@/lib/random-codebook";
 import { formatSessionWindow, parseStudySessionSchedule } from "@/lib/study-schedule";
 import { canAccessStudyByRole, canViewRandomizedBlindCodePlan } from "@/lib/study-access";
 import { doesPanelistMatchTargetConsumer, getTargetConsumerSummary } from "@/lib/target-consumer";
@@ -850,7 +855,12 @@ async function ensureRandomCodeBookForStudy(studyId: string, sampleSize: number,
     return existing;
   }
 
-  const generated = createStudyRandomCodeBook(sampleSize, resolveSampleCountFromTargetDemographics(existingMeta));
+  const sampleCount = resolveSampleCountFromTargetDemographics(existingMeta);
+  const generated = createStudyRandomCodeBook(
+    sampleSize,
+    sampleCount,
+    resolveSampleOrderPlanFromDemographics(existingMeta, sampleCount)
+  );
   await prisma.study.update({
     where: { id: studyId },
     data: {

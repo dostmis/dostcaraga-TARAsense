@@ -88,7 +88,7 @@ export default async function FicDashboardPage({ searchParams }: PageProps) {
         };
   const assignmentMessage =
     session.role === "FIC" && !ficAssignment?.assignedFacility
-      ? "Your FIC account has not been assigned to a facility yet. Ask an admin to set your region and facility."
+      ? "Your FIC account has no facility yet. Open Profile and set your region and facility to start receiving studies."
       : null;
 
   let studiesForQueue: Array<{

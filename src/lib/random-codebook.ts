@@ -11,12 +11,74 @@ export type StudyRandomCodeBook = {
   servingOrdersByPanelist: number[][];
 };
 
+/**
+ * Sample presentation order chosen by the study creator. When `randomize` is
+ * false every panelist is served the samples in `fixedOrder` (a permutation of
+ * 1..sampleCount); blind codes stay randomized either way.
+ */
+export type SampleOrderPlan = {
+  randomize: boolean;
+  fixedOrder: number[];
+};
+
+export const RANDOMIZED_SAMPLE_ORDER_PLAN: SampleOrderPlan = { randomize: true, fixedOrder: [] };
+
 type CodePoolPicker = {
   usedPerSample: Array<Set<string>>;
   allCodes: string[];
 };
 
-export function createStudyRandomCodeBook(participantCapacity: number, sampleCount: number): StudyRandomCodeBook {
+/**
+ * Returns the order as a validated permutation of 1..sampleCount, or null when
+ * the value is missing, the wrong length, or contains duplicates/out-of-range
+ * samples.
+ */
+export function normalizeFixedSampleOrder(value: unknown, sampleCount: number): number[] | null {
+  if (!Array.isArray(value) || value.length !== sampleCount) {
+    return null;
+  }
+
+  const seen = new Set<number>();
+  const order: number[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "number" || !Number.isInteger(entry)) return null;
+    if (entry < 1 || entry > sampleCount) return null;
+    if (seen.has(entry)) return null;
+    seen.add(entry);
+    order.push(entry);
+  }
+
+  return order;
+}
+
+/** Reads a stored `sampleOrderPlan`, falling back to randomized order. */
+export function parseSampleOrderPlan(value: unknown, sampleCount: number): SampleOrderPlan {
+  if (!isRecord(value) || value.randomize !== false) {
+    return RANDOMIZED_SAMPLE_ORDER_PLAN;
+  }
+  const fixedOrder = normalizeFixedSampleOrder(value.fixedOrder, Math.max(1, Math.floor(sampleCount)));
+  if (!fixedOrder) {
+    return RANDOMIZED_SAMPLE_ORDER_PLAN;
+  }
+  return { randomize: false, fixedOrder };
+}
+
+/** Convenience wrapper for the `targetDemographics` JSON blob on a Study. */
+export function resolveSampleOrderPlanFromDemographics(
+  targetDemographics: unknown,
+  sampleCount: number
+): SampleOrderPlan {
+  if (!isRecord(targetDemographics)) {
+    return RANDOMIZED_SAMPLE_ORDER_PLAN;
+  }
+  return parseSampleOrderPlan(targetDemographics.sampleOrderPlan, sampleCount);
+}
+
+export function createStudyRandomCodeBook(
+  participantCapacity: number,
+  sampleCount: number,
+  orderPlan?: SampleOrderPlan | null
+): StudyRandomCodeBook {
   const safeParticipantCapacity = Math.max(1, Math.floor(participantCapacity));
   const safeSampleCount = Math.max(1, Math.floor(sampleCount));
   if (safeParticipantCapacity > 900) {
@@ -56,7 +118,7 @@ export function createStudyRandomCodeBook(participantCapacity: number, sampleCou
     sampleCount: safeSampleCount,
     generatedAt: new Date().toISOString(),
     codesBySample,
-    servingOrdersByPanelist: createRandomizedServingOrders(safeParticipantCapacity, safeSampleCount),
+    servingOrdersByPanelist: buildServingOrders(safeParticipantCapacity, safeSampleCount, orderPlan),
   };
 }
 
@@ -149,6 +211,21 @@ function pickCodeForSlot(input: { sampleIndex: number; rowUsed: Set<string>; pic
 
 function buildThreeDigitCodes() {
   return Array.from({ length: 900 }, (_, index) => String(index + 100));
+}
+
+function buildServingOrders(
+  participantCapacity: number,
+  sampleCount: number,
+  orderPlan?: SampleOrderPlan | null
+) {
+  if (orderPlan && !orderPlan.randomize) {
+    const fixedOrder = normalizeFixedSampleOrder(orderPlan.fixedOrder, sampleCount);
+    if (fixedOrder) {
+      return Array.from({ length: participantCapacity }, () => [...fixedOrder]);
+    }
+  }
+
+  return createRandomizedServingOrders(participantCapacity, sampleCount);
 }
 
 function createRandomizedServingOrders(participantCapacity: number, sampleCount: number) {

@@ -3,10 +3,10 @@
 
 export const FIC_CORS_CONFIG = {
   origin: [
-    'http://localhost:3000',  // Development
+    'http://localhost:3032',  // Development
     'http://127.0.0.1:3000',  // Alternative localhost
     'http://localhost:4000',  // API itself
-    'http://api.tarasense.local',  // Production (add your domain)
+    'https://tarasense.dostcaraga.ph',  // Production
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

@@ -56,6 +56,14 @@ const nextConfig: NextConfig = {
   experimental: {
     serverActions: {
       allowedOrigins: serverActionAllowedOrigins,
+      /**
+       * Next.js caps Server Action bodies at 1 MB by default, which rejected
+       * FIC role applications with an opaque 413 before the action ever ran —
+       * the government-ID upload allows 5 MB (MAX_FIC_ID_BYTES). Keep this
+       * comfortably above that limit so multipart overhead and the rest of the
+       * form fields still fit; per-file size is enforced in `saveFicIdFile`.
+       */
+      bodySizeLimit: "8mb",
     },
   },
   async headers() {

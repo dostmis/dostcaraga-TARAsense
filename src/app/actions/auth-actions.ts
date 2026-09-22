@@ -805,6 +805,90 @@ export async function saveFicFacilityProfile(formData: FormData) {
   redirect(withFeedback(redirectTo, "message", "Facility profile updated"));
 }
 
+/**
+ * An approved FIC picks their own DOST region and managed facility. Admins only
+ * approve or reject the role request — they no longer set the assignment.
+ */
+export async function saveFicAssignment(formData: FormData) {
+  const session = await getCurrentSession();
+  if (!session) {
+    redirect("/login?error=Please+login+to+update+your+assignment");
+  }
+
+  const redirectTo = safeInternalRedirect(formData.get("redirectTo"), "/fic/dashboard?view=profile");
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.userId },
+    select: { id: true, role: true, assignedRegion: true, assignedFacility: true },
+  });
+  if (!user) {
+    redirect("/login?error=Session+expired");
+  }
+  if (user.role !== "FIC" && user.role !== "FIC_MANAGER") {
+    redirect(withFeedback(redirectTo, "error", "Only approved FIC accounts can set a region and facility."));
+  }
+
+  const assignment = normalizeRegionFacility(
+    String(formData.get("assignedRegion") ?? ""),
+    String(formData.get("assignedFacility") ?? "")
+  );
+  if (!assignment) {
+    redirect(withFeedback(redirectTo, "error", "Select a valid region and a facility that belongs to it."));
+  }
+
+  if (user.assignedRegion === assignment.region && user.assignedFacility === assignment.facility) {
+    redirect(withFeedback(redirectTo, "message", "Your assignment already matches the selected region and facility."));
+  }
+
+  const now = new Date();
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: user.id },
+      data: {
+        assignedRegion: assignment.region,
+        assignedFacility: assignment.facility,
+        assignmentUpdatedAt: now,
+        assignmentUpdatedById: user.id,
+      },
+    });
+
+    await tx.ficAssignmentHistory.create({
+      data: {
+        ficUserId: user.id,
+        changedById: user.id,
+        previousRegion: user.assignedRegion,
+        previousFacility: user.assignedFacility,
+        assignedRegion: assignment.region,
+        assignedFacility: assignment.facility,
+        createdAt: now,
+      },
+    });
+  });
+
+  await notifyUser(user.id, {
+    title: "FIC assignment updated",
+    message: `Your assignment is now ${assignment.facility}, ${assignment.region}.`,
+    level: "SUCCESS",
+    category: "ROLE",
+    actionUrl: "/fic/dashboard?view=dashboard",
+  });
+  await logUserUsage({
+    actorUserId: user.id,
+    action: "FIC_ASSIGNMENT_UPDATED",
+    entityType: "User",
+    entityId: user.id,
+    summary: `FIC set their own assignment to ${assignment.facility}, ${assignment.region}.`,
+    metadata: {
+      ficUserId: user.id,
+      assignedRegion: assignment.region,
+      assignedFacility: assignment.facility,
+      selfServed: true,
+    },
+  });
+
+  redirect(withFeedback(redirectTo, "message", "Region and facility updated"));
+}
+
 export async function reviewRoleApplication(formData: FormData) {
   const session = await getCurrentSession();
   if (!session || session.role !== "ADMIN") {
@@ -834,15 +918,9 @@ export async function reviewRoleApplication(formData: FormData) {
 
   if (decision === "APPROVE") {
     const now = new Date();
-    const assignment =
-      request.targetRole === "FIC"
-        ? normalizeRegionFacility(String(formData.get("assignedRegion") ?? ""), String(formData.get("assignedFacility") ?? ""))
-        : null;
 
-    if (request.targetRole === "FIC" && !assignment) {
-      redirect(withFeedback(redirectTo, "error", "A valid region and facility assignment is required for FIC approval."));
-    }
-
+    // Region/facility is not part of the approval decision — the approved FIC
+    // sets it themselves from their profile (an admin can still override it).
     await prisma.$transaction(async (tx) => {
       await tx.roleUpgradeRequest.update({
         where: { id: requestId },
@@ -853,45 +931,10 @@ export async function reviewRoleApplication(formData: FormData) {
         },
       });
 
-      const previousAssignment = await tx.user.findUnique({
-        where: { id: request.userId },
-        select: {
-          assignedRegion: true,
-          assignedFacility: true,
-        },
-      });
-      if (!previousAssignment) {
-        throw new Error("Target user no longer exists.");
-      }
-
       await tx.user.update({
         where: { id: request.userId },
-        data: {
-          role: request.targetRole,
-          ...(assignment
-            ? {
-                assignedRegion: assignment.region,
-                assignedFacility: assignment.facility,
-                assignmentUpdatedAt: now,
-                assignmentUpdatedById: session.userId,
-              }
-            : {}),
-        },
+        data: { role: request.targetRole },
       });
-
-      if (assignment) {
-        await tx.ficAssignmentHistory.create({
-          data: {
-            ficUserId: request.userId,
-            changedById: session.userId,
-            previousRegion: previousAssignment.assignedRegion,
-            previousFacility: previousAssignment.assignedFacility,
-            assignedRegion: assignment.region,
-            assignedFacility: assignment.facility,
-            createdAt: now,
-          },
-        });
-      }
 
       // Mark the self-reported facility profile approved (FIC requests only).
       if (request.targetRole === "FIC") {
@@ -905,12 +948,15 @@ export async function reviewRoleApplication(formData: FormData) {
     await notifyUser(request.userId, {
       title: "Role application approved",
       message:
-        request.targetRole === "FIC" && assignment
-          ? `Your request for ${request.targetRole} access has been approved. Assigned to ${assignment.facility}, ${assignment.region}.`
+        request.targetRole === "FIC"
+          ? `Your request for ${request.targetRole} access has been approved. Set your region and facility in your profile to start receiving studies.`
           : `Your request for ${request.targetRole} access has been approved.`,
       level: "SUCCESS",
       category: "ROLE",
-      actionUrl: ROLE_DASHBOARD_PATH[parseRole(request.targetRole) ?? "CONSUMER"],
+      actionUrl:
+        request.targetRole === "FIC"
+          ? "/fic/dashboard?view=profile"
+          : ROLE_DASHBOARD_PATH[parseRole(request.targetRole) ?? "CONSUMER"],
     });
     await notifyUser(session.userId, {
       title: "Application approved",
@@ -928,8 +974,6 @@ export async function reviewRoleApplication(formData: FormData) {
       metadata: {
         targetUserId: request.userId,
         targetRole: request.targetRole,
-        assignedRegion: assignment?.region ?? null,
-        assignedFacility: assignment?.facility ?? null,
       },
     });
 
@@ -978,110 +1022,6 @@ export async function reviewRoleApplication(formData: FormData) {
   });
 
   redirect(withFeedback(redirectTo, "message", "Application rejected"));
-}
-
-export async function reassignFicFacility(formData: FormData) {
-  const session = await getCurrentSession();
-  if (!session || session.role !== "ADMIN") {
-    redirect("/login?error=Admin+login+required");
-  }
-
-  const redirectTo = resolveAdminRedirectTarget(formData.get("redirectTo"));
-  const ficUserId = String(formData.get("ficUserId") ?? "").trim();
-  const assignment = normalizeRegionFacility(
-    String(formData.get("assignedRegion") ?? ""),
-    String(formData.get("assignedFacility") ?? "")
-  );
-
-  if (!ficUserId || !assignment) {
-    redirect(withFeedback(redirectTo, "error", "Valid FIC user, region, and facility are required."));
-  }
-
-  const now = new Date();
-  const result = await prisma.$transaction(async (tx) => {
-    const ficUser = await tx.user.findUnique({
-      where: { id: ficUserId },
-      select: {
-        id: true,
-        role: true,
-        assignedRegion: true,
-        assignedFacility: true,
-      },
-    });
-
-    if (!ficUser || (ficUser.role !== "FIC" && ficUser.role !== "FIC_MANAGER")) {
-      return { ok: false as const, reason: "invalid-fic-user" as const };
-    }
-
-    const assignmentChanged =
-      ficUser.assignedRegion !== assignment.region || ficUser.assignedFacility !== assignment.facility;
-
-    if (!assignmentChanged) {
-      return { ok: true as const, assignmentChanged: false };
-    }
-
-    await tx.user.update({
-      where: { id: ficUser.id },
-      data: {
-        assignedRegion: assignment.region,
-        assignedFacility: assignment.facility,
-        assignmentUpdatedAt: now,
-        assignmentUpdatedById: session.userId,
-      },
-    });
-
-    await tx.ficAssignmentHistory.create({
-      data: {
-        ficUserId: ficUser.id,
-        changedById: session.userId,
-        previousRegion: ficUser.assignedRegion,
-        previousFacility: ficUser.assignedFacility,
-        assignedRegion: assignment.region,
-        assignedFacility: assignment.facility,
-        createdAt: now,
-      },
-    });
-
-    return { ok: true as const, assignmentChanged: true };
-  });
-
-  if (!result.ok) {
-    redirect(withFeedback(redirectTo, "error", "Selected account is not an FIC user."));
-  }
-
-  if (!result.assignmentChanged) {
-    redirect(withFeedback(redirectTo, "message", "FIC assignment already matches the selected region and facility."));
-  }
-
-  await notifyUser(ficUserId, {
-    title: "FIC assignment updated",
-    message: `Your assignment is now ${assignment.facility}, ${assignment.region}.`,
-    level: "INFO",
-    category: "ROLE",
-    actionUrl: "/fic/dashboard?view=dashboard",
-  });
-
-  await notifyUser(session.userId, {
-    title: "FIC assignment saved",
-    message: `Updated FIC assignment to ${assignment.facility}, ${assignment.region}.`,
-    level: "SUCCESS",
-    category: "ROLE",
-    actionUrl: redirectTo,
-  });
-  await logUserUsage({
-    actorUserId: session.userId,
-    action: "FIC_ASSIGNMENT_UPDATED",
-    entityType: "User",
-    entityId: ficUserId,
-    summary: `Admin updated FIC assignment to ${assignment.facility}, ${assignment.region}.`,
-    metadata: {
-      ficUserId,
-      assignedRegion: assignment.region,
-      assignedFacility: assignment.facility,
-    },
-  });
-
-  redirect(withFeedback(redirectTo, "message", "FIC assignment updated"));
 }
 
 export async function logout() {

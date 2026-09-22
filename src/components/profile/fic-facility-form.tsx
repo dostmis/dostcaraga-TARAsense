@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import { LocationPicker, type LocationLabels, type LocationValue } from "@/components/locations/location-picker";
+import { GovIdUpload } from "@/components/profile/gov-id-upload";
 import {
   FIC_FACILITY_TYPE_OPTIONS,
   FIC_FIELD_LIMITS,
-  FIC_ID_ACCEPT_ATTRIBUTE,
   FIC_SENSORY_CAPABILITY_OPTIONS,
 } from "@/lib/fic-facility";
 
@@ -163,28 +163,7 @@ export function FicFacilityForm({ action, redirectTo, submitLabel, initial }: Fi
         </div>
 
         <Field label="Government-issued ID Upload" required={!hasExistingId}>
-          <input
-            name="govId"
-            type="file"
-            accept={FIC_ID_ACCEPT_ATTRIBUTE}
-            className="block w-full text-sm text-[#5d493b] file:mr-3 file:rounded-lg file:border-0 file:bg-[#f3e7da] file:px-3 file:py-2 file:text-sm file:font-medium file:text-[#5a4536] hover:file:bg-[#ecdaca]"
-            required={!hasExistingId}
-          />
-          <span className="text-xs text-[#8d735f]">JPG, PNG, or PDF up to 5MB.</span>
-          {initial?.govIdHref ? (
-            <span className="text-xs text-[#6f5b4f]">
-              A document is already on file.{" "}
-              <a
-                href={initial.govIdHref}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="font-medium text-[#c2410c] underline"
-              >
-                View current ID
-              </a>
-              . Upload a new file to replace it.
-            </span>
-          ) : null}
+          <GovIdUpload name="govId" required={!hasExistingId} existingHref={initial?.govIdHref} />
         </Field>
       </section>
 

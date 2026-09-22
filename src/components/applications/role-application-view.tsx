@@ -353,7 +353,7 @@ function FicApplyScreen({
       <BackLink />
       <PageHeading
         title="Apply as FIC"
-        subtitle="Complete your facility application below. The DOST region and facility assignment is set by an admin upon approval."
+        subtitle="Complete your facility application below. Once approved, you set your own DOST region and facility from your profile."
       />
 
       <section className="overflow-hidden rounded-2xl border border-[#e2e8f0] bg-white shadow-[0_1px_3px_rgba(15,23,42,0.06)]">
