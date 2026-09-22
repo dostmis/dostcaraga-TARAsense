@@ -24,7 +24,7 @@
     "postinstall": "prisma generate"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.2",
+    "@prisma/client": "^7.9.1",
     "date-fns": "^4.1.0",
     "firebase-admin": "^13.10.0",
     "jspdf": "^4.2.1",
